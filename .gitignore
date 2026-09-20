@@ -1,0 +1,8 @@
+.DS_Store
+.build/
+DerivedData/
+*.xcuserstate
+BuildSupport/S1Mini/.cache/
+BuildSupport/S1Mini/dist/
+Packages/LocalSpeech/.build/
+artifacts/

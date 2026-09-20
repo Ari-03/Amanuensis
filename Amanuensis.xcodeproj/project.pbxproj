@@ -3,8 +3,12 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 110;
+	objectVersion = 77;
 	objects = {
+
+/* Begin PBXBuildFile section */
+        A10000000000000000000001 /* LocalSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* LocalSpeech */; };
+/* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		4835D89A305F98830081B695 /* Amanuensis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Amanuensis.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -22,6 +26,7 @@
 		4835D897305F98830081B695 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+                A10000000000000000000001 /* LocalSpeech in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -53,6 +58,7 @@
 				4835D896305F98830081B695 /* Sources */,
 				4835D897305F98830081B695 /* Frameworks */,
 				4835D898305F98830081B695 /* Resources */,
+                A10000000000000000000004 /* Bundle S1-mini */,
 			);
 			buildRules = (
 			);
@@ -60,6 +66,7 @@
 				4835D89C305F98830081B695 /* Amanuensis */,
 			);
 			name = Amanuensis;
+            packageProductDependencies = (A10000000000000000000002 /* LocalSpeech */,);
 			productName = Amanuensis;
 			productReference = 4835D89A305F98830081B695 /* Amanuensis.app */;
 			productType = "com.apple.product-type.application";
@@ -90,7 +97,8 @@
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4835D89B305F98830081B695 /* Products */;
-			projectDirPath = "";
+			packageReferences = (A10000000000000000000003 /* LocalSpeech */,);
+            projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				4835D899305F98830081B695 /* Amanuensis */,
@@ -105,6 +113,20 @@
 			);
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+        A10000000000000000000004 /* Bundle S1-mini */ = {
+            isa = PBXShellScriptBuildPhase;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ("$(SRCROOT)/BuildSupport/S1Mini/dist/S1MiniHelper", "$(SRCROOT)/Scripts/bundle-helper.sh",);
+            name = "Bundle S1-mini";
+            outputPaths = ("$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/S1MiniHelper",);
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = /bin/bash;
+            shellScript = "\"$SRCROOT/Scripts/bundle-helper.sh\"";
+        };
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		4835D896305F98830081B695 /* Sources */ = {
@@ -152,7 +174,7 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -168,7 +190,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -215,7 +237,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -225,7 +247,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
@@ -239,12 +261,18 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+                CODE_SIGN_ENTITLEMENTS = BuildSupport/Amanuensis.entitlements;
+                ARCHS = arm64;
+                ENABLE_AUDIO_INPUT = YES;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Amanuensis records your voice to transcribe it into text.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Amanuensis uses on-device speech recognition to transcribe your recordings.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -255,11 +283,9 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -269,12 +295,18 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+                CODE_SIGN_ENTITLEMENTS = BuildSupport/Amanuensis.entitlements;
+                ARCHS = arm64;
+                ENABLE_AUDIO_INPUT = YES;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Amanuensis records your voice to transcribe it into text.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Amanuensis uses on-device speech recognition to transcribe your recordings.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -285,15 +317,27 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
+
+/* Begin XCLocalSwiftPackageReference section */
+        A10000000000000000000003 /* LocalSpeech */ = {
+            isa = XCLocalSwiftPackageReference;
+            relativePath = Packages/LocalSpeech;
+        };
+/* End XCLocalSwiftPackageReference section */
+/* Begin XCSwiftPackageProductDependency section */
+        A10000000000000000000002 /* LocalSpeech */ = {
+            isa = XCSwiftPackageProductDependency;
+            package = A10000000000000000000003 /* LocalSpeech */;
+            productName = LocalSpeech;
+        };
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCConfigurationList section */
 		4835D895305F98830081B695 /* Build configuration list for PBXProject "Amanuensis" */ = {
