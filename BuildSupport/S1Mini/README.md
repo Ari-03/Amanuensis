@@ -4,7 +4,7 @@
 
 ## Build and bundle
 
-Requires Xcode and CMake. Run `BuildSupport/S1Mini/build.sh`. The script fetches llama.cpp at commit `4260903678a7525f43419dc234a942b551a8951e`, verifies the source archive hash on download, and builds arm64 for macOS 14+. `S1MINI_BUILD_CACHE` changes the source cache location. `S1MINI_ARCH` changes the CMake target architecture; only arm64 is validated here.
+Requires Xcode and CMake. Normal Xcode builds prepare this helper automatically. Run `BuildSupport/S1Mini/build.sh` only when building the helper on its own. The script searches the terminal PATH and standard Homebrew/CMake app locations; `CMAKE` can specify an absolute executable path. The script fetches llama.cpp at commit `4260903678a7525f43419dc234a942b551a8951e`, verifies the source archive hash on download, and builds arm64 for macOS 14+. `S1MINI_BUILD_CACHE` changes the source cache location. `S1MINI_ARCH` changes the CMake target architecture; only arm64 is validated here.
 
 The distributable executable is `BuildSupport/S1Mini/dist/S1MiniHelper`. Copy it into the app's `Contents/Helpers/S1MiniHelper`, preserve executable permissions, and sign it with the application signing identity before signing the app. The build script uses ad hoc signing for local testing. Copy `dist/licenses/` into the app's third-party notices resources. Metal kernels are embedded; no downloaded dylibs or `.metallib` files need to accompany the executable. `otool -L` should list only system libraries/frameworks.
 
@@ -55,3 +55,5 @@ Run `BuildSupport/S1Mini/smoke-test.sh /path/to/s1-mini-q4_k_m.gguf`. It exercis
 Verified September 19, 2026 on this arm64 development Mac with the pinned weights. Names retained Aritra and Convex; numeric correction retained 43 and removed 42; filler-only input returned `empty`. Email cleanup produced a greeting, a $43 invoice request, and Aritra's sign-off. That request took 1.36 seconds after initial Metal setup; this is a single development measurement, not a latency guarantee. The first inference took longer while the OS prepared Metal resources. Invalid controls, checksum mismatch, and cancellation tests passed.
 
 Included notices cover Superwhisper's model, llama.cpp, and nlohmann JSON. The model derives from Qwen3-0.6B as recorded in the upstream NOTICE. Follow the upstream licenses when redistributing modified code or assets.
+
+Run `Scripts/check-helper-build.sh` to verify automatic preparation and bundling from a source-only temporary checkout with Xcode's restricted PATH.

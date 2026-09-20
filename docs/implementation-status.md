@@ -52,7 +52,7 @@ Live microphone capture, system-audio permissions, Accessibility insertion into 
 
 ## Build and test limitations
 
-`Scripts/build.sh` requires full Xcode, its Metal Toolchain component, and CMake. It builds the S1 helper if missing, runs the Release arm64 Xcode build, creates `artifacts/Amanuensis.app`, and verifies its ad-hoc signature. The root Swift package covers core/storage test code and cannot replace that build.
+`Scripts/build.sh` requires full Xcode, its Metal Toolchain component, and CMake. It runs the Release arm64 Xcode build, whose bundle phase builds the S1 helper incrementally from source, creates `artifacts/Amanuensis.app`, and verifies its ad-hoc signature. The root Swift package covers core/storage test code and cannot replace that build.
 
 The local speech adapter loads one model per request, transcribes audio in windows of at most 30 seconds, and joins the output. Boundary accuracy, long meetings, silence, hallucinations, latency, and memory need model-specific tests. Cancellation suppresses output but cannot immediately stop an upstream synchronous MLX operation already running.
 

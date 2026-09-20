@@ -117,9 +117,10 @@
 /* Begin PBXShellScriptBuildPhase section */
         A10000000000000000000004 /* Bundle S1-mini */ = {
             isa = PBXShellScriptBuildPhase;
+            alwaysOutOfDate = 1;
             buildActionMask = 2147483647;
             files = ();
-            inputPaths = ("$(SRCROOT)/BuildSupport/S1Mini/dist/S1MiniHelper", "$(SRCROOT)/Scripts/bundle-helper.sh",);
+            inputPaths = ("$(SRCROOT)/BuildSupport/S1Mini/build.sh", "$(SRCROOT)/BuildSupport/S1Mini/CMakeLists.txt", "$(SRCROOT)/BuildSupport/S1Mini/main.cpp", "$(SRCROOT)/Scripts/bundle-helper.sh",);
             name = "Bundle S1-mini";
             outputPaths = ("$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/S1MiniHelper",);
             runOnlyForDeploymentPostprocessing = 0;
