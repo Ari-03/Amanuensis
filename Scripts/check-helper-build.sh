@@ -11,6 +11,7 @@ cp "$repo_root/Scripts/bundle-helper.sh" "$source_root/Scripts/"
 
 # Xcode launched from Finder does not inherit the terminal's Homebrew PATH.
 PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    DERIVED_FILE_DIR="$test_root/derived files" \
     SRCROOT="$source_root" TARGET_BUILD_DIR="$test_root/products" \
     CONTENTS_FOLDER_PATH=Amanuensis.app/Contents \
     UNLOCALIZED_RESOURCES_FOLDER_PATH=Amanuensis.app/Contents/Resources \

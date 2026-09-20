@@ -6,7 +6,9 @@
 
 Requires Xcode and CMake. Normal Xcode builds prepare this helper automatically. Run `BuildSupport/S1Mini/build.sh` only when building the helper on its own. The script searches the terminal PATH and standard Homebrew/CMake app locations; `CMAKE` can specify an absolute executable path. The script fetches llama.cpp at commit `4260903678a7525f43419dc234a942b551a8951e`, verifies the source archive hash on download, and builds arm64 for macOS 14+. `S1MINI_BUILD_CACHE` changes the source cache location. `S1MINI_ARCH` changes the CMake target architecture; only arm64 is validated here.
 
-The distributable executable is `BuildSupport/S1Mini/dist/S1MiniHelper`. Copy it into the app's `Contents/Helpers/S1MiniHelper`, preserve executable permissions, and sign it with the application signing identity before signing the app. The build script uses ad hoc signing for local testing. Copy `dist/licenses/` into the app's third-party notices resources. Metal kernels are embedded; no downloaded dylibs or `.metallib` files need to accompany the executable. `otool -L` should list only system libraries/frameworks.
+Xcode keeps dependency sources, CMake outputs, and the staged executable inside `DERIVED_FILE_DIR/S1Mini`, separate for each configuration and derived-data location. Standalone builds use `BuildSupport/S1Mini/.build` and `dist`; `S1MINI_BUILD_DIR` and `S1MINI_DIST_DIR` override those locations.
+
+The standalone distributable executable is `BuildSupport/S1Mini/dist/S1MiniHelper`. Copy it into the app's `Contents/Helpers/S1MiniHelper`, preserve executable permissions, and sign it with the application signing identity before signing the app. The build script uses ad hoc signing for local testing. Copy `dist/licenses/` into the app's third-party notices resources. Metal kernels are embedded; no downloaded dylibs or `.metallib` files need to accompany the executable. `otool -L` should list only system libraries/frameworks.
 
 Build output and dependency source remain ignored or outside the repository. Run `xcrun clang-format --dry-run --Werror BuildSupport/S1Mini/main.cpp` for formatting validation. The helper compiles with warnings treated as errors.
 
@@ -57,3 +59,5 @@ Verified September 19, 2026 on this arm64 development Mac with the pinned weight
 Included notices cover Superwhisper's model, llama.cpp, and nlohmann JSON. The model derives from Qwen3-0.6B as recorded in the upstream NOTICE. Follow the upstream licenses when redistributing modified code or assets.
 
 Run `Scripts/check-helper-build.sh` to verify automatic preparation and bundling from a source-only temporary checkout with Xcode's restricted PATH.
+
+Run `Scripts/check-helper-isolation.sh` for a fast concurrent-build path check using a fake compiler.
