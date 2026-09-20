@@ -532,9 +532,14 @@ final class AppModel {
             report(AppFailure("An app can belong to only one automatic mode."))
             return
         }
-        let changedShortcut = modes[index].startShortcut != mode.startShortcut
-        modes[index] = mode
-        if changedShortcut { configureShortcuts() }
+        var proposed = modes
+        proposed[index] = mode
+        if modes[index].startShortcut != mode.startShortcut,
+            !configureShortcuts(modes: proposed)
+        {
+            return
+        }
+        modes = proposed
         saveConfiguration()
     }
 
@@ -543,8 +548,9 @@ final class AppModel {
             report(AppFailure("Keep at least one mode."))
             return
         }
-        modes.removeAll { $0.id == id }
-        configureShortcuts()
+        let proposed = modes.filter { $0.id != id }
+        guard configureShortcuts(modes: proposed) else { return }
+        modes = proposed
         if settings.selectedModeID == id { settings.selectedModeID = modes.first?.id }
         saveConfiguration()
     }
@@ -688,7 +694,11 @@ final class AppModel {
             || settings.pushToTalkShortcut != previous.pushToTalkShortcut
             || settings.modeShortcut != previous.modeShortcut
         {
-            configureShortcuts()
+            if !configureShortcuts() {
+                settings.toggleShortcut = previous.toggleShortcut
+                settings.pushToTalkShortcut = previous.pushToTalkShortcut
+                settings.modeShortcut = previous.modeShortcut
+            }
         }
         if settings.launchAtLogin != previous.launchAtLogin {
             do {
@@ -707,8 +717,9 @@ final class AppModel {
         enforceRetention()
     }
 
-    private func configureShortcuts() {
-        shortcuts.setBindings(
+    @discardableResult
+    private func configureShortcuts(modes proposedModes: [DictationMode]? = nil) -> Bool {
+        let succeeded = shortcuts.setBindings(
             toggle: settings.toggleShortcut, pushToTalk: settings.pushToTalkShortcut,
             changeMode: settings.modeShortcut,
             onToggle: { [weak self] in
@@ -732,7 +743,7 @@ final class AppModel {
             },
             onCancel: { [weak self] in self?.cancelRecording() },
             modeBindings: Dictionary(
-                uniqueKeysWithValues: modes.compactMap { mode in
+                uniqueKeysWithValues: (proposedModes ?? modes).compactMap { mode in
                     mode.startShortcut.map { (mode.id, $0) }
                 }),
             onModeRecording: { [weak self] id in
@@ -747,6 +758,7 @@ final class AppModel {
         if !shortcuts.registrationErrors.isEmpty {
             errorMessage = shortcuts.registrationErrors.joined(separator: "\n")
         }
+        return succeeded
     }
 
     private func updateRecorder() {

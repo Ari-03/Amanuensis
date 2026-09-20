@@ -23,11 +23,11 @@ Scripts/build.sh
 open artifacts/Amanuensis.app
 ```
 
-`Scripts/build.sh` builds the S1-mini helper when needed, builds the Release app for arm64, copies it to `artifacts/Amanuensis.app`, and verifies its ad-hoc signature. Dependency sources and build products are not committed. If the build reports a missing Metal compiler, install Xcode's Metal Toolchain component before retrying.
+`Scripts/build.sh` builds the Release app for arm64, copies it to `artifacts/Amanuensis.app`, and verifies its ad-hoc signature. Dependency sources and build products are not committed. If the build reports a missing Metal compiler, install Xcode's Metal Toolchain component before retrying.
 
 The verified development artifact is approximately 59 MB, excluding downloaded model files. On this development Mac, Whisper Tiny, Parakeet V2, Cohere Transcribe, and S1-mini are already imported into the app. Its saved configuration uses Parakeet V2 for speech. A fresh installation still defaults to Apple Speech as described below.
 
-For development in Xcode, run `BuildSupport/S1Mini/build.sh` first, then open `Amanuensis.xcodeproj` and select the Amanuensis scheme. The build phase requires that helper. Swift Package Manager at the repository root builds the core test target, not the complete macOS app.
+For development in Xcode, open `Amanuensis.xcodeproj`, select the Amanuensis scheme, and build or run. The build phase fetches the pinned llama.cpp source and builds the S1-mini helper automatically, then reuses CMake's incremental build cache. No generated helper binary needs to be copied between checkouts. CMake installed through Homebrew or its standard macOS app is found even when Xcode is launched from Finder. The first helper build needs internet access and takes longer. Swift Package Manager at the repository root builds the core test target, not the complete macOS app.
 
 The current signing setup is for local use. Developer ID signing, notarization, and automatic updates are not configured.
 

@@ -12,10 +12,36 @@ final class GlobalShortcuts {
         case cancel
     }
 
-    private let signature: OSType = 0x414D_414E
+    struct Backend {
+        var register: (UInt32, ShortcutBinding) -> (OSStatus, EventHotKeyRef?)
+        var unregister: (EventHotKeyRef) -> Void
+
+        static var carbon: Backend {
+            Backend(
+                register: { identifier, binding in
+                    var reference: EventHotKeyRef?
+                    let status = RegisterEventHotKey(
+                        binding.keyCode, binding.modifiers,
+                        EventHotKeyID(signature: GlobalShortcuts.signature, id: identifier),
+                        GetApplicationEventTarget(), 0, &reference)
+                    return (status, reference)
+                },
+                unregister: { UnregisterEventHotKey($0) }
+            )
+        }
+    }
+
+    nonisolated private static let signature: OSType = 0x414D_414E
+    private let backend: Backend
     private var handler: EventHandlerRef?
-    private var registrations: [UInt32: EventHotKeyRef] = [:]
-    private var registeredBindings: [UInt32: ShortcutBinding] = [:]
+    private struct Registration {
+        let reference: EventHotKeyRef
+        let eventID: UInt32
+        let binding: ShortcutBinding
+    }
+
+    private var registrations: [UInt32: Registration] = [:]
+    private var nextEventID: UInt32 = 0
     private var modeActions: [UInt32: UUID] = [:]
     private var pressed: Set<UInt32> = []
     private var onToggle: () -> Void = {}
@@ -28,7 +54,8 @@ final class GlobalShortcuts {
     private var recordingActive = false
     private var sessionObservers: [NSObjectProtocol] = []
 
-    init() {
+    init(backend: Backend = .carbon) {
+        self.backend = backend
         var eventTypes = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
@@ -59,11 +86,12 @@ final class GlobalShortcuts {
     }
 
     isolated deinit {
-        for reference in registrations.values { UnregisterEventHotKey(reference) }
+        for registration in registrations.values { backend.unregister(registration.reference) }
         if let handler { RemoveEventHandler(handler) }
         for observer in sessionObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
     }
 
+    @discardableResult
     func setBindings(
         toggle: ShortcutBinding,
         pushToTalk: ShortcutBinding?,
@@ -75,55 +103,42 @@ final class GlobalShortcuts {
         modeBindings: [UUID: ShortcutBinding] = [:],
         onModeRecording: @escaping (UUID) -> Void = { _ in },
         onInterruption: (() -> Void)? = nil
-    ) {
+    ) -> Bool {
+        var desired = [Action.toggle.rawValue: toggle]
+        desired[Action.pushToTalk.rawValue] = pushToTalk
+        desired[Action.changeMode.rawValue] = changeMode
+        var desiredModes: [UInt32: UUID] = [:]
+        for (offset, entry) in modeBindings.sorted(by: { $0.key.uuidString < $1.key.uuidString }).enumerated()
+        {
+            let identifier = UInt32(offset) + 1000
+            desired[identifier] = entry.value
+            desiredModes[identifier] = entry.key
+        }
+        if recordingActive { desired[Action.cancel.rawValue] = Self.cancelBinding }
+        guard applyBindings(desired) else { return false }
         if pressed.contains(Action.pushToTalk.rawValue) { self.onPushToTalk(false) }
-        for reference in registrations.values { UnregisterEventHotKey(reference) }
-        registrations.removeAll()
-        registeredBindings.removeAll()
-        modeActions.removeAll()
         pressed.removeAll()
-        registrationErrors.removeAll()
+        modeActions = desiredModes
         self.onToggle = onToggle
         self.onPushToTalk = onPushToTalk
         self.onChangeMode = onChangeMode
         self.onCancel = onCancel
         self.onInterruption = onInterruption
         self.onModeRecording = onModeRecording
-        register(Action.toggle.rawValue, binding: toggle)
-        if let pushToTalk {
-            register(Action.pushToTalk.rawValue, binding: pushToTalk)
-        }
-        if let changeMode {
-            register(Action.changeMode.rawValue, binding: changeMode)
-        }
-        // Stable ordering keeps mode identifiers deterministic within this registration.
-        for (offset, entry) in modeBindings.sorted(by: { $0.key.uuidString < $1.key.uuidString }).enumerated()
-        {
-            let identifier = UInt32(offset) + 1000
-            register(identifier, binding: entry.value)
-            if registrations[identifier] != nil { modeActions[identifier] = entry.key }
-        }
-        if recordingActive { registerCancel() }
+        return true
     }
 
     /// Keep this active through recording, transcription, and cleanup so Escape cancels the session.
     func setRecordingActive(_ active: Bool) {
         guard active != recordingActive else { return }
         recordingActive = active
-        if active {
-            registerCancel()
-        } else if let reference = registrations.removeValue(forKey: Action.cancel.rawValue) {
-            UnregisterEventHotKey(reference)
-            registeredBindings.removeValue(forKey: Action.cancel.rawValue)
-            pressed.remove(Action.cancel.rawValue)
-        }
+        var desired = registrations.mapValues(\.binding)
+        desired[Action.cancel.rawValue] = active ? Self.cancelBinding : nil
+        if applyBindings(desired), !active { pressed.remove(Action.cancel.rawValue) }
     }
 
-    private func registerCancel() {
-        register(
-            Action.cancel.rawValue,
-            binding: ShortcutBinding(keyCode: UInt32(kVK_Escape), modifiers: 0, display: "Escape")
-        )
+    private static var cancelBinding: ShortcutBinding {
+        ShortcutBinding(keyCode: UInt32(kVK_Escape), modifiers: 0, display: "Escape")
     }
 
     private func interruptRecording() {
@@ -131,38 +146,61 @@ final class GlobalShortcuts {
         if recordingActive { (onInterruption ?? onCancel)() }
     }
 
-    private func register(_ actionID: UInt32, binding: ShortcutBinding) {
+    /// Stage new chords while retaining the working set. Failed edits never release old shortcuts.
+    private func applyBindings(_ desired: [UInt32: ShortcutBinding]) -> Bool {
+        registrationErrors.removeAll()
         guard handler != nil else {
-            registrationErrors.append("Global shortcuts are unavailable.")
-            return
+            registrationErrors = ["Global shortcuts are unavailable."]
+            return false
         }
-        guard actionID == Action.cancel.rawValue || binding.keyCode != kVK_Escape || binding.modifiers != 0
-        else {
-            registrationErrors.append(
-                "Escape is reserved for cancelling the active recording or processing session.")
-            return
+        var seen: [ShortcutBinding] = []
+        for (action, binding) in desired.sorted(by: { $0.key < $1.key }) {
+            guard action == Action.cancel.rawValue || binding.keyCode != kVK_Escape || binding.modifiers != 0
+            else {
+                registrationErrors = [
+                    "Escape is reserved for cancelling the active recording or processing session."
+                ]
+                return false
+            }
+            guard !seen.contains(where: { Self.sameChord($0, binding) }) else {
+                registrationErrors = [
+                    "\(binding.display) conflicts with another Amanuensis shortcut. Choose a different combination."
+                ]
+                return false
+            }
+            seen.append(binding)
         }
-        guard
-            !registeredBindings.values.contains(where: {
-                $0.keyCode == binding.keyCode && $0.modifiers == binding.modifiers
-            })
-        else {
-            registrationErrors.append(
-                "\(binding.display) conflicts with another Amanuensis shortcut. Choose a different combination."
-            )
-            return
+        var staged: [UInt32: Registration] = [:]
+        var added: [EventHotKeyRef] = []
+        for (action, binding) in desired.sorted(by: { $0.key < $1.key }) {
+            if let existing = registrations.values.first(where: { Self.sameChord($0.binding, binding) }) {
+                // Native event IDs stay attached to their chords, even when mode ordering changes.
+                staged[action] = Registration(
+                    reference: existing.reference, eventID: existing.eventID, binding: binding)
+                continue
+            }
+            nextEventID += 1
+            let (status, reference) = backend.register(nextEventID, binding)
+            guard status == noErr, let reference else {
+                for reference in added { backend.unregister(reference) }
+                registrationErrors = [
+                    "Could not register \(binding.display). It may already be in use (\(status))."
+                ]
+                return false
+            }
+            staged[action] = Registration(reference: reference, eventID: nextEventID, binding: binding)
+            added.append(reference)
         }
-        var reference: EventHotKeyRef?
-        let identifier = EventHotKeyID(signature: signature, id: actionID)
-        let status = RegisterEventHotKey(
-            binding.keyCode, binding.modifiers, identifier, GetApplicationEventTarget(), 0, &reference)
-        if status == noErr, let reference {
-            registrations[actionID] = reference
-            registeredBindings[actionID] = binding
-        } else {
-            registrationErrors.append(
-                "Could not register \(binding.display). It may already be in use (\(status)).")
+        let retained = Set(staged.values.map(\.eventID))
+        for registration in registrations.values where !retained.contains(registration.eventID) {
+            backend.unregister(registration.reference)
         }
+        registrations = staged
+        return true
+    }
+
+    private static func sameChord(_ lhs: ShortcutBinding, _ rhs: ShortcutBinding) -> Bool {
+        lhs.keyCode == rhs.keyCode && lhs.modifiers == rhs.modifiers
     }
 
     private func handle(_ event: EventRef) -> OSStatus {
@@ -171,20 +209,21 @@ final class GlobalShortcuts {
             event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
             nil, MemoryLayout<EventHotKeyID>.size, nil, &identifier
         )
-        guard status == noErr, identifier.signature == signature, registrations[identifier.id] != nil
+        guard status == noErr, identifier.signature == Self.signature,
+            let actionID = registrations.first(where: { $0.value.eventID == identifier.id })?.key
         else { return OSStatus(eventNotHandledErr) }
 
         let isDown = GetEventKind(event) == UInt32(kEventHotKeyPressed)
         if isDown {
-            guard pressed.insert(identifier.id).inserted else { return noErr }
+            guard pressed.insert(actionID).inserted else { return noErr }
         } else {
-            guard pressed.remove(identifier.id) != nil else { return noErr }
+            guard pressed.remove(actionID) != nil else { return noErr }
         }
-        if let modeID = modeActions[identifier.id] {
+        if let modeID = modeActions[actionID] {
             if isDown { onModeRecording(modeID) }
             return noErr
         }
-        guard let action = Action(rawValue: identifier.id) else { return OSStatus(eventNotHandledErr) }
+        guard let action = Action(rawValue: actionID) else { return OSStatus(eventNotHandledErr) }
         switch action {
         case .toggle: if isDown { onToggle() }
         case .pushToTalk: onPushToTalk(isDown)

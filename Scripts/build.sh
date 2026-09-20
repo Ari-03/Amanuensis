@@ -2,9 +2,6 @@
 set -euo pipefail
 app_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$app_root"
-if [[ ! -x BuildSupport/S1Mini/dist/S1MiniHelper ]]; then
-    BuildSupport/S1Mini/build.sh
-fi
 xcodebuild -project Amanuensis.xcodeproj -scheme Amanuensis \
     -configuration Release -jobs 4 -skipPackagePluginValidation -skipMacroValidation -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$app_root/DerivedData" \
