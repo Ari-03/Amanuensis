@@ -1,27 +1,44 @@
 import CoreAudio
 import Foundation
 
+enum PlaybackOutputValue {
+    case volume(Float32)
+    case mute(UInt32)
+
+    func matches(_ other: PlaybackOutputValue) -> Bool {
+        switch (self, other) {
+        case (.volume(let lhs), .volume(let rhs)): abs(lhs - rhs) < 0.0001
+        case (.mute(let lhs), .mute(let rhs)): lhs == rhs
+        default: false
+        }
+    }
+}
+
+@MainActor
+protocol PlaybackOutputControlling {
+    func defaultOutputDevice() throws -> AudioDeviceID
+    func deviceUID(_ device: AudioDeviceID) throws -> String
+    func isWritable(_ selector: AudioObjectPropertySelector, on device: AudioDeviceID) -> Bool
+    func read(_ selector: AudioObjectPropertySelector, on device: AudioDeviceID) throws -> PlaybackOutputValue
+    func write(_ value: PlaybackOutputValue, selector: AudioObjectPropertySelector, on device: AudioDeviceID)
+        throws
+}
+
 /// Temporarily changes writable output controls and preserves later user changes.
 @MainActor
 final class PlaybackController {
     private struct Change {
         let device: AudioDeviceID
+        let deviceUID: String
         let selector: AudioObjectPropertySelector
-        let original: Value
-        let applied: Value
+        let original: PlaybackOutputValue
+        let applied: PlaybackOutputValue
     }
 
-    private enum Value {
-        case volume(Float32)
-        case mute(UInt32)
+    private let output: any PlaybackOutputControlling
 
-        func matches(_ other: Value) -> Bool {
-            switch (self, other) {
-            case (.volume(let lhs), .volume(let rhs)): abs(lhs - rhs) < 0.0001
-            case (.mute(let lhs), .mute(let rhs)): lhs == rhs
-            default: false
-            }
-        }
+    init(output: any PlaybackOutputControlling = CoreAudioPlaybackOutput()) {
+        self.output = output
     }
 
     private var change: Change?
@@ -29,13 +46,13 @@ final class PlaybackController {
 
     /// Availability can change when headphones or another output device connects.
     func availableBehaviors() -> [PlaybackBehavior] {
-        guard let device = try? defaultOutputDevice() else { return [.keepPlaying] }
+        guard let device = try? output.defaultOutputDevice() else { return [.keepPlaying] }
         var behaviors: [PlaybackBehavior] = [.keepPlaying]
-        if isWritable(kAudioDevicePropertyVolumeScalar, on: device) {
+        if output.isWritable(kAudioDevicePropertyVolumeScalar, on: device) {
             behaviors.append(.lower)
         }
-        if isWritable(kAudioDevicePropertyMute, on: device)
-            || isWritable(kAudioDevicePropertyVolumeScalar, on: device)
+        if output.isWritable(kAudioDevicePropertyMute, on: device)
+            || output.isWritable(kAudioDevicePropertyVolumeScalar, on: device)
         {
             behaviors.append(.mute)
         }
@@ -48,31 +65,35 @@ final class PlaybackController {
         guard behavior != .keepPlaying else { return }
         guard behavior != .pause else { throw PlaybackControlError.pauseUnsupported }
 
-        let device = try defaultOutputDevice()
+        let device = try output.defaultOutputDevice()
+        let deviceUID = try output.deviceUID(device)
         let selector: AudioObjectPropertySelector
-        if behavior == .mute, isWritable(kAudioDevicePropertyMute, on: device) {
+        if behavior == .mute, output.isWritable(kAudioDevicePropertyMute, on: device) {
             selector = kAudioDevicePropertyMute
         } else {
             selector = kAudioDevicePropertyVolumeScalar
         }
-        guard isWritable(selector, on: device) else {
+        guard output.isWritable(selector, on: device) else {
             throw PlaybackControlError.unsupportedOutput(behavior.rawValue)
         }
 
-        let original = try read(selector, on: device)
-        let requested: Value
+        let original = try output.read(selector, on: device)
+        let requested: PlaybackOutputValue
         switch original {
         case .volume(let volume):
             requested = .volume(behavior == .mute ? 0 : volume * 0.25)
         case .mute:
             requested = .mute(1)
         }
-        guard try defaultOutputDevice() == device else { throw PlaybackControlError.outputChanged }
-        try write(requested, selector: selector, on: device)
-        change = Change(device: device, selector: selector, original: original, applied: requested)
+        guard try output.defaultOutputDevice() == device, try output.deviceUID(device) == deviceUID else {
+            throw PlaybackControlError.outputChanged
+        }
+        try output.write(requested, selector: selector, on: device)
+        change = Change(
+            device: device, deviceUID: deviceUID, selector: selector, original: original, applied: requested)
 
         do {
-            let actual = try read(selector, on: device)
+            let actual = try output.read(selector, on: device)
             let succeeded: Bool
             switch (original, actual) {
             case (.volume(let before), .volume(let after)):
@@ -85,30 +106,44 @@ final class PlaybackController {
             }
             guard succeeded else { throw PlaybackControlError.changeNotApplied }
             // Devices may quantize volume, so restoration compares their actual value.
-            change = Change(device: device, selector: selector, original: original, applied: actual)
-            guard try defaultOutputDevice() == device else { throw PlaybackControlError.outputChanged }
+            change = Change(
+                device: device, deviceUID: deviceUID, selector: selector, original: original, applied: actual)
+            guard try output.defaultOutputDevice() == device, try output.deviceUID(device) == deviceUID else {
+                throw PlaybackControlError.outputChanged
+            }
         } catch {
             end()
             throw error
         }
     }
 
-    /// Restores only while the same device still has the value that we applied.
+    /// Restores the original device even if another device has become the default.
     func end() {
         guard let previous = change else { return }
         change = nil
-        guard let currentDevice = try? defaultOutputDevice(), currentDevice == previous.device,
-            let current = try? read(previous.selector, on: previous.device),
-            current.matches(previous.applied)
-        else { return }
         do {
-            try write(previous.original, selector: previous.selector, on: previous.device)
+            // Core Audio may reuse a disconnected device's numeric ID for a new device.
+            guard try output.deviceUID(previous.device) == previous.deviceUID else {
+                throw PlaybackControlError.outputChanged
+            }
+            let current = try output.read(previous.selector, on: previous.device)
+            guard current.matches(previous.applied) else { return }
+            guard try output.deviceUID(previous.device) == previous.deviceUID else {
+                throw PlaybackControlError.outputChanged
+            }
+            try output.write(previous.original, selector: previous.selector, on: previous.device)
+            let restored = try output.read(previous.selector, on: previous.device)
+            guard restored.matches(previous.original) else { throw PlaybackControlError.changeNotApplied }
         } catch {
             restorationError = "The previous output setting could not be restored. Check your volume."
         }
     }
 
-    private func defaultOutputDevice() throws -> AudioDeviceID {
+}
+
+@MainActor
+private struct CoreAudioPlaybackOutput: PlaybackOutputControlling {
+    func defaultOutputDevice() throws -> AudioDeviceID {
         var device = AudioDeviceID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var address = AudioObjectPropertyAddress(
@@ -123,21 +158,35 @@ final class PlaybackController {
         return device
     }
 
-    private func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+    func deviceUID(_ device: AudioDeviceID) throws -> String {
+        var property = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var uid: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = AudioObjectGetPropertyData(device, &property, 0, nil, &size, &uid)
+        guard status == noErr, let uid else { throw PlaybackControlError.coreAudio(status) }
+        return uid.takeRetainedValue() as String
+    }
+
+    func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: selector, mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
     }
 
-    private func isWritable(_ selector: AudioObjectPropertySelector, on device: AudioDeviceID) -> Bool {
+    func isWritable(_ selector: AudioObjectPropertySelector, on device: AudioDeviceID) -> Bool {
         var property = address(selector)
         guard AudioObjectHasProperty(device, &property) else { return false }
         var writable: DarwinBoolean = false
         return AudioObjectIsPropertySettable(device, &property, &writable) == noErr && writable.boolValue
     }
 
-    private func read(_ selector: AudioObjectPropertySelector, on device: AudioDeviceID) throws -> Value {
+    func read(_ selector: AudioObjectPropertySelector, on device: AudioDeviceID) throws -> PlaybackOutputValue
+    {
         var property = address(selector)
         var size = UInt32(MemoryLayout<UInt32>.size)
         let status: OSStatus
@@ -156,7 +205,8 @@ final class PlaybackController {
         }
     }
 
-    private func write(_ value: Value, selector: AudioObjectPropertySelector, on device: AudioDeviceID) throws
+    func write(_ value: PlaybackOutputValue, selector: AudioObjectPropertySelector, on device: AudioDeviceID)
+        throws
     {
         var property = address(selector)
         let status: OSStatus
