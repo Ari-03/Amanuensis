@@ -12,6 +12,7 @@ struct InsertionTarget {
 enum DeliveryOutcome: Equatable {
     case commandPosted
     case copied
+    case accessibilityRequired
     case held(String)
 
     var message: String {
@@ -20,6 +21,8 @@ enum DeliveryOutcome: Equatable {
             "Paste command sent. Your transcript remains in History."
         case .copied:
             "Copied to the clipboard."
+        case .accessibilityRequired:
+            "Allow Accessibility access to paste automatically, or copy your transcript."
         case .held(let reason):
             reason
         }
@@ -30,6 +33,7 @@ enum DeliveryOutcome: Equatable {
 @MainActor
 final class TextDelivery {
     private let pasteboard: NSPasteboard
+    private let hasAccessibilityAccess: () -> Bool
     private let sessionType = NSPasteboard.PasteboardType("dev.amanuensis.paste-session")
     private var isDelivering = false
     private var pendingClipboard: PendingClipboard?
@@ -40,8 +44,12 @@ final class TextDelivery {
         let session: String
     }
 
-    init(pasteboard: NSPasteboard = .general) {
+    init(
+        pasteboard: NSPasteboard = .general,
+        hasAccessibilityAccess: @escaping () -> Bool = { TextDelivery.isAccessibilityTrusted }
+    ) {
         self.pasteboard = pasteboard
+        self.hasAccessibilityAccess = hasAccessibilityAccess
     }
 
     static var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
@@ -52,7 +60,7 @@ final class TextDelivery {
     }
 
     func captureDestination() -> InsertionTarget? {
-        guard Self.isAccessibilityTrusted,
+        guard hasAccessibilityAccess(),
             let application = NSWorkspace.shared.frontmostApplication,
             application.processIdentifier != ProcessInfo.processInfo.processIdentifier
         else { return nil }
@@ -79,8 +87,8 @@ final class TextDelivery {
         guard !isDelivering else {
             return .held("Another paste is finishing. Copy this transcript from History.")
         }
-        guard Self.isAccessibilityTrusted else {
-            return .held("Allow Accessibility access to paste automatically, or copy your transcript.")
+        guard hasAccessibilityAccess() else {
+            return .accessibilityRequired
         }
         guard let target, matchesCurrentDestination(target) else {
             return .held(

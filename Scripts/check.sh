@@ -13,5 +13,6 @@ xcrun swiftc -swift-version 6 Amanuensis/Core/Domain.swift \
 if [[ -x Scripts/check-network.sh ]]; then Scripts/check-network.sh; fi
 Scripts/check-shortcuts.sh
 Scripts/check-playback.sh
+Scripts/check-delivery.sh
 Scripts/check-helper-isolation.sh
 git diff --check

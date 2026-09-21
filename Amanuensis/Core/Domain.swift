@@ -139,7 +139,22 @@ struct ShortcutBinding: Codable, Equatable, Sendable {
 }
 
 enum AppAppearance: String, Codable, CaseIterable, Sendable { case system, light, dark }
-enum RecorderStyle: String, Codable, CaseIterable, Sendable { case mini, notch, panel, hidden }
+enum RecorderStyle: String, Codable, CaseIterable, Sendable {
+    case mini, notch, hidden
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        // The former detail panel now uses the same compact controls as Mini.
+        if value == "panel" {
+            self = .mini
+        } else if let style = Self(rawValue: value) {
+            self = style
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown recorder style")
+        }
+    }
+}
 
 /// Fractions of the available travel keep the recorder on screen as its size changes.
 struct RecorderPlacement: Codable, Equatable, Sendable {
@@ -149,6 +164,27 @@ struct RecorderPlacement: Codable, Equatable, Sendable {
 
     static let bottom = RecorderPlacement(x: 0.5, y: 0)
     static let top = RecorderPlacement(x: 0.5, y: 1)
+
+    static let presets: [RecorderPlacement] = (0..<5).flatMap { row in
+        (0..<5).compactMap { column in
+            guard row == 0 || row == 4 || column == 0 || column == 4 || (row == 2 && column == 2)
+            else { return nil }
+            return RecorderPlacement(x: Double(column) / 4, y: 1 - Double(row) / 4)
+        }
+    }
+
+    static func nearestPreset(
+        to point: CGPoint, size: CGSize, in bounds: CGRect, displayID: UInt32?
+    ) -> RecorderPlacement {
+        var nearest =
+            presets.min { first, second in
+                let a = first.frame(size: size, in: bounds)
+                let b = second.frame(size: size, in: bounds)
+                return hypot(a.midX - point.x, a.midY - point.y) < hypot(b.midX - point.x, b.midY - point.y)
+            } ?? .bottom
+        nearest.displayID = displayID
+        return nearest
+    }
 
     func frame(size: CGSize, in bounds: CGRect) -> CGRect {
         let width = min(size.width, bounds.width)

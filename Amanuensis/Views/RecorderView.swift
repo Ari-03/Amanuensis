@@ -5,62 +5,113 @@ struct RecorderView: View {
     @Bindable var model: AppModel
     @State private var hovering = false
     @State private var showingModes = false
-    @State private var dragging = false
+    @State private var showingPermission = false
+    @GestureState private var dragging = false
     @State private var revealControls = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var controlsSize = CGSize(width: 64, height: 26)
     @State private var collapseTask: Task<Void, Never>?
 
-    private var isOpen: Bool { revealControls || showingModes || dragging || model.phase.isBusy }
+    private var isOpen: Bool {
+        revealControls || showingModes || showingPermission || model.phase.isBusy
+            || model.pasteNeedsAccessibility
+    }
 
     var body: some View {
-        VStack(spacing: 8) {
-            if isOpen {
-                controls
-                if model.settings.recorderStyle == .panel {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(model.currentMode.name).font(.caption.weight(.medium))
-                        Text(model.statusMessage).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    .frame(width: 220, alignment: .leading)
-                    .padding(.horizontal, 8).padding(.bottom, 6)
+        ZStack {
+            controls
+                .fixedSize()
+                .onGeometryChange(for: CGSize.self) {
+                    $0.size
+                } action: {
+                    controlsSize = $0
                 }
-            } else {
-                Button(action: model.toggleRecording) {
-                    HStack(spacing: 4) {
-                        Circle().fill(.secondary).frame(width: 4, height: 4)
-                        Capsule().fill(.secondary.opacity(0.6)).frame(width: 22, height: 3)
-                    }
-                    .frame(width: 58, height: 16).contentShape(Capsule())
+                .opacity(isOpen ? 1 : 0)
+                .allowsHitTesting(isOpen)
+                .accessibilityHidden(!isOpen)
+            Button(action: model.toggleRecording) {
+                HStack(spacing: 4) {
+                    Circle().fill(.secondary).frame(width: 4, height: 4)
+                    Capsule().fill(.secondary.opacity(0.6)).frame(width: 22, height: 3)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Start recording")
-                .help("Start recording. Hover to choose a mode or move the bar.")
+                .frame(width: 58, height: 16).contentShape(Capsule())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Start recording")
+            .help("Click to record. Drag to choose a screen position.")
+            .opacity(isOpen ? 0 : 1)
+            .allowsHitTesting(!isOpen)
+            .accessibilityHidden(isOpen)
         }
-        .padding(isOpen ? 4 : 0)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.primary.opacity(0.15)))
-        .fixedSize()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.primary.opacity(0.15)))
+        .clipped()
+        .contentShape(Capsule())
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 5, coordinateSpace: .global)
+                .updating($dragging) { _, active, _ in active = true }
+                .onChanged { model.moveRecorder(translation: $0.translation) }
+                .onEnded { _ in model.finishMovingRecorder() }
+        )
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: isOpen)
         .onHover { inside in
             hovering = inside
             if inside {
+                model.refreshAccessibility()
                 collapseTask?.cancel()
                 revealControls = true
             } else {
                 scheduleCollapse()
             }
         }
+        .onAppear { updateSize() }
+        .onChange(of: isOpen) { _, _ in updateSize() }
+        .onChange(of: controlsSize) { _, _ in updateSize() }
         .onChange(of: showingModes) { _, showing in
             if !showing { scheduleCollapse() }
         }
-        .onChange(of: model.phase.isBusy) { _, busy in
-            if busy { showingModes = false }
+        .onChange(of: showingPermission) { _, showing in
+            if !showing { scheduleCollapse() }
         }
-        .onDisappear { collapseTask?.cancel() }
+        .onChange(of: model.accessibilityGranted) { _, granted in
+            if granted { showingPermission = false }
+        }
+        .onChange(of: model.isMovingRecorder) { _, moving in
+            if moving {
+                collapseTask?.cancel()
+                showingModes = false
+                showingPermission = false
+            } else {
+                scheduleCollapse()
+            }
+        }
+        .onChange(of: dragging) { _, active in
+            if !active && model.isMovingRecorder { model.cancelMovingRecorder() }
+        }
+        .onChange(of: model.phase.isBusy) { _, busy in
+            if busy {
+                showingModes = false
+                showingPermission = false
+            }
+        }
+        .onDisappear {
+            collapseTask?.cancel()
+            model.cancelMovingRecorder()
+        }
+    }
+
+    private func updateSize() {
+        model.resizeRecorder(
+            to: isOpen
+                ? CGSize(width: ceil(controlsSize.width) + 8, height: ceil(controlsSize.height) + 8)
+                : CGSize(width: 58, height: 16))
     }
 
     private var controls: some View {
         HStack(spacing: 6) {
             Button {
+                showingPermission = false
                 showingModes.toggle()
             } label: {
                 HStack(spacing: 3) {
@@ -91,6 +142,48 @@ struct RecorderView: View {
             .accessibilityLabel(model.phase == .recording ? "Finish recording" : "Start recording")
             .help(model.phase == .recording ? "Finish recording" : "Start recording")
 
+            if !model.phase.isBusy
+                && (model.pasteNeedsAccessibility
+                    || (!model.accessibilityGranted && model.currentMode.autoPaste))
+            {
+                Button {
+                    showingModes = false
+                    showingPermission.toggle()
+                } label: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12)).foregroundStyle(.orange)
+                        .frame(width: 22, height: 26).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Allow Accessibility access for automatic paste")
+                .help("Automatic paste needs Accessibility access")
+                .popover(isPresented: $showingPermission, arrowEdge: popoverEdge) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Allow automatic paste").font(.headline)
+                        Text(
+                            "Enable Amanuensis in System Settings → Privacy & Security → Accessibility. Then return to your text field and record again."
+                        )
+                        .font(.callout)
+                        Button("Open Accessibility Settings") {
+                            showingPermission = false
+                            model.requestAccessibility()
+                        }
+                        if model.pasteNeedsAccessibility, let entry = model.history.first {
+                            Button("Copy last transcript") {
+                                model.copyText(entry.finalText)
+                                model.pasteNeedsAccessibility = false
+                                showingPermission = false
+                            }
+                        }
+                        Button("Not now") {
+                            model.pasteNeedsAccessibility = false
+                            showingPermission = false
+                        }.buttonStyle(.link)
+                    }
+                    .padding(16).frame(width: 290)
+                }
+            }
+
             if model.phase.isBusy {
                 HStack(spacing: 6) {
                     if model.phase == .recording {
@@ -113,23 +206,15 @@ struct RecorderView: View {
                 .disabled(model.phase == .delivering)
             }
 
-            Image(systemName: "circle.grid.2x3.fill")
-                .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                .frame(width: 16, height: 26)
-                .overlay {
-                    RecorderDragHandle { event in
-                        dragging = true
-                        collapseTask?.cancel()
-                        model.moveRecorder(with: event)
-                        dragging = false
-                        scheduleCollapse()
-                    }
-                }
         }
     }
 
     private var defaultPlacement: RecorderPlacement {
         model.settings.recorderStyle == .notch ? .top : .bottom
+    }
+
+    private var popoverEdge: Edge {
+        (model.settings.recorderPlacement ?? defaultPlacement).y > 0.5 ? .bottom : .top
     }
 
     private var modeMenu: some View {
@@ -164,7 +249,8 @@ struct RecorderView: View {
         collapseTask?.cancel()
         collapseTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled, !hovering, !showingModes, !dragging else { return }
+            guard !Task.isCancelled, !hovering, !showingModes, !showingPermission, !model.isMovingRecorder
+            else { return }
             revealControls = false
         }
     }
