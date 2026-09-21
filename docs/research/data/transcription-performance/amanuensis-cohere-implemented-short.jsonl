@@ -1,0 +1,17 @@
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":1,"mode":"reload_each_request","totalSeconds":0.846022958}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":2,"mode":"reload_each_request","totalSeconds":0.640188459}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":3,"mode":"reload_each_request","totalSeconds":0.667760042}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":4,"mode":"reload_each_request","totalSeconds":0.660299459}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":5,"mode":"reload_each_request","totalSeconds":0.675273708}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"family":"cohere","iteration":0,"mode":"production_prepare","totalSeconds":0.31521575}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":1,"mode":"production_preloaded","totalSeconds":0.365741333}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":2,"mode":"production_preloaded","totalSeconds":0.337841583}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":3,"mode":"production_preloaded","totalSeconds":0.329960708}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":4,"mode":"production_preloaded","totalSeconds":0.3292865}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","iteration":5,"mode":"production_preloaded","totalSeconds":0.340697667}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"family":"cohere","iteration":0,"loadSeconds":0.321639959,"mode":"retained_setup","snapshotSeconds":0.003778083,"totalSeconds":0.32541804199999996}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","generateSeconds":0.3858585,"iteration":1,"mode":"retained","preparationSeconds":0.001471917,"totalSeconds":0.387794125}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","generateSeconds":0.336654416,"iteration":2,"mode":"retained","preparationSeconds":0.001421874,"totalSeconds":0.338484458}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","generateSeconds":0.344550041,"iteration":3,"mode":"retained","preparationSeconds":0.001423084,"totalSeconds":0.346579875}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","generateSeconds":0.327842458,"iteration":4,"mode":"retained","preparationSeconds":0.001687125,"totalSeconds":0.329804166}
+{"audioSeconds":3.2023958333333336,"cacheMB":64,"characters":61,"family":"cohere","generateSeconds":0.322016459,"iteration":5,"mode":"retained","preparationSeconds":0.00120025,"totalSeconds":0.3234545}

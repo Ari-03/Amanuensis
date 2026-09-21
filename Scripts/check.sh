@@ -15,4 +15,5 @@ Scripts/check-shortcuts.sh
 Scripts/check-playback.sh
 Scripts/check-delivery.sh
 Scripts/check-helper-isolation.sh
+Scripts/check-s1-runner.sh
 git diff --check

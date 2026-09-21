@@ -62,6 +62,24 @@ import Testing
     }
 }
 
+@Test func residentIdentityTracksReplacementAndMissingMetadata() throws {
+    let directory = try makeDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    for name in ModelFamily.cohere.requiredMetadata {
+        try Data("{}".utf8).write(to: directory.appendingPathComponent(name))
+    }
+    let weights = directory.appendingPathComponent("model.safetensors")
+    try Data([1]).write(to: weights)
+    let original = try LocalModelIdentity(directory: directory, family: .cohere)
+    #expect(original == (try LocalModelIdentity(directory: directory, family: .cohere)))
+    try Data([2, 3]).write(to: weights, options: .atomic)
+    #expect(original != (try LocalModelIdentity(directory: directory, family: .cohere)))
+    try FileManager.default.removeItem(at: directory.appendingPathComponent("tokenizer.model"))
+    #expect(throws: LocalSpeechError.self) {
+        try LocalModelIdentity(directory: directory, family: .cohere)
+    }
+}
+
 private func makeDirectory() throws -> URL {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)

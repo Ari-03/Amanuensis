@@ -99,7 +99,24 @@ std::string choice(const json &input, const char *key, const char *fallback,
   return value;
 }
 
-json normalize(const std::string &path, const json &input) {
+using Model = std::unique_ptr<llama_model, decltype(&llama_model_free)>;
+Model loadModel(const std::string &path) {
+  verifyModel(path);
+  llama_log_set([](ggml_log_level, const char *, void *) {}, nullptr);
+  llama_backend_init();
+  auto params = llama_model_default_params();
+  params.n_gpu_layers = 99;
+  params.progress_callback = [](float, void *) { return !cancelled; };
+  Model model(llama_model_load_from_file(path.c_str(), params),
+              llama_model_free);
+  checkCancellation();
+  if (!model)
+    throw Failure("model_load_failed",
+                  "S1-mini could not be loaded on this Mac.");
+  return model;
+}
+
+json normalize(const std::string &path, const json &input, Model &model) {
   if (!input.is_object() || !input.contains("transcript") ||
       !input.at("transcript").is_string())
     throw Failure("invalid_input", "Input must contain a transcript string.");
@@ -115,18 +132,8 @@ json normalize(const std::string &path, const json &input) {
       choice(input, "structure", "prose", {"prose", "lists"});
   const auto context =
       choice(input, "context", "general", {"general", "email"});
-  verifyModel(path);
-  llama_log_set([](ggml_log_level, const char *, void *) {}, nullptr);
-  llama_backend_init();
-  auto params = llama_model_default_params();
-  params.n_gpu_layers = 99;
-  params.progress_callback = [](float, void *) { return !cancelled; };
-  std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
-      llama_model_load_from_file(path.c_str(), params), llama_model_free);
-  checkCancellation();
   if (!model)
-    throw Failure("model_load_failed",
-                  "S1-mini could not be loaded on this Mac.");
+    model = loadModel(path);
   const auto *vocab = llama_model_get_vocab(model.get());
   // Transcript special-token strings remain ordinary text, never chat
   // delimiters.
@@ -218,6 +225,99 @@ json normalize(const std::string &path, const json &input) {
           {"outputTokens", generated}};
 }
 
+json failureResult(const Failure &error) {
+  return {{"status", error.code == "cancelled" ? "cancelled" : "error"},
+          {"text", ""},
+          {"errorCode", error.code},
+          {"error", error.what()}};
+}
+
+json invalidRequest() {
+  // Parser errors can contain transcript fragments. Never expose their text.
+  return {{"status", "error"},
+          {"text", ""},
+          {"errorCode", "invalid_request"},
+          {"error", "The cleanup request or response could not be processed."}};
+}
+
+// A resident model is valid only while the pinned file identity is unchanged.
+struct ModelFile {
+  struct stat value{};
+  explicit ModelFile(const std::string &path) {
+    if (stat(path.c_str(), &value) != 0 || !S_ISREG(value.st_mode))
+      throw Failure("model_missing",
+                    "The S1-mini model file could not be opened.");
+  }
+  bool operator==(const ModelFile &other) const {
+    const auto &b = other.value;
+    return value.st_dev == b.st_dev && value.st_ino == b.st_ino &&
+           value.st_size == b.st_size &&
+           value.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec &&
+           value.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
+           value.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec &&
+           value.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec;
+  }
+};
+
+int serve(const std::string &path) {
+  Model model(nullptr, llama_model_free);
+  std::unique_ptr<ModelFile> identity;
+  for (;;) {
+    std::string line;
+    char byte;
+    while (std::cin.get(byte) && byte != '\n') {
+      if (line.size() == 262144) {
+        std::cout << invalidRequest().dump() << std::endl;
+        return 1;
+      }
+      line += byte;
+      if (cancelled)
+        return 130;
+    }
+    if (!std::cin || cancelled)
+      return cancelled ? 130 : 0;
+    json result;
+    json id = nullptr;
+    try {
+      const auto request = json::parse(line);
+      if (!request.is_object() || !request.contains("id") ||
+          !request["id"].is_string() ||
+          request["id"].get<std::string>().empty() ||
+          request["id"].get<std::string>().size() > 128)
+        throw Failure("invalid_input",
+                      "Cleanup request requires an ID string.");
+      id = request["id"];
+      auto current = std::make_unique<ModelFile>(path);
+      if (identity && !(*identity == *current))
+        throw Failure("model_changed",
+                      "The S1-mini model file changed. Restart cleanup.");
+      if (!identity)
+        identity = std::make_unique<ModelFile>(*current);
+      result = normalize(path, request, model);
+      if (!(ModelFile(path) == *current))
+        throw Failure("model_changed",
+                      "The S1-mini model file changed. Restart cleanup.");
+      identity = std::move(current);
+      checkCancellation();
+    } catch (const Failure &error) {
+      result = failureResult(error);
+    } catch (const std::exception &) {
+      result = invalidRequest();
+    }
+    result["id"] = id;
+    result["model"] = modelName;
+    if (!result.contains("inputTokens"))
+      result["inputTokens"] = 0;
+    if (!result.contains("outputTokens"))
+      result["outputTokens"] = 0;
+    std::cout << result.dump() << std::endl;
+    if (!std::cout || cancelled)
+      return cancelled ? 130 : 1;
+    if (result.value("errorCode", "") == "model_changed")
+      return 1;
+  }
+}
+
 // Atomic replacement prevents the app from consuming a partial JSON result.
 void writeResult(const std::string &path, const json &result) {
   const std::string serialized = result.dump();
@@ -237,6 +337,9 @@ int main(int argc, char **argv) {
   umask(0077);
   std::signal(SIGTERM, onSignal);
   std::signal(SIGINT, onSignal);
+  if (argc == 4 && std::string(argv[1]) == "--model" &&
+      std::string(argv[3]) == "--serve")
+    return serve(argv[2]);
   std::string model, input, output;
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string key = argv[i];
@@ -266,7 +369,8 @@ int main(int argc, char **argv) {
       throw Failure("invalid_input", "Cleanup input could not be opened.");
     json request;
     stream >> request;
-    result = normalize(model, request);
+    Model loaded(nullptr, llama_model_free);
+    result = normalize(model, request, loaded);
     checkCancellation();
   } catch (const Failure &error) {
     exitCode = error.code == "cancelled" ? 130 : 1;

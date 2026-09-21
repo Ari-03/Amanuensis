@@ -1,0 +1,7 @@
+{"audioSeconds":3.202403628117914,"cacheMB":64,"characters":61,"family":"whisper","iteration":1,"mode":"production","totalSeconds":1.515993208}
+{"audioSeconds":3.202403628117914,"cacheMB":64,"characters":61,"family":"whisper","iteration":2,"mode":"production","totalSeconds":0.333188125}
+{"audioSeconds":3.202403628117914,"cacheMB":64,"characters":61,"family":"whisper","iteration":3,"mode":"production","totalSeconds":0.289247541}
+{"audioSeconds":3.202403628117914,"cacheMB":64,"family":"whisper","iteration":0,"loadSeconds":0.191149792,"mode":"retained_setup","snapshotSeconds":0.00212125,"totalSeconds":0.193271042}
+{"audioSeconds":3.202403628117914,"cacheMB":64,"characters":61,"family":"whisper","generateSeconds":0.087344417,"iteration":1,"mode":"retained","preparationSeconds":0.000976751,"totalSeconds":0.088465583}
+{"audioSeconds":3.202403628117914,"cacheMB":64,"characters":61,"family":"whisper","generateSeconds":0.0804695,"iteration":2,"mode":"retained","preparationSeconds":0.000830667,"totalSeconds":0.081437458}
+{"audioSeconds":3.202403628117914,"cacheMB":64,"characters":61,"family":"whisper","generateSeconds":0.079485292,"iteration":3,"mode":"retained","preparationSeconds":0.000835333,"totalSeconds":0.080450708}

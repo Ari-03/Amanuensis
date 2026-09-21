@@ -1,0 +1,12 @@
+{
+  "environment": "M1 macOS development Mac, Release helper, pinned S1-mini Q4_K_M",
+  "cases": ["names", "numeric correction", "filler only", "list correction"],
+  "oneShotSeconds": [0.826926917, 0.72427475, 0.622923959, 0.6577009580000004],
+  "persistentFirstSeconds": 0.714820333,
+  "persistentWarmCaseOrder": [0, 1, 2, 3, 3, 2, 1, 0],
+  "persistentWarmSeconds": [0.2701629999999997, 0.219711416, 0.09595425000000013, 0.11774408299999983, 0.12360166600000078, 0.0792424580000004, 0.1543956669999993, 0.2135325840000002],
+  "oneShotMedianSeconds": 0.6909878540000002,
+  "persistentWarmMedianSeconds": 0.13899866650000003,
+  "transcriptsAndTokenCountsMatch": true,
+  "scope": "Wall time around subprocess one-shot execution or each JSON-lines request. Excludes Swift runner, speech recognition, and end-to-end dictation. Persistent warm samples exclude initial model loading. OS/Metal caches were already warm from earlier tests."
+}

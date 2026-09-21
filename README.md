@@ -57,6 +57,8 @@ The local speech catalog contains twelve Whisper checkpoints, Parakeet V2/V3, an
 
 S1-mini uses its official pinned Q4_K_M GGUF through a bundled llama.cpp helper. It needs no Superwhisper installation or account. See [helper documentation](BuildSupport/S1Mini/README.md) for the model checksum, license, supported formatting, and limits.
 
+Local speech models prepare while recording and stay loaded for up to 60 seconds after transcription. S1-mini reuses one helper across cleanup chunks and recordings, with a fresh inference context for each request and the same idle expiry. Memory pressure, cancellation, model removal, sleep, and quit release retained resources. The [performance investigation](docs/research/transcription-performance.md) records measurements and validation.
+
 Settings, history, model files, and recordings live under `~/Library/Application Support/Amanuensis/`. Default retention is seven days for audio and until deleted for transcripts. Usage totals survive history deletion and can be reset separately in Settings.
 
 ## Checks
