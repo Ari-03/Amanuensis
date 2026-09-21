@@ -41,7 +41,7 @@ The current signing setup is for local use. Developer ID signing, notarization, 
 
 Completed transcripts appear in **History**, with Original and Result views. If insertion cannot safely complete, copy the result from History. Cleanup failure preserves the original transcript and does not automatically insert it.
 
-The floating recorder shrinks to a small pill while idle. Hover to choose a mode or start recording. Drag anywhere on the pill, including across displays, to reveal 17 screen positions. Release to snap to the highlighted position. The same positions are available in **Settings → Appearance → Screen position**. Placement is saved, and the controls animate within the usable screen area as they resize. Mini replaces the former Panel style.
+The floating recorder shrinks to a 36 × 6 point bar while idle. Hover to expand the controls around the same center and choose a mode or start recording. Drag anywhere on the pill, including across displays, to reveal 17 screen positions. Release to snap to the highlighted position. The same positions are available in **Settings → Appearance → Screen position**. Placement is saved, with room for the controls to open within the usable screen area. Mini replaces the former Panel style.
 
 Automatic paste requires **System Settings → Privacy & Security → Accessibility → Amanuensis**. If permission is missing, the pill shows an orange warning with actions to open Accessibility settings or copy the last transcript. After granting access, focus your text field and start a new recording.
 
