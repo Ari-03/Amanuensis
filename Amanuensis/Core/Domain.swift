@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
@@ -140,9 +141,43 @@ struct ShortcutBinding: Codable, Equatable, Sendable {
 enum AppAppearance: String, Codable, CaseIterable, Sendable { case system, light, dark }
 enum RecorderStyle: String, Codable, CaseIterable, Sendable { case mini, notch, panel, hidden }
 
+/// Fractions of the available travel keep the recorder on screen as its size changes.
+struct RecorderPlacement: Codable, Equatable, Sendable {
+    var x: Double
+    var y: Double
+    var displayID: UInt32? = nil
+
+    static let bottom = RecorderPlacement(x: 0.5, y: 0)
+    static let top = RecorderPlacement(x: 0.5, y: 1)
+
+    func frame(size: CGSize, in bounds: CGRect) -> CGRect {
+        let width = min(size.width, bounds.width)
+        let height = min(size.height, bounds.height)
+        return CGRect(
+            x: bounds.minX + (bounds.width - width) * min(max(x, 0), 1),
+            y: bounds.minY + (bounds.height - height) * min(max(y, 0), 1),
+            width: width, height: height)
+    }
+
+    init(x: Double, y: Double, displayID: UInt32? = nil) {
+        self.x = x
+        self.y = y
+        self.displayID = displayID
+    }
+
+    init(frame: CGRect, in bounds: CGRect, displayID: UInt32?) {
+        let travelX = bounds.width - frame.width
+        let travelY = bounds.height - frame.height
+        x = travelX > 0 ? min(max((frame.minX - bounds.minX) / travelX, 0), 1) : 0.5
+        y = travelY > 0 ? min(max((frame.minY - bounds.minY) / travelY, 0), 1) : 0.5
+        self.displayID = displayID
+    }
+}
+
 struct AppSettings: Codable, Equatable, Sendable {
     var appearance: AppAppearance = .system
     var recorderStyle: RecorderStyle = .mini
+    var recorderPlacement: RecorderPlacement? = nil
     var alwaysShowRecorder = true
     var requireLocalProcessing = true
     var toggleShortcut: ShortcutBinding = .recording

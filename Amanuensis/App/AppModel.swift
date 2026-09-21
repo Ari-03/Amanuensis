@@ -761,10 +761,18 @@ final class AppModel {
         return succeeded
     }
 
+    func moveRecorder(with event: NSEvent) {
+        if let placement = recorder.drag(with: event) {
+            settings.recorderPlacement = placement
+        }
+    }
+
     private func updateRecorder() {
         guard startupComplete else { return }
         if settings.recorderStyle != .hidden && (settings.alwaysShowRecorder || phase.isBusy) {
-            recorder.show(content: AnyView(RecorderView(model: self)), style: settings.recorderStyle)
+            recorder.show(
+                content: AnyView(RecorderView(model: self)), style: settings.recorderStyle,
+                placement: settings.recorderPlacement)
         } else {
             recorder.hide()
         }
