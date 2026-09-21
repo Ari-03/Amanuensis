@@ -6,6 +6,7 @@ Start with the [consolidated implementation plan](../implementation-plan.md) for
 
 | Question | Findings |
 | --- | --- |
+| Why does transcription feel slower than Superwhisper? | [Measured pipeline investigation](transcription-performance.md), [Superwhisper primary sources](superwhisper-performance-sources.md) |
 | Which apps already support much of the requested workflow? | [Handy and VoiceInk](local-dictation-apps.md) |
 | What can we learn about meetings and local transcription? | [MacWhisper](macwhisper.md) |
 | How should tone, vocabulary, and recording controls work? | [Wispr Flow and Willow](contextual-dictation.md) |

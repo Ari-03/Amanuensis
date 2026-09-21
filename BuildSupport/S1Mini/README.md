@@ -48,9 +48,27 @@ The helper uses the author's exact system prompt and literal non-thinking assist
 
 Each request accepts at most 1,000 transcript tokens. Longer requests return `input_too_long`; the app must split long material on sentence boundaries before cleanup or retain the raw transcript. The generation budget is 1.3 times the transcript token count plus 32. Missing EOS at the bound, model control text, invalid JSON/UTF-8, and unsupported settings produce errors rather than partial cleanup. This validation cannot prove that the model preserved every fact; raw text must remain available.
 
-This helper cold-loads the model for each request. A future persistent process can reduce latency after measurement. No cloud fallback exists.
+The app uses the persistent protocol below. The one-shot command remains available for diagnostics. No cloud fallback exists.
+
+## Persistent process
+
+```sh
+S1MiniHelper --model /path/model.gguf --serve
+```
+
+Write one JSON object per line to stdin. Each request uses the same fields as above and a required, nonempty `id` string of at most 128 bytes. Responses arrive on stdout, one JSON object per line, carrying the matching `id`. Transcript text stays inside these pipes and is never placed in arguments, logs, or temporary files. Stderr remains silent during normal operation. Malformed requests return a sanitized error with a null ID when no ID could be read. Each line is limited to 262,144 bytes.
+
+The helper validates and loads its pinned model once, on the first valid request. Each request creates a fresh context and greedy sampler; no previous transcript or KV cache is reused. File identity, size, modification time, and change time must still match before and after inference. A changed model ends the process with `model_changed`, preventing reuse of stale weights. Stdin EOF releases the model and exits. SIGTERM/SIGINT during inference returns `cancelled` and exits 130.
+
+`S1MiniRunner` allows one request at a time, checks response IDs and sizes, and enforces a deadline of at most 120 seconds per chunk. Cancellation, a deadline, protocol errors, or a crash discard the process. The next cleanup starts a fresh helper. SIGTERM gets a two-second grace period before SIGKILL. Successful requests reuse the helper across chunks and recordings until 60 seconds of inactivity. Memory pressure releases it after the active transcript finishes, or immediately while idle. The runner checks file metadata before each request and replaces the process when it changes.
+
+Call `await runner.unload()` before deleting a model or releasing its library lease for removal. It cancels pending work and returns only after the helper exits and releases mapped model files. The app also calls it on sleep and shutdown. Old disk jobs from earlier versions are swept during initialization; new requests create no job files.
+
+On this M1 development Mac, four short one-shot requests took 0.62–0.83 seconds. The same requests repeated in forward and reverse order through one loaded helper took 0.08–0.27 seconds, with identical text and token counts. The first persistent request took 0.71 seconds. These measurements include full helper inference and IPC but exclude the Swift runner and speech recognition. See `docs/research/data/transcription-performance/s1-persistent.json` for samples.
 
 ## Verify
+
+Run `Scripts/check-s1-runner.sh` for model-free runner lifecycle checks. Run `uv run --no-project python BuildSupport/S1Mini/persistent-test.py /path/to/s1-mini-q4_k_m.gguf` for real inference equivalence, request isolation, malformed input, token limits, EOF, cancellation, restart, and timings.
 
 Run `BuildSupport/S1Mini/smoke-test.sh /path/to/s1-mini-q4_k_m.gguf`. It exercises names, numeric self-correction, filler suppression, unsupported controls, corrupt imports, and SIGTERM cancellation using real inference.
 

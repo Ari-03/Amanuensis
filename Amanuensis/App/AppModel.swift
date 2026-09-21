@@ -45,6 +45,9 @@ final class AppModel {
     @ObservationIgnored private let playback = PlaybackController()
     @ObservationIgnored private var cloud: CloudProviders!
     @ObservationIgnored private var work: Task<Void, Never>?
+    @ObservationIgnored private var speechPreparation: Task<Void, Never>?
+    @ObservationIgnored private var modelReleaseCount = 0
+    @ObservationIgnored private var preservation: Task<Void, Never>?
     @ObservationIgnored private var activeID: UUID?
     @ObservationIgnored private var cancellingID: UUID?
     @ObservationIgnored private var activeEntry: RecordingEntry?
@@ -149,7 +152,10 @@ final class AppModel {
     }
 
     private func beginRecording(mode override: DictationMode? = nil) {
-        guard !phase.isBusy, activeID == nil, cancellingID == nil, !isEditingShortcut else { return }
+        guard !phase.isBusy, activeID == nil, cancellingID == nil, !isEditingShortcut, modelReleaseCount == 0
+        else {
+            return
+        }
         guard let store else {
             report(AppFailure("Local storage must be available before recording."))
             return
@@ -196,6 +202,7 @@ final class AppModel {
                     try await audio.start(preferences: microphones, outputURL: url)
                 }
                 try ensureActive(id)
+                prepareSpeechWhileRecording(entry)
                 phase = .recording
                 statusMessage = "Listening in \(chosen.name)"
                 shortcuts.setRecordingActive(true)
@@ -205,7 +212,7 @@ final class AppModel {
                 meetingAudio.cancel()
                 restorePlayback()
                 guard activeID == id else { return }
-                fail(entry, error: error)
+                await fail(entry, error: error)
             }
         }
     }
@@ -235,7 +242,7 @@ final class AppModel {
             } catch {
                 restorePlayback()
                 guard activeID == id else { return }
-                fail(activeEntry ?? entry, error: error)
+                await fail(activeEntry ?? entry, error: error)
             }
         }
     }
@@ -251,6 +258,9 @@ final class AppModel {
         activeID = nil
         cancellingID = id
         previousWork?.cancel()
+        let previousPreparation = speechPreparation
+        previousPreparation?.cancel()
+        speechPreparation = nil
         audio.cancel()
         meetingAudio.cancel()
         appleSpeech.cancel()
@@ -269,11 +279,48 @@ final class AppModel {
             await audio.cancelAndWait()
             await meetingAudio.cancelAndWait()
             await previousWork?.value
+            await previousPreparation?.value
+            await localSpeech.unload()
+            await normalizer.unload()
             finishCancelledJob(id)
         }
     }
 
+    private func prepareSpeechWhileRecording(_ entry: RecordingEntry) {
+        guard let speech = entry.speechSnapshot, speech.location == .local,
+            [.whisper, .parakeet, .cohere].contains(speech.family),
+            let directory = library.localURL(for: speech.id)
+        else { return }
+        speechPreparation = Task { [localSpeech] in
+            // Preparation is optional. The transcription call will report/retry a load error.
+            try? await localSpeech.prepare(modelDirectory: directory, family: speech.family.rawValue)
+        }
+    }
+
+    private func stopSpeechPreparation() async {
+        let preparation = speechPreparation
+        speechPreparation = nil
+        preparation?.cancel()
+        await preparation?.value
+    }
+
+    /// File removal waits until both runtimes have relinquished their mapped weights.
+    func removeModel(_ descriptor: ModelDescriptor) async throws {
+        guard !phase.isBusy, modelReleaseCount == 0 else {
+            throw AppFailure("Finish the current operation before removing a model.")
+        }
+        modelReleaseCount += 1
+        defer { modelReleaseCount -= 1 }
+        await stopSpeechPreparation()
+        await localSpeech.unload()
+        await normalizer.unload()
+        try library.remove(descriptor)
+    }
+
     private func process(_ original: RecordingEntry, audioURL: URL, shouldDeliver: Bool) async throws {
+        await speechPreparation?.value
+        speechPreparation = nil
+        try ensureActive(original.id)
         var entry = original
         let id = entry.id
         guard let speech = entry.speechSnapshot ?? effectiveModel(entry.mode.speechModelID) else {
@@ -409,7 +456,10 @@ final class AppModel {
         enforceRetention()
     }
 
-    private func fail(_ original: RecordingEntry, error: Error) {
+    private func fail(_ original: RecordingEntry, error: Error) async {
+        await stopSpeechPreparation()
+        await localSpeech.unload()
+        guard activeID == original.id else { return }
         var entry = original
         entry.status = .failed
         entry.error = error.localizedDescription
@@ -457,19 +507,24 @@ final class AppModel {
                 }
                 try ensureActive(entry.id)
                 entry.duration = captured.duration
+                await stopSpeechPreparation()
+                await localSpeech.unload()
+                try ensureActive(entry.id)
                 entry.status = .interrupted
                 entry.error = reason
                 try complete(entry, message: "\(reason) Captured audio is saved in History.")
                 phase = .interrupted
             } catch {
                 guard activeID == entry.id else { return }
-                fail(entry, error: error)
+                await fail(entry, error: error)
             }
         }
     }
 
     func retryRecording(_ original: RecordingEntry) async {
-        guard !phase.isBusy, activeID == nil, cancellingID == nil, let store else { return }
+        guard !phase.isBusy, activeID == nil, cancellingID == nil, modelReleaseCount == 0, let store else {
+            return
+        }
         guard let sourceURL = store.acquireAudioLease(for: original) else {
             report(AppFailure("The audio has expired or is unavailable."))
             return
@@ -516,7 +571,7 @@ final class AppModel {
                     try? FileManager.default.removeItem(at: attemptURL)
                     return
                 }
-                fail(activeEntry ?? entry, error: error)
+                await fail(activeEntry ?? entry, error: error)
             }
         }
         work = task
@@ -683,12 +738,32 @@ final class AppModel {
 
     /// Sleep and normal quit preserve unfinished work; only explicit Cancel discards it.
     func preserveUnfinishedRecording() async {
+        if let preservation {
+            await preservation.value
+            return
+        }
+        let task = Task { await self.preserveAndUnload() }
+        preservation = task
+        await task.value
+        preservation = nil
+    }
+
+    private func preserveAndUnload() async {
+        modelReleaseCount += 1
+        defer { modelReleaseCount -= 1 }
         let previousWork = work
         if phase == .delivering {
             await previousWork?.value
+            await localSpeech.unload()
+            await normalizer.unload()
             return
         }
-        guard var entry = activeEntry, let id = activeID else { return }
+        guard var entry = activeEntry, let id = activeID else {
+            await stopSpeechPreparation()
+            await localSpeech.unload()
+            await normalizer.unload()
+            return
+        }
         let wasRecording = phase == .recording
         activeID = nil
         cancellingID = id
@@ -714,7 +789,10 @@ final class AppModel {
             await audio.cancelAndWait()
             await meetingAudio.cancelAndWait()
         }
+        await stopSpeechPreparation()
         await previousWork?.value
+        await localSpeech.unload()
+        await normalizer.unload()
         entry.status = .interrupted
         if entry.error == nil { entry.error = "Interrupted before completion. Retry from History." }
         if let store, store.audioURL(for: entry) == nil { entry.audioFileName = nil }

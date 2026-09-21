@@ -166,8 +166,10 @@ struct ModelsView: View {
             Button("Cancel", role: .cancel) { pendingRemoval = nil }
             Button("Remove", role: .destructive) {
                 if let descriptor = pendingRemoval {
-                    do { try model.library.remove(descriptor) } catch {
-                        operationError = error.localizedDescription
+                    Task {
+                        do { try await model.removeModel(descriptor) } catch {
+                            operationError = error.localizedDescription
+                        }
                     }
                 }
                 pendingRemoval = nil

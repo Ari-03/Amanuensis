@@ -1,0 +1,10 @@
+{"fixture":"short","run":1,"wall":24.079466000082903,"stages":{"verify":0.31795,"load":23.2963,"context_and_tokenize":0.0194806,"prefill":0.00642275,"generation":0.187696},"inputTokens":11,"outputTokens":11}
+{"fixture":"short","run":2,"wall":0.7337909999769181,"stages":{"verify":0.307962,"load":0.212507,"context_and_tokenize":0.0106667,"prefill":0.00389971,"generation":0.170593},"inputTokens":11,"outputTokens":11}
+{"fixture":"short","run":3,"wall":0.7390270000323653,"stages":{"verify":0.308378,"load":0.201858,"context_and_tokenize":0.0105083,"prefill":0.00388392,"generation":0.178748},"inputTokens":11,"outputTokens":11}
+{"fixture":"short","run":4,"wall":0.7150329999858513,"stages":{"verify":0.303694,"load":0.204153,"context_and_tokenize":0.0104323,"prefill":0.00380967,"generation":0.164817},"inputTokens":11,"outputTokens":11}
+{"fixture":"short","run":5,"wall":0.7507670000195503,"stages":{"verify":0.308497,"load":0.215662,"context_and_tokenize":0.0109598,"prefill":0.00404383,"generation":0.181293},"inputTokens":11,"outputTokens":11}
+{"fixture":"medium","run":1,"wall":1.0036049999762326,"stages":{"verify":0.307257,"load":0.199924,"context_and_tokenize":0.0119731,"prefill":0.0048965,"generation":0.450937},"inputTokens":42,"outputTokens":42}
+{"fixture":"medium","run":2,"wall":1.0914470000425354,"stages":{"verify":0.303151,"load":0.276206,"context_and_tokenize":0.0154835,"prefill":0.00526296,"generation":0.461876},"inputTokens":42,"outputTokens":42}
+{"fixture":"medium","run":3,"wall":1.0333219999447465,"stages":{"verify":0.302618,"load":0.211585,"context_and_tokenize":0.0122092,"prefill":0.00400008,"generation":0.46982},"inputTokens":42,"outputTokens":42}
+{"fixture":"medium","run":4,"wall":1.047050999943167,"stages":{"verify":0.30881,"load":0.220149,"context_and_tokenize":0.0123287,"prefill":0.00409242,"generation":0.476643},"inputTokens":42,"outputTokens":42}
+{"fixture":"medium","run":5,"wall":1.4180930000729859,"stages":{"verify":0.303974,"load":0.400134,"context_and_tokenize":0.0211644,"prefill":0.0148065,"generation":0.637166},"inputTokens":42,"outputTokens":42}
