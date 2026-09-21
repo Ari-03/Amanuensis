@@ -5,6 +5,21 @@ import Testing
 @testable import AmanuensisCore
 
 struct RecorderPlacementTests {
+    @Test func hoverExpansionKeepsTheSameCenterAtEveryPreset() {
+        let bounds = CGRect(x: -1500, y: 80, width: 1400, height: 900)
+        for preset in RecorderPlacement.presets {
+            let idle = preset.frame(size: CGSize(width: 36, height: 6), in: bounds)
+            for size in [
+                CGSize(width: 72, height: 34), CGSize(width: 100, height: 34), CGSize(width: 171, height: 34),
+            ] {
+                let open = preset.frame(size: size, in: bounds)
+                #expect(open.midX == idle.midX)
+                #expect(open.midY == idle.midY)
+                #expect(bounds.contains(open))
+            }
+        }
+    }
+
     @Test func formerPanelStyleLoadsAsMini() throws {
         let style = try JSONDecoder().decode(RecorderStyle.self, from: Data("\"panel\"".utf8))
         #expect(style == .mini)
@@ -53,13 +68,11 @@ struct RecorderPlacementTests {
         #expect(restored == settings)
     }
 
-    @Test func resizingKeepsTheSelectedEdgeOnAnotherDisplay() {
+    @Test func oversizedControlsStayOnAnotherDisplay() {
         let bounds = CGRect(x: -1500, y: 100, width: 1400, height: 900)
         let position = RecorderPlacement(x: 1, y: 1)
-        for size in [CGSize(width: 58, height: 16), CGSize(width: 250, height: 34)] {
+        for size in [CGSize(width: 36, height: 6), CGSize(width: 250, height: 34)] {
             let frame = position.frame(size: size, in: bounds)
-            #expect(frame.maxX == bounds.maxX)
-            #expect(frame.maxY == bounds.maxY)
             #expect(bounds.contains(frame))
         }
     }
@@ -73,8 +86,8 @@ struct RecorderPlacementTests {
         let outside = RecorderPlacement(
             frame: CGRect(x: -200, y: 2000, width: 120, height: 34), in: bounds, displayID: 7)
         let clamped = outside.frame(size: frame.size, in: bounds)
-        #expect(clamped.minX == bounds.minX)
-        #expect(clamped.maxY == bounds.maxY)
+        #expect(outside.x == 0 && outside.y == 1)
+        #expect(bounds.contains(clamped))
     }
 
     @Test func smallerDisplayFitsOversizedControls() {

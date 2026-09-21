@@ -11,7 +11,7 @@ final class RecorderPanelController {
     private var placement: RecorderPlacement = .bottom
     private var screenNumber: UInt32?
     private var screenObserver: NSObjectProtocol?
-    private var contentSize = NSSize(width: 58, height: 16)
+    private var contentSize = RecorderLayout.idleSize
     private var animation: Task<Void, Never>?
     private var dragOrigin: NSPoint?
     private var dragMouseOrigin: NSPoint = .zero

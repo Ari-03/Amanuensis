@@ -42,18 +42,19 @@ struct RecorderChecks {
             recorder.show(content: AnyView(Color.clear), style: .mini, placement: .top)
             let panel = app.windows.first { $0.isVisible && $0 is NSPanel }!
             let original = panel.frame
-            precondition(original.size == NSSize(width: 58, height: 16))
+            precondition(original.size == NSSize(width: 36, height: 6))
             precondition(!panel.canBecomeKey && !panel.canBecomeMain)
 
             recorder.resize(to: NSSize(width: 172, height: 34))
             await pause(65)
             if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                precondition(panel.frame.width > 58 && panel.frame.width < 172)
+                precondition(panel.frame.width > 36 && panel.frame.width < 172)
             }
-            precondition(abs(panel.frame.maxY - original.maxY) < 1)
+            precondition(abs(panel.frame.midX - original.midX) < 1)
+            precondition(abs(panel.frame.midY - original.midY) < 1)
             await pause(220)
             precondition(panel.frame.size == NSSize(width: 172, height: 34))
-            print("PASS: Native bounds animate through intermediate sizes while keeping the selected edge")
+            print("PASS: Native bounds animate through intermediate sizes around a fixed center")
 
             var saved: RecorderPlacement?
             var dragging = false
@@ -84,13 +85,13 @@ struct RecorderChecks {
             recorder.onDraggingChanged = { model.isMovingRecorder = $0 }
             recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .top)
             await pause(350)
-            precondition(panel.frame.size == NSSize(width: 58, height: 16))
+            precondition(panel.frame.size == NSSize(width: 36, height: 6))
             model.phase = .recording
             await pause(350)
             precondition(panel.frame.height == 34 && panel.frame.width == 171)
             model.phase = .complete
             await pause(350)
-            precondition(panel.frame.size == NSSize(width: 58, height: 16))
+            precondition(panel.frame.size == NSSize(width: 36, height: 6))
             print("PASS: Real recorder contents resize and collapse without the former trailing handle space")
 
             model.accessibilityGranted = false
@@ -100,7 +101,7 @@ struct RecorderChecks {
             model.accessibilityGranted = true
             model.pasteNeedsAccessibility = false
             await pause(350)
-            precondition(panel.frame.size == NSSize(width: 58, height: 16))
+            precondition(panel.frame.size == NSSize(width: 36, height: 6))
             print(
                 "PASS: Missing paste permission reveals a recovery control; clearing it restores the idle pill"
             )

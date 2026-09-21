@@ -18,35 +18,35 @@ struct RecorderView: View {
     }
 
     var body: some View {
-        ZStack {
-            controls
-                .fixedSize()
-                .onGeometryChange(for: CGSize.self) {
-                    $0.size
-                } action: {
-                    controlsSize = $0
+        GeometryReader { geometry in
+            ZStack {
+                controls
+                    .fixedSize()
+                    .onGeometryChange(for: CGSize.self) {
+                        $0.size
+                    } action: {
+                        controlsSize = $0
+                    }
+                    .opacity(isOpen ? 1 : 0)
+                    .allowsHitTesting(isOpen)
+                    .accessibilityHidden(!isOpen)
+                Button(action: model.toggleRecording) {
+                    Color.clear
+                        .frame(width: RecorderLayout.idleSize.width, height: RecorderLayout.idleSize.height)
+                        .contentShape(Capsule())
                 }
-                .opacity(isOpen ? 1 : 0)
-                .allowsHitTesting(isOpen)
-                .accessibilityHidden(!isOpen)
-            Button(action: model.toggleRecording) {
-                HStack(spacing: 4) {
-                    Circle().fill(.secondary).frame(width: 4, height: 4)
-                    Capsule().fill(.secondary.opacity(0.6)).frame(width: 22, height: 3)
-                }
-                .frame(width: 58, height: 16).contentShape(Capsule())
+                .buttonStyle(.plain)
+                .accessibilityLabel("Start recording")
+                .help("Click to record. Drag to choose a screen position.")
+                .opacity(isOpen ? 0 : 1)
+                .allowsHitTesting(!isOpen)
+                .accessibilityHidden(isOpen)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Start recording")
-            .help("Click to record. Drag to choose a screen position.")
-            .opacity(isOpen ? 0 : 1)
-            .allowsHitTesting(!isOpen)
-            .accessibilityHidden(isOpen)
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.primary.opacity(0.15)))
+            .clipped()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(.primary.opacity(0.15)))
-        .clipped()
         .contentShape(Capsule())
         .highPriorityGesture(
             DragGesture(minimumDistance: 5, coordinateSpace: .global)
@@ -105,7 +105,7 @@ struct RecorderView: View {
         model.resizeRecorder(
             to: isOpen
                 ? CGSize(width: ceil(controlsSize.width) + 8, height: ceil(controlsSize.height) + 8)
-                : CGSize(width: 58, height: 16))
+                : RecorderLayout.idleSize)
     }
 
     private var controls: some View {
