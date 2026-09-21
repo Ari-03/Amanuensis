@@ -28,7 +28,7 @@ struct ConfigurationView: View {
                         HStack(spacing: 24) {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Screen position").font(.headline)
-                                Text("Choose a spot, or hover over the bar and drag its handle.")
+                                Text("Choose a spot, or drag the bar onto a highlighted position.")
                                     .font(.caption).foregroundStyle(.secondary)
                                 Text("The bar stays small until you hover or start recording.")
                                     .font(.caption).foregroundStyle(.secondary)
@@ -136,7 +136,6 @@ struct ConfigurationView: View {
                     } else {
                         HStack(spacing: 6) {
                             Image(systemName: "waveform")
-                            if style == .panel { Text("Listening").font(.system(size: 8)) }
                             Circle().fill(.white.opacity(0.8)).frame(width: 5, height: 5)
                         }
                         .font(.system(size: 11)).foregroundStyle(.white)

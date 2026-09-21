@@ -23,6 +23,11 @@ final class AppModel {
     }
     var statusMessage = "Your voice, on your Mac."
     var errorMessage: String?
+    var pasteNeedsAccessibility = false {
+        didSet { if pasteNeedsAccessibility != oldValue { updateRecorder() } }
+    }
+    private(set) var accessibilityGranted = TextDelivery.isAccessibilityTrusted
+    var isMovingRecorder = false
     var isEditingShortcut = false
     let audio = AudioCapture()
     let meetingAudio = MeetingCapture()
@@ -51,7 +56,6 @@ final class AppModel {
         return modes.first(where: { $0.id == settings.selectedModeID }) ?? modes.first
             ?? DictationMode(name: "Voice to text", preset: .dictation)
     }
-    var accessibilityGranted: Bool { TextDelivery.isAccessibilityTrusted }
     var appleSpeechReady: Bool { appleSpeech.isPrepared }
     var recordingDuration: Double {
         activeEntry?.mode.recordSystemAudio == true ? meetingAudio.duration : audio.duration
@@ -104,6 +108,8 @@ final class AppModel {
         cloud = CloudProviders(allowCloud: { [weak self] in self?.settings.requireLocalProcessing == false })
         audio.onInterruption = { [weak self] reason in self?.recordingInterrupted(reason) }
         meetingAudio.onInterruption = { [weak self] reason in self?.recordingInterrupted(reason) }
+        recorder.onPlacementChanged = { [weak self] in self?.settings.recorderPlacement = $0 }
+        recorder.onDraggingChanged = { [weak self] in self?.isMovingRecorder = $0 }
         startupComplete = true
         if let failure { errorMessage = "Could not open your local data: \(failure.localizedDescription)" }
         refreshMicrophones()
@@ -139,6 +145,8 @@ final class AppModel {
             report(AppFailure("Local storage must be available before recording."))
             return
         }
+        refreshAccessibility()
+        pasteNeedsAccessibility = false
         let frontmost = NSWorkspace.shared.frontmostApplication
         let chosen: DictationMode
         if let override {
@@ -338,6 +346,8 @@ final class AppModel {
             statusMessage = "Inserting your text…"
             let outcome = await delivery.deliver(text: entry.finalText, to: destination)
             try ensureActive(id)
+            refreshAccessibility()
+            pasteNeedsAccessibility = outcome == .accessibilityRequired
             entry.deliveryMessage = outcome.message
         } else {
             entry.deliveryMessage = "Your transcript is ready to copy."
@@ -608,7 +618,20 @@ final class AppModel {
             refreshHistory()
         } catch { report(error) }
     }
-    func requestAccessibility() { TextDelivery.requestAccessibility() }
+    func refreshAccessibility() {
+        accessibilityGranted = TextDelivery.isAccessibilityTrusted
+        if accessibilityGranted { pasteNeedsAccessibility = false }
+    }
+
+    func requestAccessibility() {
+        TextDelivery.requestAccessibility()
+        if let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        {
+            NSWorkspace.shared.open(url)
+        }
+        refreshAccessibility()
+    }
     func saveAPIKey(_ key: String, provider: ModelFamily) throws {
         if key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             try CredentialStore.remove(for: provider)
@@ -761,15 +784,19 @@ final class AppModel {
         return succeeded
     }
 
-    func moveRecorder(with event: NSEvent) {
-        if let placement = recorder.drag(with: event) {
-            settings.recorderPlacement = placement
-        }
+    func resizeRecorder(to size: CGSize) {
+        recorder.resize(to: size)
     }
+
+    func moveRecorder(translation: CGSize) { recorder.updateDrag(translation: translation) }
+    func finishMovingRecorder() { recorder.finishDrag(at: NSEvent.mouseLocation) }
+    func cancelMovingRecorder() { recorder.cancelDrag() }
 
     private func updateRecorder() {
         guard startupComplete else { return }
-        if settings.recorderStyle != .hidden && (settings.alwaysShowRecorder || phase.isBusy) {
+        if settings.recorderStyle != .hidden
+            && (settings.alwaysShowRecorder || phase.isBusy || pasteNeedsAccessibility)
+        {
             recorder.show(
                 content: AnyView(RecorderView(model: self)), style: settings.recorderStyle,
                 placement: settings.recorderPlacement)

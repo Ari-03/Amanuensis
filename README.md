@@ -41,7 +41,9 @@ The current signing setup is for local use. Developer ID signing, notarization, 
 
 Completed transcripts appear in **History**, with Original and Result views. If insertion cannot safely complete, copy the result from History. Cleanup failure preserves the original transcript and does not automatically insert it.
 
-The floating recorder shrinks to a small pill while idle. Hover to choose a mode, start recording, or drag the dotted handle to move it, including to another display. Settings offers 17 screen positions under **Appearance → Screen position**. Placement is saved, and the controls stay within the usable screen area as they resize.
+The floating recorder shrinks to a small pill while idle. Hover to choose a mode or start recording. Drag anywhere on the pill, including across displays, to reveal 17 screen positions. Release to snap to the highlighted position. The same positions are available in **Settings → Appearance → Screen position**. Placement is saved, and the controls animate within the usable screen area as they resize. Mini replaces the former Panel style.
+
+Automatic paste requires **System Settings → Privacy & Security → Accessibility → Amanuensis**. If permission is missing, the pill shows an orange warning with actions to open Accessibility settings or copy the last transcript. After granting access, focus your text field and start a new recording.
 
 Normal quit and system sleep preserve unfinished audio and text for recovery. Explicit Cancel discards the active recording.
 
@@ -61,10 +63,11 @@ Settings, history, model files, and recordings live under `~/Library/Application
 
 ```sh
 Scripts/check.sh
+Scripts/check-recorder.sh
 swift test --package-path Packages/LocalSpeech
 BuildSupport/S1Mini/smoke-test.sh /absolute/path/to/s1-mini-q4_k_m.gguf
 ```
 
-`Scripts/check.sh` runs strict Swift formatting checks, nine TextRules tests, the real SQLite storage checks, ten network checks, and a whitespace check. These passed on the development Mac. The final command above runs real S1-mini inference and requires the model.
+`Scripts/check.sh` runs strict Swift formatting, core tests, SQLite storage checks, network checks, shortcuts, playback, paste-permission checks, helper isolation, and a whitespace check. `Scripts/check-recorder.sh` requires a macOS desktop session and checks native resizing, drag targets, snapping, and permission recovery without posting global input. The final command above runs real S1-mini inference and requires the model.
 
 Real Whisper Tiny, Parakeet V2, and Cohere transcription also passed with network access denied on one short synthetic English sentence. A packaged-app smoke test covered Whisper Tiny through S1-mini, including bundled Metal resources. These checks do not establish microphone capture, cross-app insertion, broad model accuracy, or performance benchmarks.

@@ -1,0 +1,160 @@
+import AppKit
+import Observation
+import SwiftUI
+
+/// Only the recording dependencies are substituted; the panel, gestures, and SwiftUI controls are real.
+@MainActor @Observable
+final class AppModel {
+    var settings = AppSettings()
+    var modes = DictationMode.initial
+    var phase: DictationPhase = .idle
+    var recordingDuration: TimeInterval = 12
+    var recordingLevel = 0.6
+    var isMovingRecorder = false
+    var pasteNeedsAccessibility = false
+    var accessibilityGranted = true
+    var history: [RecordingEntry] = []
+    var toggleCount = 0
+    var onResize: ((CGSize) -> Void)?
+    var onDrag: ((CGSize) -> Void)?
+    var onEndDrag: (() -> Void)?
+    var onCancelDrag: (() -> Void)?
+    var currentMode: DictationMode { modes.first { $0.id == settings.selectedModeID } ?? modes[0] }
+    func toggleRecording() { toggleCount += 1 }
+    func cancelRecording() { phase = .idle }
+    func selectMode(_ id: UUID) { settings.selectedModeID = id }
+    func resizeRecorder(to size: CGSize) { onResize?(size) }
+    func moveRecorder(translation: CGSize) { onDrag?(translation) }
+    func finishMovingRecorder() { onEndDrag?() }
+    func cancelMovingRecorder() { onCancelDrag?() }
+    func refreshAccessibility() {}
+    func requestAccessibility() {}
+    func copyText(_ text: String) {}
+}
+
+@main
+struct RecorderChecks {
+    @MainActor static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        Task { @MainActor in
+            let recorder = RecorderPanelController()
+            recorder.show(content: AnyView(Color.clear), style: .mini, placement: .top)
+            let panel = app.windows.first { $0.isVisible && $0 is NSPanel }!
+            let original = panel.frame
+            precondition(original.size == NSSize(width: 58, height: 16))
+            precondition(!panel.canBecomeKey && !panel.canBecomeMain)
+
+            recorder.resize(to: NSSize(width: 172, height: 34))
+            await pause(65)
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                precondition(panel.frame.width > 58 && panel.frame.width < 172)
+            }
+            precondition(abs(panel.frame.maxY - original.maxY) < 1)
+            await pause(220)
+            precondition(panel.frame.size == NSSize(width: 172, height: 34))
+            print("PASS: Native bounds animate through intermediate sizes while keeping the selected edge")
+
+            var saved: RecorderPlacement?
+            var dragging = false
+            recorder.onPlacementChanged = { saved = $0 }
+            recorder.onDraggingChanged = { dragging = $0 }
+            let start = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+            let screen = panel.screen!
+            let drop = NSPoint(x: screen.visibleFrame.maxX - 20, y: screen.visibleFrame.minY + 20)
+            recorder.beginDrag(at: start)
+            recorder.resize(to: NSSize(width: 72, height: 34))
+            precondition(panel.frame.width == 172 && dragging)
+            recorder.continueDrag(at: drop)
+            precondition(app.windows.filter { $0.isVisible && $0 is NSPanel }.count == 2)
+            recorder.finishDrag(at: drop)
+            await pause(220)
+            precondition(saved?.x == 1 && saved?.y == 0 && saved?.displayID != nil)
+            precondition(!dragging && panel.frame.width == 72)
+            precondition(app.windows.filter { $0.isVisible && $0 is NSPanel }.count == 1)
+            print(
+                "PASS: Drag displays targets, freezes resizing, saves the snapped display and position, and removes targets"
+            )
+
+            let model = AppModel()
+            model.onResize = { recorder.resize(to: $0) }
+            model.onDrag = { recorder.updateDrag(translation: $0) }
+            model.onEndDrag = { recorder.finishDrag(at: NSEvent.mouseLocation) }
+            model.onCancelDrag = { recorder.cancelDrag() }
+            recorder.onDraggingChanged = { model.isMovingRecorder = $0 }
+            recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .top)
+            await pause(350)
+            precondition(panel.frame.size == NSSize(width: 58, height: 16))
+            model.phase = .recording
+            await pause(350)
+            precondition(panel.frame.height == 34 && panel.frame.width == 171)
+            model.phase = .complete
+            await pause(350)
+            precondition(panel.frame.size == NSSize(width: 58, height: 16))
+            print("PASS: Real recorder contents resize and collapse without the former trailing handle space")
+
+            model.accessibilityGranted = false
+            model.pasteNeedsAccessibility = true
+            await pause(350)
+            precondition(panel.frame.height == 34)
+            model.accessibilityGranted = true
+            model.pasteNeedsAccessibility = false
+            await pause(350)
+            precondition(panel.frame.size == NSSize(width: 58, height: 16))
+            print(
+                "PASS: Missing paste permission reveals a recovery control; clearing it restores the idle pill"
+            )
+
+            for phase in [DictationPhase.idle, .recording] {
+                model.phase = phase
+                await pause(300)
+                let point =
+                    phase == .recording
+                    ? NSPoint(x: 55, y: 17)
+                    : NSPoint(x: panel.frame.width / 2, y: panel.frame.height / 2)
+                let beforeClick = model.toggleCount
+                await postMouse(.leftMouseDown, at: point, to: panel)
+                await postMouse(.leftMouseUp, at: point, to: panel)
+                await pause(100)
+                precondition(model.toggleCount == beforeClick + 1)
+
+                var sawDrag = false
+                saved = nil
+                recorder.onDraggingChanged = { moving in
+                    if moving { sawDrag = true }
+                    model.isMovingRecorder = moving
+                }
+                await postMouse(.leftMouseDown, at: point, to: panel)
+                await postMouse(.leftMouseDragged, at: NSPoint(x: point.x + 15, y: point.y), to: panel)
+                await postMouse(.leftMouseDragged, at: NSPoint(x: point.x + 60, y: point.y), to: panel)
+                await postMouse(.leftMouseUp, at: NSPoint(x: point.x + 60, y: point.y), to: panel)
+                await pause(300)
+                precondition(sawDrag && saved != nil && !model.isMovingRecorder)
+                precondition(model.toggleCount == beforeClick + 1)
+            }
+            print(
+                "PASS: Clicking records; dragging either the idle pill or recording button snaps without recording"
+            )
+
+            recorder.hide()
+            precondition(!panel.isVisible)
+            print("Recorder checks passed.")
+            app.terminate(nil)
+        }
+        app.run()
+    }
+
+    @MainActor private static func postMouse(
+        _ type: NSEvent.EventType, at point: NSPoint, to window: NSWindow
+    ) async {
+        let event = NSEvent.mouseEvent(
+            with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        NSApp.postEvent(event, atStart: false)
+        await pause(40)
+    }
+
+    private static func pause(_ milliseconds: Int) async {
+        try? await Task.sleep(for: .milliseconds(milliseconds))
+    }
+}

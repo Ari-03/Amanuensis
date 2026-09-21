@@ -5,6 +5,36 @@ import Testing
 @testable import AmanuensisCore
 
 struct RecorderPlacementTests {
+    @Test func formerPanelStyleLoadsAsMini() throws {
+        let style = try JSONDecoder().decode(RecorderStyle.self, from: Data("\"panel\"".utf8))
+        #expect(style == .mini)
+        #expect(RecorderStyle.allCases.map(\.rawValue) == ["mini", "notch", "hidden"])
+    }
+
+    @Test func everyScreenTargetCanBeReachedByDragging() {
+        let bounds = CGRect(x: -1500, y: 80, width: 1400, height: 900)
+        let size = CGSize(width: 72, height: 34)
+        #expect(RecorderPlacement.presets.count == 17)
+        for preset in RecorderPlacement.presets {
+            let frame = preset.frame(size: size, in: bounds)
+            let dropped = RecorderPlacement.nearestPreset(
+                to: CGPoint(x: frame.midX + 5, y: frame.midY - 4), size: size, in: bounds, displayID: 42)
+            #expect(dropped.x == preset.x && dropped.y == preset.y)
+            #expect(dropped.displayID == 42)
+        }
+    }
+
+    @Test func snappingUsesScreenDistanceAndHandlesOffscreenDrops() {
+        let bounds = CGRect(x: 0, y: 0, width: 2000, height: 800)
+        let size = CGSize(width: 72, height: 34)
+        let outside = RecorderPlacement.nearestPreset(
+            to: CGPoint(x: -100, y: 1000), size: size, in: bounds, displayID: nil)
+        #expect(outside == RecorderPlacement(x: 0, y: 1))
+        let middle = RecorderPlacement.nearestPreset(
+            to: CGPoint(x: bounds.midX, y: bounds.midY), size: size, in: bounds, displayID: nil)
+        #expect(middle == RecorderPlacement(x: 0.5, y: 0.5))
+    }
+
     @Test func olderSettingsStillDecode() throws {
         let encoded = try JSONEncoder().encode(AppSettings())
         var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])

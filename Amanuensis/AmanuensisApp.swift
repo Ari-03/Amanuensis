@@ -10,6 +10,11 @@ struct AmanuensisApp: App {
         Window("Amanuensis", id: "main") {
             ContentView(model: model)
                 .onAppear { delegate.model = model }
+                .onReceive(
+                    NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+                ) { _ in
+                    model.refreshAccessibility()
+                }
                 .onReceive(NotificationCenter.default.publisher(for: .amanuensisStorageError)) { note in
                     model.errorMessage = note.object as? String
                 }
