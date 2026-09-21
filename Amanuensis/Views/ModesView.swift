@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ModesView: View {
     @Bindable var model: AppModel
@@ -232,7 +233,9 @@ struct ModesView: View {
             }
             if let current, !model.isReady(current) {
                 Label(
-                    "\(current.name) is not installed. Download it in Models before recording.",
+                    current.location == .cloud
+                        ? "\(current.name) needs a \(current.provider) API key. Connect it in Models before recording."
+                        : "\(current.name) is not installed. Download it in Models before recording.",
                     systemImage: "exclamationmark.triangle"
                 )
                 .font(.caption).foregroundStyle(.orange)
@@ -504,6 +507,7 @@ private struct AppPickerSheet: View {
             }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Other…") { chooseFromDisk() }.help("Choose an app that is not listed")
                 Spacer()
                 Text("\(chosen.count) selected").font(.caption).foregroundStyle(.secondary)
                 Button("Done") {
@@ -522,5 +526,30 @@ private struct AppPickerSheet: View {
             apps = await Task.detached(priority: .userInitiated) { InstalledApp.scan() }.value
             loaded = true
         }
+    }
+
+    /// Apps outside the scanned folders can still be picked from anywhere on disk.
+    private func chooseFromDisk() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.canChooseDirectories = false
+        panel.treatsFilePackagesAsDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Choose"
+        panel.message = "Choose apps that should switch to this mode."
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let identifier = Bundle(url: url)?.bundleIdentifier else { continue }
+            if !apps.contains(where: { $0.id == identifier }) {
+                apps.append(
+                    InstalledApp(
+                        id: identifier, name: FileManager.default.displayName(atPath: url.path),
+                        path: url.path))
+                apps.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+            if takenElsewhere[identifier] == nil, !chosen.contains(identifier) { chosen.append(identifier) }
+        }
+        query = ""
     }
 }
