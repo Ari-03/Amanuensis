@@ -42,33 +42,33 @@ enum ModelCatalog {
                 sha256: "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634",
                 license: "Apache 2.0 with S1-mini by Superwhisper naming requirement"
             ),
+            // One entry per provider and purpose. The API model ID is a default the user can change.
             ModelDescriptor(
-                id: "openai-transcribe", name: "GPT-4o Transcribe", provider: "OpenAI", purpose: .speech,
-                location: .cloud, family: .openAI, summary: "Transcription using your OpenAI API key.",
-                apiModelID: "gpt-4o-transcribe", license: "OpenAI API terms"
+                id: "openai-transcribe", name: "OpenAI Transcription", provider: "OpenAI",
+                purpose: .speech, location: .cloud, family: .openAI,
+                summary:
+                    "Transcribe with your OpenAI API key. Uses gpt-transcribe unless you choose another model.",
+                apiModelID: "gpt-transcribe", license: "OpenAI API terms"
             ),
             ModelDescriptor(
-                id: "openai-mini-transcribe", name: "GPT-4o Mini Transcribe", provider: "OpenAI",
-                purpose: .speech,
-                location: .cloud, family: .openAI, summary: "Transcription using your OpenAI API key.",
-                apiModelID: "gpt-4o-mini-transcribe", license: "OpenAI API terms"
-            ),
-            ModelDescriptor(
-                id: "groq-whisper", name: "Whisper Large V3 Turbo", provider: "Groq", purpose: .speech,
-                location: .cloud, family: .groq, summary: "Hosted Whisper using your Groq API key.",
+                id: "groq-transcribe", name: "Groq Transcription", provider: "Groq", purpose: .speech,
+                location: .cloud, family: .groq,
+                summary: "Hosted Whisper Large V3 Turbo with your Groq API key.",
                 apiModelID: "whisper-large-v3-turbo", license: "Groq API terms"
             ),
             ModelDescriptor(
                 id: "openai-cleanup", name: "OpenAI Cleanup", provider: "OpenAI", purpose: .cleanup,
                 location: .cloud, family: .openAI,
-                summary: "Choose a text model and use your OpenAI API key.",
+                summary:
+                    "Clean up transcripts with your OpenAI API key. Uses gpt-4.1-mini unless you choose another model.",
                 apiModelID: "gpt-4.1-mini", license: "OpenAI API terms"
             ),
             ModelDescriptor(
                 id: "claude-cleanup", name: "Claude Cleanup", provider: "Anthropic", purpose: .cleanup,
                 location: .cloud, family: .anthropic,
-                summary: "Choose a Claude model and use your Anthropic API key.",
-                apiModelID: "claude-sonnet-4-6", license: "Anthropic API terms"
+                summary:
+                    "Clean up transcripts with your Anthropic API key. Uses Claude Opus 5 unless you choose another model.",
+                apiModelID: "claude-opus-5", license: "Anthropic API terms"
             ),
             ModelDescriptor(
                 id: "ollama-cleanup", name: "Ollama", provider: "Local server", purpose: .cleanup,

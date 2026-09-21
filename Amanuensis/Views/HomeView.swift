@@ -20,28 +20,28 @@ struct HomeView: View {
                 .padding(.vertical, 20)
                 .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 16))
                 SettingsCard {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label(model.currentMode.name, systemImage: model.currentMode.preset.symbol).font(
-                                .headline)
-                            Text(model.statusMessage).font(.callout).foregroundStyle(.secondary)
-                        }
-                        Spacer()
+                    VStack(alignment: .leading, spacing: 8) {
                         Menu {
                             Button("Automatic app modes", systemImage: "arrow.triangle.branch") {
                                 model.settings.automaticModeSelection = true
                             }
                             Divider()
                             ForEach(model.modes) { mode in
-                                Button(mode.name, systemImage: mode.preset.symbol) {
+                                Button(mode.name, systemImage: mode.symbol) {
                                     model.selectMode(mode.id)
                                 }
                             }
                         } label: {
-                            Image(systemName: "chevron.up.chevron.down")
+                            HStack(spacing: 6) {
+                                Label(model.currentMode.name, systemImage: model.currentMode.symbol)
+                                    .font(.headline)
+                                Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                        .menuStyle(.borderlessButton).fixedSize().disabled(model.phase.isBusy)
-                        .accessibilityLabel("Change active mode")
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        .disabled(model.phase.isBusy).accessibilityLabel("Change active mode")
+                        Text(model.statusMessage).font(.callout).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 18) {
                         Button(action: model.toggleRecording) {

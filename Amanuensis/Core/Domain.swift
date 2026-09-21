@@ -70,6 +70,8 @@ struct DictationMode: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
     var name: String
     var preset: ModePreset
+    /// An icon chosen when the mode was created. Nil falls back to the preset's icon.
+    var customSymbol: String? = nil
     var speechModelID: String = "apple-speech"
     var cleanupModelID: String? = nil
     var tone: CleanupTone = .semiFormal
@@ -83,7 +85,28 @@ struct DictationMode: Identifiable, Codable, Equatable, Sendable {
     var recordSystemAudio = false
     var identifySpeakers = false
 
+    var symbol: String { customSymbol ?? preset.symbol }
+
     static let initial: [DictationMode] = ModePreset.allCases.map { make(preset: $0) }
+
+    /// Icons offered when creating a mode. Any SF Symbol name can still be stored.
+    static let symbolChoices: [String] = [
+        "mic", "bubble.left", "envelope", "note.text", "person.2", "wand.and.stars", "doc.text",
+        "text.quote", "list.bullet", "terminal", "chevron.left.forwardslash.chevron.right", "briefcase",
+        "graduationcap", "heart", "star", "bolt", "lightbulb", "book", "calendar", "checklist",
+        "hammer", "paintbrush", "globe", "music.mic",
+    ]
+
+    /// Models that were renamed after modes could already reference them.
+    static let legacyModelIDs: [String: String] = [
+        "openai-mini-transcribe": "openai-transcribe", "groq-whisper": "groq-transcribe",
+    ]
+
+    /// Rewrites references to renamed models so saved modes keep working.
+    mutating func migrateModelIDs() {
+        speechModelID = Self.legacyModelIDs[speechModelID] ?? speechModelID
+        if let cleanup = cleanupModelID { cleanupModelID = Self.legacyModelIDs[cleanup] ?? cleanup }
+    }
 
     static func make(preset: ModePreset) -> DictationMode {
         var mode = DictationMode(name: preset == .custom ? "Custom" : preset.rawValue, preset: preset)

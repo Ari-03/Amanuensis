@@ -29,6 +29,8 @@ final class AppModel {
     private(set) var accessibilityGranted = TextDelivery.isAccessibilityTrusted
     var isMovingRecorder = false
     var isEditingShortcut = false
+    /// Providers with an API key in the Keychain. Refreshed whenever a key is saved or removed.
+    private(set) var connectedProviders: Set<ModelFamily> = []
     let audio = AudioCapture()
     let meetingAudio = MeetingCapture()
     let appleSpeech = AppleSpeechEngine()
@@ -100,6 +102,12 @@ final class AppModel {
             let saved = opened.loadConfiguration()
             settings = saved.settings
             modes = saved.modes.isEmpty ? DictationMode.initial : saved.modes
+            for index in modes.indices { modes[index].migrateModelIDs() }
+            for (old, new) in DictationMode.legacyModelIDs {
+                if let override = settings.apiModelOverrides.removeValue(forKey: old) {
+                    settings.apiModelOverrides[new] = settings.apiModelOverrides[new] ?? override
+                }
+            }
             vocabulary = saved.vocabulary
             microphones = saved.microphones
             history = opened.loadRecordings()
@@ -113,6 +121,7 @@ final class AppModel {
         startupComplete = true
         if let failure { errorMessage = "Could not open your local data: \(failure.localizedDescription)" }
         refreshMicrophones()
+        refreshConnectedProviders()
         configureShortcuts()
         enforceRetention()
         Task { [weak self] in
@@ -527,12 +536,32 @@ final class AppModel {
         settings.automaticModeSelection = false
     }
 
-    @discardableResult func createMode(preset: ModePreset) -> UUID {
-        var mode = DictationMode.make(preset: preset)
-        if preset == .custom { mode.name = "New mode" }
+    /// New modes start from a blank template that reuses the current speech model.
+    @discardableResult func createMode(name: String, symbol: String) -> UUID {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var mode = DictationMode(name: trimmed.isEmpty ? "New mode" : trimmed, preset: .custom)
+        mode.customSymbol = symbol
+        mode.speechModelID = currentMode.speechModelID
         modes.append(mode)
         saveConfiguration()
         return mode.id
+    }
+
+    /// Models a mode can pick right now: installed local models, Apple Speech, and API models with a key.
+    /// The mode's current choice is included even when it is not ready so the picker never goes blank.
+    func availableModels(for purpose: ModelPurpose, including currentID: String?) -> [ModelDescriptor] {
+        library.models.filter { descriptor in
+            guard descriptor.purpose == purpose, descriptor.family != .ollama else { return false }
+            return descriptor.id == currentID || isReady(descriptor)
+        }
+    }
+
+    func isReady(_ descriptor: ModelDescriptor) -> Bool {
+        switch descriptor.location {
+        case .system: true
+        case .cloud: connectedProviders.contains(descriptor.family)
+        case .local: library.localURL(for: descriptor.id) != nil
+        }
     }
 
     func updateMode(_ mode: DictationMode) {
@@ -633,11 +662,20 @@ final class AppModel {
         refreshAccessibility()
     }
     func saveAPIKey(_ key: String, provider: ModelFamily) throws {
+        defer { refreshConnectedProviders() }
         if key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             try CredentialStore.remove(for: provider)
         } else {
             try CredentialStore.set(key.trimmingCharacters(in: .whitespacesAndNewlines), for: provider)
         }
+    }
+    func removeAPIKey(provider: ModelFamily) throws {
+        defer { refreshConnectedProviders() }
+        try CredentialStore.remove(for: provider)
+    }
+    private func refreshConnectedProviders() {
+        connectedProviders = Set(
+            [ModelFamily.openAI, .groq, .anthropic].filter { (try? CredentialStore.get(for: $0)) != nil })
     }
     func validateAPI(provider: ModelFamily, modelID: String) async throws -> String {
         try await cloud.validate(provider: provider, modelID: modelID)

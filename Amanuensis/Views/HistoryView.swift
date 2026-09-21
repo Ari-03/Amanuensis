@@ -126,7 +126,7 @@ struct HistoryView: View {
                                 )
                                 .font(.caption)
                                 Spacer(minLength: 4)
-                                Image(systemName: entry.mode.preset.symbol)
+                                Image(systemName: entry.mode.symbol)
                             }
                             .foregroundStyle(.secondary)
                             Text(entry.preview)

@@ -79,10 +79,12 @@ struct ContentView: View {
             .background(Color(nsColor: .windowBackgroundColor))
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    HStack(spacing: 7) {
-                        Circle().fill(model.phase == .recording ? .red : .secondary.opacity(0.5)).frame(
-                            width: 6, height: 6)
-                        Text(model.phase.rawValue).font(.caption)
+                    HStack(spacing: 6) {
+                        if model.phase == .recording {
+                            Image(systemName: "waveform").symbolEffect(.variableColor.iterative)
+                                .foregroundStyle(.red)
+                        }
+                        Text(model.phase.rawValue).font(.caption).foregroundStyle(.secondary)
                     }
                     .accessibilityElement(children: .combine)
                 }

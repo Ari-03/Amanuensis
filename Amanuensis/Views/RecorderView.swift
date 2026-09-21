@@ -115,7 +115,7 @@ struct RecorderView: View {
                 showingModes.toggle()
             } label: {
                 HStack(spacing: 3) {
-                    Image(systemName: model.currentMode.preset.symbol)
+                    Image(systemName: model.currentMode.symbol)
                     Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
                 }
                 .font(.system(size: 12, weight: .medium))
@@ -223,7 +223,7 @@ struct RecorderView: View {
                 VStack(spacing: 2) {
                     ForEach(model.modes) { mode in
                         RecorderModeRow(
-                            title: mode.name, symbol: mode.preset.symbol,
+                            title: mode.name, symbol: mode.symbol,
                             selected: model.currentMode.id == mode.id
                         ) {
                             model.selectMode(mode.id)
