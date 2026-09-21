@@ -166,7 +166,6 @@ struct RecorderView: View {
                         .font(.callout)
                         Button("Open Accessibility Settings") {
                             showingPermission = false
-                            model.pasteNeedsAccessibility = false
                             model.requestAccessibility()
                         }
                         if model.pasteNeedsAccessibility, let entry = model.history.first {
