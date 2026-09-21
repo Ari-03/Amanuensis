@@ -23,6 +23,20 @@ struct ConfigurationView: View {
                         }
                     }
                     Toggle("Keep recording controls visible", isOn: $model.settings.alwaysShowRecorder)
+                    if model.settings.recorderStyle != .hidden {
+                        Divider()
+                        HStack(spacing: 24) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Screen position").font(.headline)
+                                Text("Choose a spot, or hover over the bar and drag its handle.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text("The bar stays small until you hover or start recording.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            recorderPositionPicker
+                        }
+                    }
                 }
                 SectionCaption(title: "Keyboard shortcuts")
                 SettingsCard {
@@ -112,6 +126,7 @@ struct ConfigurationView: View {
     private func recorderPreview(_ style: RecorderStyle) -> some View {
         Button {
             model.settings.recorderStyle = style
+            if style == .notch { model.settings.recorderPlacement = nil }
         } label: {
             VStack(spacing: 10) {
                 ZStack(alignment: style == .notch ? .top : .center) {
@@ -143,5 +158,51 @@ struct ConfigurationView: View {
                     model.settings.recorderStyle == style ? Color.accentColor : .clear, lineWidth: 2))
         }.buttonStyle(.plain).accessibilityLabel("\(style.rawValue) recorder")
             .accessibilityAddTraits(model.settings.recorderStyle == style ? .isSelected : [])
+    }
+
+    private var recorderPositionPicker: some View {
+        VStack(spacing: 8) {
+            ForEach(0..<5) { row in
+                HStack(spacing: 10) {
+                    ForEach(0..<5) { column in
+                        if row == 0 || row == 4 || column == 0 || column == 4
+                            || (row == 2 && column == 2)
+                        {
+                            positionButton(row: row, column: column)
+                        } else {
+                            Color.clear.frame(width: 26, height: 18)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.secondary.opacity(0.25)))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Recording controls screen position")
+    }
+
+    private func positionButton(row: Int, column: Int) -> some View {
+        let current =
+            model.settings.recorderPlacement
+            ?? (model.settings.recorderStyle == .notch ? .top : .bottom)
+        let x = Double(column) / 4
+        let y = 1 - Double(row) / 4
+        let selected = abs(current.x - x) < 0.01 && abs(current.y - y) < 0.01
+        let vertical = ["Top", "Upper", "Middle", "Lower", "Bottom"][row]
+        let horizontal = ["left", "left of center", "center", "right of center", "right"][column]
+        let label = "\(vertical) \(horizontal)"
+        return Button {
+            model.settings.recorderPlacement = RecorderPlacement(
+                x: x, y: y, displayID: current.displayID)
+        } label: {
+            Capsule()
+                .fill(selected ? Color.accentColor : Color.secondary.opacity(0.25))
+                .frame(width: 24, height: 7)
+                .frame(width: 26, height: 18).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).help(label).accessibilityLabel(label)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

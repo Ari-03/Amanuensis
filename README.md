@@ -41,6 +41,8 @@ The current signing setup is for local use. Developer ID signing, notarization, 
 
 Completed transcripts appear in **History**, with Original and Result views. If insertion cannot safely complete, copy the result from History. Cleanup failure preserves the original transcript and does not automatically insert it.
 
+The floating recorder shrinks to a small pill while idle. Hover to choose a mode, start recording, or drag the dotted handle to move it, including to another display. Settings offers 17 screen positions under **Appearance → Screen position**. Placement is saved, and the controls stay within the usable screen area as they resize.
+
 Normal quit and system sleep preserve unfinished audio and text for recovery. Explicit Cancel discards the active recording.
 
 **Require local processing** starts enabled. To use OpenAI or Groq transcription, or OpenAI or Claude cleanup, configure the provider in Models, select it in a mode, and turn off that restriction in Settings. Credentials are stored in macOS Keychain. Testing a provider queries model metadata; it does not upload audio or transcript text.

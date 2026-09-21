@@ -6,10 +6,11 @@ import SwiftUI
 final class RecorderPanelController {
     private let panel: RecorderPanel
     private let hostingView: RecorderHostingView
-    private var style: RecorderStyle = .mini
-    private var screenNumber: NSNumber?
+    private var placement: RecorderPlacement = .bottom
+    private var screenNumber: UInt32?
     private var screenObserver: NSObjectProtocol?
     private var layoutScheduled = false
+    private var isDragging = false
     private(set) var isVisible = false
 
     init() {
@@ -44,17 +45,19 @@ final class RecorderPanelController {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
     }
 
-    func show(content: AnyView, style: RecorderStyle) {
-        self.style = style
+    func show(content: AnyView, style: RecorderStyle, placement: RecorderPlacement?) {
+        self.placement = placement ?? (style == .notch ? .top : .bottom)
         guard style != .hidden else {
             hide()
             return
         }
-        if !isVisible {
+        if let displayID = placement?.displayID {
+            screenNumber = displayID
+        } else if !isVisible {
             let screen =
                 NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
                 ?? NSScreen.main
-            screenNumber = screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+            screenNumber = screen.map(displayID)
         }
         hostingView.rootView = content
         isVisible = true
@@ -65,6 +68,36 @@ final class RecorderPanelController {
     func hide() {
         isVisible = false
         panel.orderOut(nil)
+    }
+
+    /// AppKit tracks the drag without activating the app or changing the insertion target.
+    func drag(with event: NSEvent) -> RecorderPlacement? {
+        guard isVisible else { return nil }
+        isDragging = true
+        panel.performDrag(with: event)
+        isDragging = false
+        let center = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+        guard
+            let screen = NSScreen.screens.first(where: { $0.frame.contains(center) })
+                ?? panel.screen ?? NSScreen.main
+        else { return nil }
+        screenNumber = displayID(screen)
+        placement = RecorderPlacement(
+            frame: panel.frame, in: availableFrame(on: screen), displayID: screenNumber)
+        placePanel()
+        return placement
+    }
+
+    private func displayID(_ screen: NSScreen) -> UInt32 {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+    }
+
+    private func availableFrame(on screen: NSScreen) -> NSRect {
+        var frame = screen.visibleFrame.insetBy(dx: 16, dy: 16)
+        // Stay below the camera cutout even when the menu bar is hidden.
+        let safeTop = screen.frame.maxY - screen.safeAreaInsets.top - 8
+        frame.size.height = max(0, min(frame.maxY, safeTop) - frame.minY)
+        return frame
     }
 
     private func schedulePlacement() {
@@ -79,34 +112,40 @@ final class RecorderPanelController {
     }
 
     private func placePanel() {
-        guard isVisible else { return }
+        guard isVisible, !isDragging else { return }
         let screen =
             NSScreen.screens.first {
-                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber) == screenNumber
+                displayID($0) == screenNumber
             } ?? NSScreen.main
         guard let screen else { return }
 
-        let available = screen.visibleFrame.insetBy(dx: 16, dy: 16)
-        let desiredWidth: CGFloat = style == .panel ? 440 : 360
-        let width = min(desiredWidth, available.width)
-        if abs(hostingView.frame.width - width) > 0.5 {
-            hostingView.setFrameSize(NSSize(width: width, height: max(hostingView.frame.height, 72)))
-        }
+        let available = availableFrame(on: screen)
         hostingView.layoutSubtreeIfNeeded()
-        let intrinsicHeight = hostingView.intrinsicContentSize.height
-        let fittingHeight = intrinsicHeight > 0 ? intrinsicHeight : hostingView.fittingSize.height
-        let height = min(max(ceil(fittingHeight), 72), available.height - 12)
-
-        let x = screen.frame.midX - width / 2
-        let y: CGFloat
-        if style == .notch {
-            // The physical camera cutout is never part of the interactive region.
-            y = min(screen.frame.maxY - screen.safeAreaInsets.top - height - 8, available.maxY - height)
-        } else {
-            y = available.minY + 12
-        }
-        let frame = NSRect(x: x, y: y, width: width, height: height)
+        let fitting = hostingView.fittingSize
+        let size = NSSize(width: max(ceil(fitting.width), 1), height: max(ceil(fitting.height), 1))
+        let frame = placement.frame(size: size, in: available)
         if panel.frame != frame { panel.setFrame(frame, display: true) }
+    }
+}
+
+/// A dedicated handle keeps dragging separate from the recording and mode buttons.
+struct RecorderDragHandle: NSViewRepresentable {
+    var onDrag: (NSEvent) -> Void
+
+    func makeNSView(context: Context) -> DragView { DragView() }
+
+    func updateNSView(_ nsView: DragView, context: Context) {
+        nsView.onDrag = onDrag
+        nsView.setAccessibilityLabel("Drag recording controls")
+        nsView.toolTip = "Drag to move. Choose a screen position in Settings."
+    }
+
+    final class DragView: NSView {
+        var onDrag: ((NSEvent) -> Void)?
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) { onDrag?(event) }
+        override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
     }
 }
 
