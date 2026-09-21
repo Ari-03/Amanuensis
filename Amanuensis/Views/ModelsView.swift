@@ -8,7 +8,7 @@ struct ModelsView: View {
     @State private var selectedAPI: ModelDescriptor?
     @State private var pendingRemoval: ModelDescriptor?
     @State private var operationError: String?
-    @State private var whisperExpanded = false
+    @State private var expandedFamilies: Set<ModelFamily> = []
 
     private enum LibraryFilter: String, CaseIterable {
         case all = "All models"
@@ -17,6 +17,23 @@ struct ModelsView: View {
         case api = "API"
         case speech = "Speech"
         case cleanup = "Cleanup"
+    }
+
+    /// Families with several checkpoints are shown as one collapsible collection.
+    private static let collections: [ModelFamily: (title: String, subtitle: String)] = [
+        .whisper: ("Whisper", "Choose a size and an English or multilingual checkpoint."),
+        .parakeet: ("Parakeet", "NVIDIA TDT 0.6B. Choose the English V2 or multilingual V3 checkpoint."),
+    ]
+
+    private enum Row: Identifiable {
+        case single(ModelDescriptor)
+        case collection(ModelFamily, [ModelDescriptor])
+        var id: String {
+            switch self {
+            case .single(let descriptor): descriptor.id
+            case .collection(let family, _): "collection-\(family.rawValue)"
+            }
+        }
     }
 
     private var filteredModels: [ModelDescriptor] {
@@ -38,27 +55,33 @@ struct ModelsView: View {
         }
     }
 
+    /// Keeps catalog order, folding each collection into the position of its first member.
+    private var rows: [Row] {
+        var rows: [Row] = []
+        var seen: Set<ModelFamily> = []
+        for descriptor in filteredModels {
+            guard Self.collections[descriptor.family] != nil else {
+                rows.append(.single(descriptor))
+                continue
+            }
+            guard seen.insert(descriptor.family).inserted else { continue }
+            rows.append(
+                .collection(descriptor.family, filteredModels.filter { $0.family == descriptor.family }))
+        }
+        return rows
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             ScreenHeader(title: "Models", subtitle: "Choose what listens. Choose what edits.")
 
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search models or providers", text: $query)
-                        .textFieldStyle(.plain)
-                }
-                .padding(11)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-                if let api = model.library.models.first(where: { $0.location == .cloud }) {
-                    Button {
-                        selectedAPI = api
-                    } label: {
-                        Label("API settings", systemImage: "key")
-                    }
-                    .controlSize(.large)
-                }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search models or providers", text: $query)
+                    .textFieldStyle(.plain)
             }
+            .padding(11)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
 
             HStack {
                 Picker("Filter models", selection: $filter) {
@@ -109,45 +132,14 @@ struct ModelsView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(filteredModels) { descriptor in
-                            if descriptor.family == .whisper {
-                                if descriptor.id == filteredModels.first(where: { $0.family == .whisper })?.id
-                                {
-                                    DisclosureGroup(
-                                        isExpanded: Binding(
-                                            get: { whisperExpanded || !query.isEmpty },
-                                            set: { whisperExpanded = $0 }
-                                        )
-                                    ) {
-                                        ForEach(filteredModels.filter { $0.family == .whisper }) { variant in
-                                            modelRow(variant)
-                                            Divider()
-                                        }
-                                    } label: {
-                                        HStack(spacing: 14) {
-                                            Image(systemName: "waveform").font(.title3).foregroundStyle(.tint)
-                                                .frame(width: 34)
-                                            VStack(alignment: .leading, spacing: 5) {
-                                                Text("Whisper").font(.headline)
-                                                Text(
-                                                    "Choose a size and an English or multilingual checkpoint."
-                                                )
-                                                .font(.caption).foregroundStyle(.secondary)
-                                            }
-                                            Spacer()
-                                            Text(
-                                                "\(filteredModels.filter { $0.family == .whisper }.count) variants"
-                                            )
-                                            .font(.caption).foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    .padding(16)
-                                    Divider().padding(.leading, 62)
-                                }
-                            } else {
+                        ForEach(rows) { row in
+                            switch row {
+                            case .single(let descriptor):
                                 modelRow(descriptor)
-                                Divider().padding(.leading, 62)
+                            case .collection(let family, let variants):
+                                collectionRow(family, variants: variants)
                             }
+                            Divider().padding(.leading, 62)
                         }
                     }
                     .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
@@ -162,7 +154,7 @@ struct ModelsView: View {
         }
         .padding(24)
         .sheet(item: $selectedAPI) { descriptor in
-            APIConfigurationSheet(model: model, initialDescriptor: descriptor)
+            APIConfigurationSheet(model: model, descriptor: descriptor)
         }
         .alert(
             "Remove downloaded model?",
@@ -185,6 +177,39 @@ struct ModelsView: View {
                 "\(pendingRemoval?.name ?? "This model") will need to be downloaded or imported again before modes using it can run. Existing transcripts are kept."
             )
         }
+    }
+
+    private func collectionRow(_ family: ModelFamily, variants: [ModelDescriptor]) -> some View {
+        let info = Self.collections[family]!
+        let installed = variants.filter { model.library.localURL(for: $0.id) != nil }.count
+        return DisclosureGroup(
+            isExpanded: Binding(
+                get: { expandedFamilies.contains(family) || !query.isEmpty },
+                set: { expanded in
+                    if expanded { expandedFamilies.insert(family) } else { expandedFamilies.remove(family) }
+                }
+            )
+        ) {
+            ForEach(variants) { variant in
+                modelRow(variant)
+                Divider()
+            }
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "waveform").font(.title3).foregroundStyle(.tint).frame(width: 34)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(info.title).font(.headline)
+                    Text(info.subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if installed > 0 {
+                    Label("\(installed) installed", systemImage: "checkmark.circle.fill")
+                        .font(.caption).foregroundStyle(.green)
+                }
+                Text("\(variants.count) variants").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
     }
 
     private func modelRow(_ descriptor: ModelDescriptor) -> some View {
@@ -214,6 +239,9 @@ struct ModelsView: View {
                         descriptor.isLocal ? "On this Mac" : "API",
                         systemImage: descriptor.isLocal ? "desktopcomputer" : "cloud")
                     if !descriptor.sizeLabel.isEmpty { Text(descriptor.sizeLabel) }
+                    if descriptor.location == .cloud, let chosen = apiModelID(descriptor) {
+                        Text(chosen).font(.system(.caption, design: .monospaced))
+                    }
                 }
                 .font(.caption).foregroundStyle(.tertiary)
                 if let progress = model.library.progress[descriptor.id] {
@@ -233,10 +261,23 @@ struct ModelsView: View {
         .padding(16)
     }
 
+    private func apiModelID(_ descriptor: ModelDescriptor) -> String? {
+        let override = model.settings.apiModelOverrides[descriptor.id]?.trimmingCharacters(in: .whitespaces)
+        return override?.isEmpty == false ? override : descriptor.apiModelID
+    }
+
     @ViewBuilder
     private func modelActions(_ descriptor: ModelDescriptor) -> some View {
         if descriptor.location == .cloud {
-            Button("Configure") { selectedAPI = descriptor }
+            HStack(spacing: 8) {
+                if model.connectedProviders.contains(descriptor.family) {
+                    Label("Connected", systemImage: "checkmark.circle.fill")
+                        .font(.caption).foregroundStyle(.green)
+                    Button("Configure") { selectedAPI = descriptor }
+                } else {
+                    Button("Connect") { selectedAPI = descriptor }
+                }
+            }
         } else if descriptor.location == .system {
             if model.appleSpeech.isPreparing {
                 ProgressView().controlSize(.small)
@@ -323,53 +364,55 @@ struct ModelsView: View {
     }
 }
 
+/// Connects one provider entry: the API key for its provider and the model ID it should call.
 private struct APIConfigurationSheet: View {
     @Bindable var model: AppModel
-    let initialDescriptor: ModelDescriptor
+    let descriptor: ModelDescriptor
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedID = ""
     @State private var apiKey = ""
     @State private var modelID = ""
     @State private var isTesting = false
     @State private var message: String?
     @State private var testSucceeded = false
 
-    private var apiModels: [ModelDescriptor] {
-        model.library.models.filter { $0.location == .cloud }
-    }
-
-    private var selected: ModelDescriptor {
-        apiModels.first { $0.id == selectedID } ?? initialDescriptor
-    }
+    private var connected: Bool { model.connectedProviders.contains(descriptor.family) }
+    private var defaultModelID: String { descriptor.apiModelID ?? descriptor.id }
+    private var trimmedModelID: String { modelID.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var canSubmit: Bool { !isTesting && !trimmedModelID.isEmpty && (connected || !apiKey.isEmpty) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            HStack {
+            HStack(spacing: 12) {
                 Image(systemName: "key.fill").font(.title2).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Connect a provider").font(.title2.weight(.semibold))
-                    Text("Use your own API key and choose the model.")
-                        .font(.callout).foregroundStyle(.secondary)
+                    Text(descriptor.name).font(.title2.weight(.semibold))
+                    Text(descriptor.summary).font(.callout).foregroundStyle(.secondary)
                 }
             }
 
             Form {
-                Picker("Model", selection: $selectedID) {
-                    ForEach(apiModels) { descriptor in
-                        Text("\(descriptor.provider) · \(descriptor.name)").tag(descriptor.id)
+                SecureField(
+                    "\(descriptor.provider) API key", text: $apiKey,
+                    prompt: Text(connected ? "Leave blank to keep the saved key" : "Paste your API key")
+                )
+                .textContentType(.password)
+                LabeledContent("Model") {
+                    HStack(spacing: 8) {
+                        TextField("Model ID", text: $modelID).autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing).labelsHidden()
+                        if trimmedModelID != defaultModelID {
+                            Button("Use default") { modelID = defaultModelID }.buttonStyle(.link)
+                                .help("Use \(defaultModelID)")
+                        }
                     }
                 }
-                SecureField("API key", text: $apiKey, prompt: Text("Leave blank to keep the saved key"))
-                    .textContentType(.password)
-                TextField("API model ID", text: $modelID)
-                    .autocorrectionDisabled()
             }
             .formStyle(.grouped)
-            .frame(height: 180)
+            .frame(height: 130)
             .disabled(isTesting)
 
             Text(
-                "Keys are stored in macOS Keychain and shared by this provider's models. Checking saves an entered key and verifies model availability. It does not test transcription, cleanup, or billing access."
+                "Keys are stored in macOS Keychain and shared by every \(descriptor.provider) model. Checking saves an entered key and verifies the model is available. It does not test transcription, cleanup, or billing access."
             )
             .font(.caption).foregroundStyle(.secondary)
             if let message {
@@ -381,47 +424,50 @@ private struct APIConfigurationSheet: View {
 
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                if connected {
+                    Button("Remove key", role: .destructive) { removeKey() }.disabled(isTesting)
+                }
                 Spacer()
                 if isTesting { ProgressView().controlSize(.small) }
-                Button("Check model") { testConnection() }
-                    .disabled(isTesting || modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Check model") { testConnection() }.disabled(!canSubmit)
                 Button("Save") { saveAndClose() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isTesting || modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!canSubmit)
             }
         }
         .padding(28)
         .frame(width: 550)
         .interactiveDismissDisabled(isTesting)
         .onAppear {
-            selectedID = initialDescriptor.id
-            loadModelID()
+            modelID = model.settings.apiModelOverrides[descriptor.id] ?? defaultModelID
         }
-        .onChange(of: selectedID) {
-            apiKey = ""
-            message = nil
-            loadModelID()
-        }
-    }
-
-    private func loadModelID() {
-        modelID = model.settings.apiModelOverrides[selected.id] ?? selected.apiModelID ?? selected.id
     }
 
     private func saveKey() throws {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !key.isEmpty { try model.saveAPIKey(key, provider: selected.family) }
+        if !key.isEmpty { try model.saveAPIKey(key, provider: descriptor.family) }
     }
 
     private func saveAndClose() {
         do {
             try saveKey()
-            model.settings.apiModelOverrides[selected.id] = modelID.trimmingCharacters(
-                in: .whitespacesAndNewlines)
+            model.settings.apiModelOverrides[descriptor.id] = trimmedModelID
             model.saveConfiguration()
             apiKey = ""
             dismiss()
+        } catch {
+            testSucceeded = false
+            message = error.localizedDescription
+        }
+    }
+
+    private func removeKey() {
+        do {
+            try model.removeAPIKey(provider: descriptor.family)
+            apiKey = ""
+            testSucceeded = true
+            message = "The \(descriptor.provider) key was removed from your Keychain."
         } catch {
             testSucceeded = false
             message = error.localizedDescription
@@ -435,10 +481,7 @@ private struct APIConfigurationSheet: View {
             defer { isTesting = false }
             do {
                 try saveKey()
-                message = try await model.validateAPI(
-                    provider: selected.family,
-                    modelID: modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-                )
+                message = try await model.validateAPI(provider: descriptor.family, modelID: trimmedModelID)
                 testSucceeded = true
                 apiKey = ""
             } catch {
