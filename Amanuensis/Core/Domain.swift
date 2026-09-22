@@ -154,9 +154,11 @@ struct CapturedAudio: Sendable {
 }
 
 struct ShortcutBinding: Codable, Equatable, Sendable {
-    var keyCode: UInt32
+    /// A missing key code represents a combination of modifier keys on their own.
+    var keyCode: UInt32?
     var modifiers: UInt32
     var display: String
+    var isModifierOnly: Bool { keyCode == nil }
     static let recording = ShortcutBinding(keyCode: 49, modifiers: 2304, display: "⌥⌘Space")
     static let mode = ShortcutBinding(keyCode: 40, modifiers: 2816, display: "⌥⇧⌘K")
 }
@@ -180,9 +182,14 @@ enum RecorderStyle: String, Codable, CaseIterable, Sendable {
 }
 
 enum RecorderLayout {
-    static let idleSize = CGSize(width: 36, height: 6)
+    static let idleSize = CGSize(width: 156, height: 36)
+
+    static func idleSize(for style: RecorderStyle) -> CGSize {
+        style == .notch ? CGSize(width: 232, height: 38) : idleSize
+    }
+
     // Reserve room for the open controls so edge presets can expand around a fixed center.
-    static let anchorSize = CGSize(width: 200, height: 34)
+    static let anchorSize = CGSize(width: 300, height: 44)
 }
 
 /// Normalized anchor positions keep the recorder centered as its size changes.
@@ -203,24 +210,29 @@ struct RecorderPlacement: Codable, Equatable, Sendable {
     }
 
     static func nearestPreset(
-        to point: CGPoint, size: CGSize, in bounds: CGRect, displayID: UInt32?
+        to point: CGPoint, size: CGSize, in bounds: CGRect, displayID: UInt32?,
+        style: RecorderStyle = .mini
     ) -> RecorderPlacement {
         var nearest =
             presets.min { first, second in
-                let a = first.frame(size: size, in: bounds)
-                let b = second.frame(size: size, in: bounds)
+                let a = first.frame(size: size, in: bounds, style: style)
+                let b = second.frame(size: size, in: bounds, style: style)
                 return hypot(a.midX - point.x, a.midY - point.y) < hypot(b.midX - point.x, b.midY - point.y)
             } ?? .bottom
         nearest.displayID = displayID
         return nearest
     }
 
-    func frame(size: CGSize, in bounds: CGRect) -> CGRect {
+    func frame(size: CGSize, in bounds: CGRect, style: RecorderStyle = .mini) -> CGRect {
         let width = min(size.width, bounds.width)
         let height = min(size.height, bounds.height)
         let anchors = anchorBounds(in: bounds)
         let centerX = anchors.minX + anchors.width * min(max(x, 0), 1)
-        let centerY = anchors.minY + anchors.height * min(max(y, 0), 1)
+        // A notch hangs from the top edge while its controls expand downward.
+        let centerY =
+            style == .notch && y >= 1
+            ? bounds.maxY - height / 2
+            : anchors.minY + anchors.height * min(max(y, 0), 1)
         return CGRect(
             x: min(max(centerX - width / 2, bounds.minX), bounds.maxX - width),
             y: min(max(centerY - height / 2, bounds.minY), bounds.maxY - height),

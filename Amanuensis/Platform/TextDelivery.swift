@@ -9,6 +9,28 @@ struct InsertionTarget {
     let applicationName: String
 }
 
+/// The system boundary keeps destination checks testable without posting real keystrokes.
+@MainActor
+struct TextDeliveryEnvironment {
+    var frontmostApplication: () -> (processID: pid_t, name: String)? = {
+        guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
+        return (application.processIdentifier, application.localizedName ?? "Destination app")
+    }
+    var attribute: (AXUIElement, String) -> CFTypeRef? = { element, name in
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
+            return nil
+        }
+        return value
+    }
+    var isAttributeSettable: (AXUIElement, String) -> Bool = { element, name in
+        var settable: DarwinBoolean = false
+        return AXUIElementIsAttributeSettable(element, name as CFString, &settable) == .success
+            && settable.boolValue
+    }
+    var post: (CGEvent, pid_t) -> Void = { event, processID in event.postToPid(processID) }
+}
+
 enum DeliveryOutcome: Equatable {
     case commandPosted
     case copied
@@ -22,7 +44,7 @@ enum DeliveryOutcome: Equatable {
         case .copied:
             "Copied to the clipboard."
         case .accessibilityRequired:
-            "Allow Accessibility access to paste automatically, or copy your transcript."
+            "Allow Accessibility access for this copy of Amanuensis to paste automatically, or copy your transcript."
         case .held(let reason):
             reason
         }
@@ -34,6 +56,7 @@ enum DeliveryOutcome: Equatable {
 final class TextDelivery {
     private let pasteboard: NSPasteboard
     private let hasAccessibilityAccess: () -> Bool
+    private let environment: TextDeliveryEnvironment
     private let sessionType = NSPasteboard.PasteboardType("dev.amanuensis.paste-session")
     private var isDelivering = false
     private var pendingClipboard: PendingClipboard?
@@ -46,13 +69,17 @@ final class TextDelivery {
 
     init(
         pasteboard: NSPasteboard = .general,
-        hasAccessibilityAccess: @escaping () -> Bool = { TextDelivery.isAccessibilityTrusted }
+        hasAccessibilityAccess: @escaping () -> Bool = { TextDelivery.isAccessibilityTrusted },
+        environment: TextDeliveryEnvironment = TextDeliveryEnvironment()
     ) {
         self.pasteboard = pasteboard
         self.hasAccessibilityAccess = hasAccessibilityAccess
+        self.environment = environment
     }
 
-    static var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
+    static var isAccessibilityTrusted: Bool {
+        AXIsProcessTrusted() && CGPreflightPostEventAccess()
+    }
 
     static func requestAccessibility() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
@@ -61,21 +88,21 @@ final class TextDelivery {
 
     func captureDestination() -> InsertionTarget? {
         guard hasAccessibilityAccess(),
-            let application = NSWorkspace.shared.frontmostApplication,
-            application.processIdentifier != ProcessInfo.processInfo.processIdentifier
+            let application = environment.frontmostApplication(),
+            application.processID != ProcessInfo.processInfo.processIdentifier
         else { return nil }
 
-        let appElement = AXUIElementCreateApplication(application.processIdentifier)
+        let appElement = AXUIElementCreateApplication(application.processID)
         guard let field = element(appElement, attribute: kAXFocusedUIElementAttribute),
             let window = element(appElement, attribute: kAXFocusedWindowAttribute),
             isEditable(field)
         else { return nil }
 
         return InsertionTarget(
-            processID: application.processIdentifier,
+            processID: application.processID,
             field: field,
             window: window,
-            applicationName: application.localizedName ?? "Destination app"
+            applicationName: application.name
         )
     }
 
@@ -90,7 +117,12 @@ final class TextDelivery {
         guard hasAccessibilityAccess() else {
             return .accessibilityRequired
         }
-        guard let target, matchesCurrentDestination(target) else {
+        guard let target else {
+            return .held(
+                "Focus an editable text field in another app before recording. Your transcript is ready to copy."
+            )
+        }
+        guard matchesCurrentDestination(target) else {
             return .held(
                 "The destination changed or could not be verified. Your transcript is ready to copy.")
         }
@@ -136,14 +168,15 @@ final class TextDelivery {
         pendingClipboard = PendingClipboard(
             snapshot: snapshot, changeCount: ownedChangeCount, session: session)
 
-        // No suspension between the final focus check and the keyboard events.
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        // Keep the check and posting synchronous. PID routing prevents a late app switch
+        // from redirecting the transcript, but macOS does not make check-and-post atomic.
         guard matchesCurrentDestination(target) else {
             return .held("The destination changed. Your transcript is ready to copy.")
         }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        environment.post(down, target.processID)
+        environment.post(up, target.processID)
 
         // macOS provides no paste-consumed acknowledgment. Retain History as recovery.
         await withCheckedContinuation { continuation in
@@ -169,13 +202,14 @@ final class TextDelivery {
 
     private func matchesCurrentDestination(_ target: InsertionTarget) -> Bool {
         guard let current = captureDestination(), current.processID == target.processID else { return false }
+        // Accessibility queries cross process boundaries; the app can lose foreground
+        // focus while still returning its previously focused field and window.
         return CFEqual(current.field, target.field) && CFEqual(current.window, target.window)
+            && environment.frontmostApplication()?.processID == target.processID
     }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
-        return value
+        environment.attribute(element, name)
     }
 
     private func element(_ parent: AXUIElement, attribute name: String) -> AXUIElement? {
@@ -188,13 +222,13 @@ final class TextDelivery {
     private func isEditable(_ field: AXUIElement) -> Bool {
         let role = attribute(field, kAXRoleAttribute) as? String
         let subrole = attribute(field, kAXSubroleAttribute) as? String
-        guard subrole != kAXSecureTextFieldSubrole,
-            [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(where: { $0 == role })
-        else { return false }
+        guard subrole != kAXSecureTextFieldSubrole else { return false }
         if let enabled = attribute(field, kAXEnabledAttribute) as? Bool, !enabled { return false }
-        var settable: DarwinBoolean = false
-        return AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable) == .success
-            && settable.boolValue
+        // Rich text editors can allow selected-text replacement while denying replacement
+        // of the entire AXValue. Pasting only needs the former capability.
+        if environment.isAttributeSettable(field, kAXSelectedTextAttribute) { return true }
+        return [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(where: { $0 == role })
+            && environment.isAttributeSettable(field, kAXValueAttribute)
     }
 
     private typealias ClipboardSnapshot = [[(NSPasteboard.PasteboardType, Data)]]

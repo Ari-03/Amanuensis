@@ -14,14 +14,17 @@ struct ModesView: View {
 
     var body: some View {
         HSplitView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Modes").font(.title2.weight(.semibold)).padding(.horizontal, 16).padding(.top, 24)
-                Button {
-                    creating = true
-                } label: {
-                    Label("Create mode", systemImage: "plus").frame(maxWidth: .infinity)
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Modes").font(.title2.weight(.semibold))
+                    Button {
+                        creating = true
+                    } label: {
+                        Label("Create mode", systemImage: "plus").frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large)
                 }
-                .controlSize(.large).padding(.horizontal, 12)
+                .padding(16).padding(.top, 8)
                 List(model.modes, selection: $selectedID) { mode in
                     HStack(spacing: 10) {
                         Image(systemName: mode.symbol).frame(width: 20).foregroundStyle(.tint)
@@ -38,8 +41,12 @@ struct ModesView: View {
                             Circle().fill(.green).frame(width: 6, height: 6).accessibilityLabel("Active mode")
                         }
                     }.padding(.vertical, 6).tag(mode.id)
-                }.listStyle(.sidebar)
+                        .listRowSeparator(.hidden)
+                }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }.frame(minWidth: 200, idealWidth: 220, maxWidth: 260)
+                .background(Color(nsColor: .windowBackgroundColor))
             if let selected {
                 editor(selected)
             } else {
@@ -48,6 +55,7 @@ struct ModesView: View {
                     description: Text("Select a mode or create one for your workflow."))
             }
         }
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { if selectedID == nil { selectedID = model.currentMode.id } }
         .sheet(isPresented: $creating) {
             CreateModeSheet { name, symbol in

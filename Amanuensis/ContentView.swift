@@ -77,18 +77,6 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(Color(nsColor: .windowBackgroundColor))
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    HStack(spacing: 6) {
-                        if model.phase == .recording {
-                            Image(systemName: "waveform").symbolEffect(.variableColor.iterative)
-                                .foregroundStyle(.red)
-                        }
-                        Text(model.phase.rawValue).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-            }
         }
         .tint(Color(red: 0.27, green: 0.43, blue: 0.86))
         .preferredColorScheme(

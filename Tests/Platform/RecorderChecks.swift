@@ -42,18 +42,18 @@ struct RecorderChecks {
             recorder.show(content: AnyView(Color.clear), style: .mini, placement: .top)
             let panel = app.windows.first { $0.isVisible && $0 is NSPanel }!
             let original = panel.frame
-            precondition(original.size == NSSize(width: 36, height: 6))
+            precondition(original.size == RecorderLayout.idleSize)
             precondition(!panel.canBecomeKey && !panel.canBecomeMain)
 
-            recorder.resize(to: NSSize(width: 172, height: 34))
+            recorder.resize(to: NSSize(width: 256, height: 44))
             await pause(65)
             if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                precondition(panel.frame.width > 36 && panel.frame.width < 172)
+                precondition(panel.frame.width > original.width && panel.frame.width < 256)
             }
             precondition(abs(panel.frame.midX - original.midX) < 1)
             precondition(abs(panel.frame.midY - original.midY) < 1)
             await pause(220)
-            precondition(panel.frame.size == NSSize(width: 172, height: 34))
+            precondition(panel.frame.size == NSSize(width: 256, height: 44))
             print("PASS: Native bounds animate through intermediate sizes around a fixed center")
 
             var saved: RecorderPlacement?
@@ -64,14 +64,14 @@ struct RecorderChecks {
             let screen = panel.screen!
             let drop = NSPoint(x: screen.visibleFrame.maxX - 20, y: screen.visibleFrame.minY + 20)
             recorder.beginDrag(at: start)
-            recorder.resize(to: NSSize(width: 72, height: 34))
-            precondition(panel.frame.width == 172 && dragging)
+            recorder.resize(to: RecorderLayout.idleSize)
+            precondition(panel.frame.width == 256 && dragging)
             recorder.continueDrag(at: drop)
             precondition(app.windows.filter { $0.isVisible && $0 is NSPanel }.count == 2)
             recorder.finishDrag(at: drop)
             await pause(220)
             precondition(saved?.x == 1 && saved?.y == 0 && saved?.displayID != nil)
-            precondition(!dragging && panel.frame.width == 72)
+            precondition(!dragging && panel.frame.size == RecorderLayout.idleSize)
             precondition(app.windows.filter { $0.isVisible && $0 is NSPanel }.count == 1)
             print(
                 "PASS: Drag displays targets, freezes resizing, saves the snapped display and position, and removes targets"
@@ -85,23 +85,24 @@ struct RecorderChecks {
             recorder.onDraggingChanged = { model.isMovingRecorder = $0 }
             recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .top)
             await pause(350)
-            precondition(panel.frame.size == NSSize(width: 36, height: 6))
+            precondition(panel.frame.size == RecorderLayout.idleSize)
             model.phase = .recording
             await pause(350)
-            precondition(panel.frame.height == 34 && panel.frame.width == 171)
+            precondition(panel.frame.size == RecorderLayout.idleSize)
             model.phase = .complete
             await pause(350)
-            precondition(panel.frame.size == NSSize(width: 36, height: 6))
-            print("PASS: Real recorder contents resize and collapse without the former trailing handle space")
+            precondition(panel.frame.size == RecorderLayout.idleSize)
+            print("PASS: Idle and recording keep the same compact bounds")
 
             model.accessibilityGranted = false
             model.pasteNeedsAccessibility = true
             await pause(350)
-            precondition(panel.frame.height == 34)
+            precondition(panel.frame.height >= 38)
+            precondition(panel.frame.width > RecorderLayout.idleSize.width)
             model.accessibilityGranted = true
             model.pasteNeedsAccessibility = false
             await pause(350)
-            precondition(panel.frame.size == NSSize(width: 36, height: 6))
+            precondition(panel.frame.size == RecorderLayout.idleSize)
             print(
                 "PASS: Missing paste permission reveals a recovery control; clearing it restores the idle pill"
             )
@@ -109,10 +110,7 @@ struct RecorderChecks {
             for phase in [DictationPhase.idle, .recording] {
                 model.phase = phase
                 await pause(300)
-                let point =
-                    phase == .recording
-                    ? NSPoint(x: 55, y: 17)
-                    : NSPoint(x: panel.frame.width / 2, y: panel.frame.height / 2)
+                let point = NSPoint(x: panel.frame.width / 2, y: panel.frame.height / 2)
                 let beforeClick = model.toggleCount
                 await postMouse(.leftMouseDown, at: point, to: panel)
                 await postMouse(.leftMouseUp, at: point, to: panel)
@@ -136,6 +134,20 @@ struct RecorderChecks {
             print(
                 "PASS: Clicking records; dragging either the idle pill or recording button snaps without recording"
             )
+
+            model.phase = .idle
+            model.settings.recorderStyle = .notch
+            recorder.show(content: AnyView(RecorderView(model: model)), style: .notch, placement: .top)
+            await pause(350)
+            let safeTop = min(screen.visibleFrame.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
+            precondition(panel.frame.size == RecorderLayout.idleSize(for: .notch))
+            precondition(abs(panel.frame.maxY - safeTop) < 1)
+            precondition(!panel.hasShadow)
+            model.pasteNeedsAccessibility = true
+            model.accessibilityGranted = false
+            await pause(350)
+            precondition(abs(panel.frame.maxY - safeTop) < 1)
+            print("PASS: Notch uses its own silhouette and expands below the camera/menu safe area")
 
             recorder.hide()
             precondition(!panel.isVisible)

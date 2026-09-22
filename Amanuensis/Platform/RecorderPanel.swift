@@ -9,6 +9,7 @@ final class RecorderPanelController {
     private let hostingView: RecorderHostingView
     private let targetsPanel: RecorderPanel
     private var placement: RecorderPlacement = .bottom
+    private var style: RecorderStyle = .mini
     private var screenNumber: UInt32?
     private var screenObserver: NSObjectProtocol?
     private var contentSize = RecorderLayout.idleSize
@@ -47,6 +48,11 @@ final class RecorderPanelController {
     }
 
     func show(content: AnyView, style: RecorderStyle, placement: RecorderPlacement?) {
+        if self.style != style || !isVisible {
+            contentSize = RecorderLayout.idleSize(for: style)
+        }
+        self.style = style
+        panel.hasShadow = style != .notch
         self.placement = placement ?? (style == .notch ? .top : .bottom)
         guard style != .hidden else {
             hide()
@@ -136,7 +142,7 @@ final class RecorderPanelController {
     private func nearestPlacement(on screen: NSScreen) -> RecorderPlacement {
         RecorderPlacement.nearestPreset(
             to: NSPoint(x: panel.frame.midX, y: panel.frame.midY), size: panel.frame.size,
-            in: availableFrame(on: screen), displayID: displayID(screen))
+            in: availableFrame(on: screen), displayID: displayID(screen), style: style)
     }
 
     private func showTargets() {
@@ -144,7 +150,7 @@ final class RecorderPanelController {
         targetsPanel.setFrame(screen.frame, display: true)
         let view = RecorderSnapTargets(
             screenFrame: screen.frame, available: availableFrame(on: screen), size: panel.frame.size,
-            selected: nearestPlacement(on: screen))
+            selected: nearestPlacement(on: screen), style: style)
         if let host = targetsPanel.contentView as? NSHostingView<RecorderSnapTargets> {
             host.rootView = view
         } else {
@@ -161,8 +167,12 @@ final class RecorderPanelController {
 
     private func availableFrame(on screen: NSScreen) -> NSRect {
         var frame = screen.visibleFrame.insetBy(dx: 16, dy: 16)
-        let safeTop = screen.frame.maxY - screen.safeAreaInsets.top - 8
-        frame.size.height = max(0, min(frame.maxY, safeTop) - frame.minY)
+        let safeTop = screen.frame.maxY - screen.safeAreaInsets.top
+        let top =
+            style == .notch
+            ? min(screen.visibleFrame.maxY, safeTop)
+            : min(frame.maxY, safeTop - 8)
+        frame.size.height = max(0, top - frame.minY)
         return frame
     }
 
@@ -170,7 +180,7 @@ final class RecorderPanelController {
         guard isVisible, dragOrigin == nil else { return }
         let screen = NSScreen.screens.first { displayID($0) == screenNumber } ?? NSScreen.main
         guard let screen else { return }
-        let frame = placement.frame(size: contentSize, in: availableFrame(on: screen))
+        let frame = placement.frame(size: contentSize, in: availableFrame(on: screen), style: style)
         animation?.cancel()
         guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, panel.frame != frame
         else {
@@ -178,7 +188,7 @@ final class RecorderPanelController {
             return
         }
         let startFrame = panel.frame
-        // Animate the actual window, so the material and hit region follow the same capsule edges.
+        // Animate the window so the drawing and hit region follow the same edges.
         animation = Task { @MainActor [weak self] in
             let start = CACurrentMediaTime()
             while !Task.isCancelled {
@@ -203,16 +213,17 @@ private struct RecorderSnapTargets: View {
     let available: NSRect
     let size: NSSize
     let selected: RecorderPlacement
+    let style: RecorderStyle
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             ForEach(Array(RecorderPlacement.presets.enumerated()), id: \.offset) { _, preset in
-                let frame = preset.frame(size: size, in: available)
+                let frame = preset.frame(size: size, in: available, style: style)
                 let highlighted = preset.x == selected.x && preset.y == selected.y
-                Capsule()
+                RecorderSilhouette(style: style)
                     .fill(highlighted ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.1))
                     .overlay(
-                        Capsule().strokeBorder(
+                        RecorderSilhouette(style: style).stroke(
                             highlighted ? Color.accentColor : Color.primary.opacity(0.3),
                             lineWidth: highlighted ? 2 : 1)
                     )

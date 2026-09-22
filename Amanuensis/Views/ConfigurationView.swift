@@ -28,9 +28,9 @@ struct ConfigurationView: View {
                         HStack(spacing: 24) {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Screen position").font(.headline)
-                                Text("Choose a spot, or drag the bar onto a highlighted position.")
+                                Text("Choose a spot, or drag the recorder onto a highlighted position.")
                                     .font(.caption).foregroundStyle(.secondary)
-                                Text("The bar stays small until you hover or start recording.")
+                                Text("Hover over the waveform to show recording controls.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -57,7 +57,16 @@ struct ConfigurationView: View {
                             binding: $model.settings.modeShortcut, onChange: model.saveConfiguration,
                             onEditing: { model.isEditingShortcut = $0 })
                     }
-                    Text("Escape cancels an active recording.").font(.caption).foregroundStyle(.secondary)
+                    Text("Shortcuts can use a key or just modifiers, such as ⌥⌘. Escape cancels a recording.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if usesModifierShortcut && !model.accessibilityGranted {
+                        HStack {
+                            Text("Allow Accessibility access to use modifier shortcuts in other apps.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Enable shortcuts", action: model.requestAccessibility)
+                        }
+                    }
                 }
                 SectionCaption(title: "Processing and storage")
                 SettingsCard {
@@ -110,6 +119,12 @@ struct ConfigurationView: View {
         }
     }
 
+    private var usesModifierShortcut: Bool {
+        ([model.settings.toggleShortcut, model.settings.pushToTalkShortcut, model.settings.modeShortcut]
+            + model.modes.map(\.startShortcut))
+            .contains { $0?.isModifierOnly == true }
+    }
+
     private func shortcutRow<Content: View>(
         _ title: String, subtitle: String, @ViewBuilder control: () -> Content
     ) -> some View {
@@ -134,15 +149,14 @@ struct ConfigurationView: View {
                     if style == .hidden {
                         Image(systemName: "eye.slash").foregroundStyle(.secondary)
                     } else {
-                        HStack(spacing: 6) {
+                        HStack(spacing: style == .notch ? 26 : 12) {
                             Image(systemName: "waveform")
-                            Circle().fill(.white.opacity(0.8)).frame(width: 5, height: 5)
+                            RecorderWaveform(level: 0, active: false)
+                                .scaleEffect(0.7).frame(width: 48, height: 16)
                         }
                         .font(.system(size: 11)).foregroundStyle(.white)
                         .padding(.horizontal, 11).padding(.vertical, 7)
-                        .background(
-                            .black.opacity(0.85), in: RoundedRectangle(cornerRadius: style == .notch ? 5 : 14)
-                        )
+                        .background(.black, in: RecorderSilhouette(style: style))
                     }
                 }.frame(height: 58)
                 Text(style.rawValue.capitalized).font(.caption.weight(.medium))
