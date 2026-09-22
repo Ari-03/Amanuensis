@@ -139,15 +139,55 @@ struct RecorderChecks {
             model.settings.recorderStyle = .notch
             recorder.show(content: AnyView(RecorderView(model: model)), style: .notch, placement: .top)
             await pause(350)
-            let safeTop = min(screen.visibleFrame.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
-            precondition(panel.frame.size == RecorderLayout.idleSize(for: .notch))
-            precondition(abs(panel.frame.maxY - safeTop) < 1)
-            precondition(!panel.hasShadow)
+            let menuBarHeight = max(NSStatusBar.system.thickness, panel.screen!.safeAreaInsets.top)
+            precondition(
+                panel.frame.minY >= panel.screen!.frame.maxY - menuBarHeight,
+                "Notch controls must stay inside the menu bar, not below the camera")
+            let menuBarTop = panel.screen!.frame.maxY
+            precondition(panel.frame.width == RecorderLayout.idleSize(for: .notch).width)
+            precondition(panel.frame.height == menuBarHeight)
+            precondition(abs(panel.frame.maxY - menuBarTop) < 1)
+            precondition(!panel.hasShadow && panel.level == .statusBar)
+            if let cameraSide = panel.screen!.auxiliaryTopRightArea {
+                precondition(cameraSide.contains(panel.frame))
+            } else {
+                precondition(abs(panel.frame.midX - panel.screen!.frame.midX) < 1)
+            }
             model.pasteNeedsAccessibility = true
             model.accessibilityGranted = false
             await pause(350)
-            precondition(abs(panel.frame.maxY - safeTop) < 1)
-            print("PASS: Notch uses its own silhouette and expands below the camera/menu safe area")
+            precondition(panel.frame.height == menuBarHeight)
+            precondition(abs(panel.frame.maxY - menuBarTop) < 1)
+            precondition(panel.frame.width > RecorderLayout.idleSize(for: .notch).width)
+            let fixedFrame = panel.frame
+            recorder.show(content: AnyView(RecorderView(model: model)), style: .notch, placement: .bottom)
+            await pause(300)
+            precondition(panel.frame == fixedFrame)
+            saved = nil
+            recorder.beginDrag(at: NSPoint(x: fixedFrame.midX, y: fixedFrame.midY))
+            recorder.continueDrag(at: drop)
+            recorder.finishDrag(at: drop)
+            precondition(panel.frame == fixedFrame && saved == nil && !model.isMovingRecorder)
+            print(
+                "PASS: Notch stays inside the menu bar while expanding and ignores saved positions and dragging"
+            )
+
+            model.pasteNeedsAccessibility = false
+            model.accessibilityGranted = true
+            await pause(300)
+            let beforeNotchClick = model.toggleCount
+            let notchPoint = NSPoint(x: panel.frame.width / 2, y: panel.frame.height / 2)
+            await postMouse(.leftMouseDown, at: notchPoint, to: panel)
+            await postMouse(.leftMouseUp, at: notchPoint, to: panel)
+            precondition(model.toggleCount == beforeNotchClick + 1)
+            precondition(!panel.canBecomeKey && !panel.canBecomeMain)
+            model.settings.recorderStyle = .mini
+            recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .bottom)
+            await pause(300)
+            precondition(panel.level == .floating && panel.frame.size == RecorderLayout.idleSize)
+            print(
+                "PASS: Menu-bar clicks still record without taking focus, and Mini restores floating placement"
+            )
 
             recorder.hide()
             precondition(!panel.isVisible)

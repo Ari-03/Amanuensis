@@ -48,17 +48,23 @@ final class RecorderPanelController {
     }
 
     func show(content: AnyView, style: RecorderStyle, placement: RecorderPlacement?) {
+        let changedStyle = self.style != style
+        if changedStyle { cancelDrag() }
         if self.style != style || !isVisible {
             contentSize = RecorderLayout.idleSize(for: style)
         }
         self.style = style
         panel.hasShadow = style != .notch
-        self.placement = placement ?? (style == .notch ? .top : .bottom)
+        panel.level = style == .notch ? .statusBar : .floating
+        panel.allowsMenuBarPlacement = style == .notch
+        self.placement = placement ?? .bottom
         guard style != .hidden else {
             hide()
             return
         }
-        if let displayID = placement?.displayID {
+        if style == .notch {
+            screenNumber = nil
+        } else if let displayID = placement?.displayID {
             screenNumber = displayID
         } else if !isVisible {
             let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
@@ -67,7 +73,7 @@ final class RecorderPanelController {
         hostingView.rootView = content
         let wasVisible = isVisible
         isVisible = true
-        placePanel(animated: wasVisible)
+        placePanel(animated: wasVisible && !changedStyle)
         panel.orderFrontRegardless()
     }
 
@@ -94,7 +100,7 @@ final class RecorderPanelController {
 
     // These methods also let native checks exercise the drag lifecycle without posting global input.
     func beginDrag(at mouse: NSPoint, translation: NSPoint = .zero) {
-        guard isVisible else { return }
+        guard isVisible, style == .mini else { return }
         animation?.cancel()
         dragOrigin = panel.frame.origin
         dragMouseOrigin = NSPoint(x: mouse.x - translation.x, y: mouse.y - translation.y)
@@ -142,7 +148,7 @@ final class RecorderPanelController {
     private func nearestPlacement(on screen: NSScreen) -> RecorderPlacement {
         RecorderPlacement.nearestPreset(
             to: NSPoint(x: panel.frame.midX, y: panel.frame.midY), size: panel.frame.size,
-            in: availableFrame(on: screen), displayID: displayID(screen), style: style)
+            in: availableFrame(on: screen), displayID: displayID(screen))
     }
 
     private func showTargets() {
@@ -150,7 +156,7 @@ final class RecorderPanelController {
         targetsPanel.setFrame(screen.frame, display: true)
         let view = RecorderSnapTargets(
             screenFrame: screen.frame, available: availableFrame(on: screen), size: panel.frame.size,
-            selected: nearestPlacement(on: screen), style: style)
+            selected: nearestPlacement(on: screen))
         if let host = targetsPanel.contentView as? NSHostingView<RecorderSnapTargets> {
             host.rootView = view
         } else {
@@ -167,20 +173,29 @@ final class RecorderPanelController {
 
     private func availableFrame(on screen: NSScreen) -> NSRect {
         var frame = screen.visibleFrame.insetBy(dx: 16, dy: 16)
-        let safeTop = screen.frame.maxY - screen.safeAreaInsets.top
-        let top =
-            style == .notch
-            ? min(screen.visibleFrame.maxY, safeTop)
-            : min(frame.maxY, safeTop - 8)
-        frame.size.height = max(0, top - frame.minY)
+        let safeTop = screen.frame.maxY - screen.safeAreaInsets.top - 8
+        frame.size.height = max(0, min(frame.maxY, safeTop) - frame.minY)
         return frame
+    }
+
+    private var recorderScreen: NSScreen? {
+        if style == .notch {
+            return NSScreen.screens.first { $0.safeAreaInsets.top > 0 }
+                ?? NSScreen.screens.first
+        }
+        return NSScreen.screens.first { displayID($0) == screenNumber } ?? NSScreen.main
     }
 
     private func placePanel(animated: Bool) {
         guard isVisible, dragOrigin == nil else { return }
-        let screen = NSScreen.screens.first { displayID($0) == screenNumber } ?? NSScreen.main
-        guard let screen else { return }
-        let frame = placement.frame(size: contentSize, in: availableFrame(on: screen), style: style)
+        guard let screen = recorderScreen else { return }
+        let frame =
+            style == .notch
+            ? RecorderLayout.notchFrame(
+                width: contentSize.width, screen: screen.frame,
+                menuBarHeight: max(NSStatusBar.system.thickness, screen.safeAreaInsets.top),
+                leftCameraArea: screen.auxiliaryTopLeftArea, rightCameraArea: screen.auxiliaryTopRightArea)
+            : placement.frame(size: contentSize, in: availableFrame(on: screen))
         animation?.cancel()
         guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, panel.frame != frame
         else {
@@ -213,17 +228,16 @@ private struct RecorderSnapTargets: View {
     let available: NSRect
     let size: NSSize
     let selected: RecorderPlacement
-    let style: RecorderStyle
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             ForEach(Array(RecorderPlacement.presets.enumerated()), id: \.offset) { _, preset in
-                let frame = preset.frame(size: size, in: available, style: style)
+                let frame = preset.frame(size: size, in: available)
                 let highlighted = preset.x == selected.x && preset.y == selected.y
-                RecorderSilhouette(style: style)
+                RecorderSilhouette(style: .mini)
                     .fill(highlighted ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.1))
                     .overlay(
-                        RecorderSilhouette(style: style).stroke(
+                        RecorderSilhouette(style: .mini).stroke(
                             highlighted ? Color.accentColor : Color.primary.opacity(0.3),
                             lineWidth: highlighted ? 2 : 1)
                     )
@@ -237,6 +251,8 @@ private struct RecorderSnapTargets: View {
 }
 
 private final class RecorderPanel: NSPanel {
+    var allowsMenuBarPlacement = false
+
     init() {
         super.init(
             contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered,
@@ -252,6 +268,10 @@ private final class RecorderPanel: NSPanel {
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        allowsMenuBarPlacement ? frameRect : super.constrainFrameRect(frameRect, to: screen)
+    }
 }
 
 private final class RecorderHostingView: NSHostingView<AnyView> {

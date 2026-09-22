@@ -21,30 +21,45 @@ struct RecorderPlacementTests {
         }
     }
 
-    @Test func notchStaysAttachedToTopWhileExpanding() {
-        let bounds = CGRect(x: -1500, y: 80, width: 1400, height: 900)
-        for placement in RecorderPlacement.presets where placement.y == 1 {
-            let idle = placement.frame(size: RecorderLayout.idleSize(for: .notch), in: bounds, style: .notch)
-            let open = placement.frame(size: CGSize(width: 280, height: 44), in: bounds, style: .notch)
-            #expect(idle.maxY == bounds.maxY)
-            #expect(open.maxY == bounds.maxY)
-            #expect(idle.midX == open.midX)
-            #expect(bounds.contains(open))
-            #expect(
-                RecorderPlacement.nearestPreset(
-                    to: CGPoint(x: idle.midX, y: idle.midY), size: idle.size,
-                    in: bounds, displayID: nil, style: .notch) == placement)
+    @Test func notchStaysBesideCameraInsideMenuBarWhileExpanding() {
+        let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let left = CGRect(x: 0, y: 868, width: 620, height: 32)
+        let right = CGRect(x: 820, y: 868, width: 620, height: 32)
+        let camera = CGRect(x: 620, y: 868, width: 200, height: 32)
+        for width: CGFloat in [156, 280, 900] {
+            let frame = RecorderLayout.notchFrame(
+                width: width, screen: screen, menuBarHeight: 32,
+                leftCameraArea: left, rightCameraArea: right)
+            #expect(right.contains(frame))
+            #expect(!camera.intersects(frame))
+            #expect(frame.minY == 868 && frame.maxY == screen.maxY)
+            #expect(frame.minX == right.minX + 6)
         }
     }
 
-    @Test func floatingNotchPlacementsRemainCentered() {
-        let bounds = CGRect(x: 0, y: 0, width: 1400, height: 900)
-        for placement in RecorderPlacement.presets where placement.y < 1 {
-            let idle = placement.frame(size: RecorderLayout.idleSize(for: .notch), in: bounds, style: .notch)
-            let open = placement.frame(size: CGSize(width: 280, height: 44), in: bounds, style: .notch)
-            #expect(idle.midX == open.midX && idle.midY == open.midY)
-            #expect(bounds.contains(open))
+    @Test func notchCentersInMenuBarWithoutCameraAtAnyDisplayOrigin() {
+        for origin in [CGPoint.zero, CGPoint(x: -1920, y: 300), CGPoint(x: 800, y: -1080)] {
+            let screen = CGRect(origin: origin, size: CGSize(width: 1920, height: 1080))
+            for width: CGFloat in [156, 280, 2400] {
+                let frame = RecorderLayout.notchFrame(
+                    width: width, screen: screen, menuBarHeight: 24,
+                    leftCameraArea: nil, rightCameraArea: nil)
+                #expect(frame.midX == screen.midX)
+                #expect(frame.minY == screen.maxY - 24 && frame.maxY == screen.maxY)
+                #expect(screen.contains(frame))
+            }
         }
+    }
+
+    @Test func notchUsesLeftSideWhenRightSideCannotFit() {
+        let screen = CGRect(x: -1000, y: 100, width: 700, height: 500)
+        let left = CGRect(x: -1000, y: 568, width: 500, height: 32)
+        let right = CGRect(x: -340, y: 568, width: 40, height: 32)
+        let frame = RecorderLayout.notchFrame(
+            width: 156, screen: screen, menuBarHeight: 32,
+            leftCameraArea: left, rightCameraArea: right)
+        #expect(left.contains(frame))
+        #expect(frame.width == 156 && frame.maxX == left.maxX - 6)
     }
 
     @Test func formerPanelStyleLoadsAsMini() throws {

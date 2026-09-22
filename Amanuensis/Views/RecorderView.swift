@@ -54,7 +54,8 @@ struct RecorderView: View {
             DragGesture(minimumDistance: 5, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { model.moveRecorder(translation: $0.translation) }
-                .onEnded { _ in model.finishMovingRecorder() }
+                .onEnded { _ in model.finishMovingRecorder() },
+            including: style == .mini ? .all : .subviews
         )
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: isOpen)
         .onHover { inside in
@@ -137,7 +138,11 @@ struct RecorderView: View {
             model.phase.isBusy && model.phase != .recording ? model.phase.rawValue : recordingLabel
         )
         .accessibilityValue(model.phase == .recording ? durationLabel(model.recordingDuration) : "")
-        .accessibilityHint("Use actions for more recorder controls. Drag to reposition.")
+        .accessibilityHint(
+            style == .mini
+                ? "Use actions for more recorder controls. Drag to reposition."
+                : "Use actions for more recorder controls."
+        )
         .accessibilityActions {
             Button("Show recorder controls") { revealControls = true }
             if model.phase.isBusy && model.phase != .delivering {
@@ -147,7 +152,9 @@ struct RecorderView: View {
         .help(
             model.phase == .recording
                 ? "Click to finish recording. Hover for controls."
-                : "Click to record. Hover for controls. Drag to reposition.")
+                : style == .mini
+                    ? "Click to record. Hover for controls. Drag to reposition."
+                    : "Click to record. Hover for controls.")
     }
 
     private var controls: some View {
@@ -166,10 +173,7 @@ struct RecorderView: View {
             .buttonStyle(.plain).disabled(model.phase.isBusy)
             .accessibilityLabel("Change mode, current mode: \(model.currentMode.name)")
             .help("Change mode")
-            .popover(
-                isPresented: $showingModes,
-                arrowEdge: (model.settings.recorderPlacement ?? defaultPlacement).y > 0.5 ? .bottom : .top
-            ) {
+            .popover(isPresented: $showingModes, arrowEdge: popoverEdge) {
                 modeMenu
             }
 
@@ -252,12 +256,8 @@ struct RecorderView: View {
         }
     }
 
-    private var defaultPlacement: RecorderPlacement {
-        model.settings.recorderStyle == .notch ? .top : .bottom
-    }
-
     private var popoverEdge: Edge {
-        (model.settings.recorderPlacement ?? defaultPlacement).y > 0.5 ? .bottom : .top
+        style == .notch || (model.settings.recorderPlacement ?? .bottom).y > 0.5 ? .bottom : .top
     }
 
     private var modeMenu: some View {
