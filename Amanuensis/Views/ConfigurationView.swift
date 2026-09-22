@@ -30,7 +30,7 @@ struct ConfigurationView: View {
                                 Text("Screen position").font(.headline)
                                 Text("Choose a spot, or drag the recorder onto a highlighted position.")
                                     .font(.caption).foregroundStyle(.secondary)
-                                Text("Hover over the waveform to show recording controls.")
+                                Text("Hover over the recorder to show recording controls.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()

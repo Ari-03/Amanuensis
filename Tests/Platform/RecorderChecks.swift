@@ -85,26 +85,28 @@ struct RecorderChecks {
             recorder.onDraggingChanged = { model.isMovingRecorder = $0 }
             recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .top)
             await pause(350)
+            precondition(
+                panel.frame.size == NSSize(width: 36, height: 6),
+                "An idle recorder must return to the minimized bar")
             precondition(panel.frame.size == RecorderLayout.idleSize)
             model.phase = .recording
             await pause(350)
-            precondition(panel.frame.size == RecorderLayout.idleSize)
+            precondition(panel.frame.width >= 156 && panel.frame.height >= 36)
             model.phase = .complete
             await pause(350)
             precondition(panel.frame.size == RecorderLayout.idleSize)
-            print("PASS: Idle and recording keep the same compact bounds")
+            print("PASS: Recording expands the minimized bar, and completion minimizes it again")
 
             model.accessibilityGranted = false
             model.pasteNeedsAccessibility = true
             await pause(350)
-            precondition(panel.frame.height >= 38)
-            precondition(panel.frame.width > RecorderLayout.idleSize.width)
+            precondition(panel.frame.size == RecorderLayout.idleSize)
             model.accessibilityGranted = true
             model.pasteNeedsAccessibility = false
             await pause(350)
             precondition(panel.frame.size == RecorderLayout.idleSize)
             print(
-                "PASS: Missing paste permission reveals a recovery control; clearing it restores the idle pill"
+                "PASS: Missing paste permission does not keep the recorder expanded"
             )
 
             for phase in [DictationPhase.idle, .recording] {
@@ -155,6 +157,7 @@ struct RecorderChecks {
             }
             model.pasteNeedsAccessibility = true
             model.accessibilityGranted = false
+            model.phase = .recording
             await pause(350)
             precondition(panel.frame.height == menuBarHeight)
             precondition(abs(panel.frame.maxY - menuBarTop) < 1)
@@ -174,6 +177,7 @@ struct RecorderChecks {
 
             model.pasteNeedsAccessibility = false
             model.accessibilityGranted = true
+            model.phase = .idle
             await pause(300)
             let beforeNotchClick = model.toggleCount
             let notchPoint = NSPoint(x: panel.frame.width / 2, y: panel.frame.height / 2)
@@ -189,12 +193,54 @@ struct RecorderChecks {
                 "PASS: Menu-bar clicks still record without taking focus, and Mini restores floating placement"
             )
 
+            for style in [RecorderStyle.mini, .notch] {
+                model.settings.recorderStyle = style
+                recorder.show(content: AnyView(RecorderView(model: model)), style: style, placement: .top)
+                for phase in [DictationPhase.preparing, .transcribing, .cleaning, .delivering] {
+                    model.phase = phase
+                    await pause(350)
+                    let labelWidth = (phase.rawValue as NSString).size(withAttributes: [
+                        .font: NSFont.systemFont(ofSize: 11)
+                    ]).width
+                    precondition(
+                        panel.frame.width >= labelWidth + 100,
+                        "\(style) must leave room for the full \(phase.rawValue) label and adjacent controls")
+                }
+                for phase in [DictationPhase.complete, .failed, .interrupted, .idle] {
+                    model.phase = phase
+                    await pause(350)
+                    precondition(panel.frame.width == 36, "Every finished state must minimize the recorder")
+                }
+            }
+            print("PASS: Both styles fit full processing labels and minimize after completion or failure")
+
+            let silentHeight = waveformPeak(level: 0)
+            let quietHeight = waveformPeak(level: 0.01)
+            let speakingHeight = waveformPeak(level: 0.1)
+            precondition(silentHeight <= 4)
+            precondition(quietHeight >= 8, "Quiet speech must visibly lift the dots into bars")
+            precondition(speakingHeight > quietHeight && speakingHeight <= 22)
+            precondition(waveformPeak(level: 1, active: false) == silentHeight)
+            print("PASS: Rendered bars respond visibly to quiet and normal speech, then return to dots")
+
             recorder.hide()
             precondition(!panel.isVisible)
             print("Recorder checks passed.")
             app.terminate(nil)
         }
         app.run()
+    }
+
+    /// Measure the tallest rendered bar, including the actual SwiftUI frame and fill.
+    @MainActor private static func waveformPeak(level: Double, active: Bool = true) -> Int {
+        let renderer = ImageRenderer(content: RecorderWaveform(level: level, active: active))
+        renderer.scale = 1
+        let bitmap = NSBitmapImageRep(cgImage: renderer.cgImage!)
+        return (0..<bitmap.pixelsWide).map { x in
+            (0..<bitmap.pixelsHigh).filter { y in
+                (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5
+            }.count
+        }.max() ?? 0
     }
 
     @MainActor private static func postMouse(

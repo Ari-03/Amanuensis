@@ -182,10 +182,14 @@ enum RecorderStyle: String, Codable, CaseIterable, Sendable {
 }
 
 enum RecorderLayout {
-    static let idleSize = CGSize(width: 156, height: 36)
+    static let idleSize = CGSize(width: 36, height: 6)
 
     static func idleSize(for style: RecorderStyle) -> CGSize {
-        style == .notch ? CGSize(width: 156, height: 28) : idleSize
+        style == .notch ? CGSize(width: 36, height: 28) : idleSize
+    }
+
+    static func activeSize(for style: RecorderStyle) -> CGSize {
+        CGSize(width: 156, height: style == .notch ? 28 : 36)
     }
 
     /// Notch controls resize horizontally within the menu bar, beside the camera when present.
