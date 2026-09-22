@@ -137,10 +137,15 @@ struct RecorderChecks {
                 "PASS: Clicking records; dragging either the idle pill or recording button snaps without recording"
             )
 
+            let miniDisplayID = recorder.miniDisplayID
+            precondition(miniDisplayID != nil)
             model.phase = .idle
             model.settings.recorderStyle = .notch
             recorder.show(content: AnyView(RecorderView(model: model)), style: .notch, placement: .top)
             await pause(350)
+            precondition(
+                recorder.miniDisplayID == miniDisplayID,
+                "Notch must retain Mini's selected display when no display ID is saved in settings")
             let menuBarHeight = max(NSStatusBar.system.thickness, panel.screen!.safeAreaInsets.top)
             precondition(
                 panel.frame.minY >= panel.screen!.frame.maxY - menuBarHeight,
@@ -188,9 +193,14 @@ struct RecorderChecks {
             model.settings.recorderStyle = .mini
             recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .bottom)
             await pause(300)
+            precondition(recorder.miniDisplayID == miniDisplayID)
+            let restoredDisplayID =
+                (panel.screen!.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+                .uint32Value
+            precondition(restoredDisplayID == miniDisplayID)
             precondition(panel.level == .floating && panel.frame.size == RecorderLayout.idleSize)
             print(
-                "PASS: Menu-bar clicks still record without taking focus, and Mini restores floating placement"
+                "PASS: Menu-bar clicks still record without taking focus, and Mini restores its display and floating placement"
             )
 
             for style in [RecorderStyle.mini, .notch] {
@@ -225,6 +235,13 @@ struct RecorderChecks {
 
             recorder.hide()
             precondition(!panel.isVisible)
+            let notchFirst = RecorderPanelController()
+            notchFirst.show(content: AnyView(Color.clear), style: .notch, placement: nil)
+            precondition(notchFirst.miniDisplayID == nil)
+            notchFirst.show(content: AnyView(Color.clear), style: .mini, placement: nil)
+            precondition(notchFirst.miniDisplayID != nil)
+            notchFirst.hide()
+            print("PASS: Starting in Notch selects a display the first time Mini is shown")
             print("Recorder checks passed.")
             app.terminate(nil)
         }

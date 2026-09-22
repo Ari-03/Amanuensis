@@ -10,7 +10,8 @@ final class RecorderPanelController {
     private let targetsPanel: RecorderPanel
     private var placement: RecorderPlacement = .bottom
     private var style: RecorderStyle = .mini
-    private var screenNumber: UInt32?
+    /// Mini keeps its chosen display while Notch uses the menu bar on its own display.
+    private(set) var miniDisplayID: UInt32?
     private var screenObserver: NSObjectProtocol?
     private var contentSize = RecorderLayout.idleSize
     private var animation: Task<Void, Never>?
@@ -62,13 +63,14 @@ final class RecorderPanelController {
             hide()
             return
         }
-        if style == .notch {
-            screenNumber = nil
-        } else if let displayID = placement?.displayID {
-            screenNumber = displayID
-        } else if !isVisible {
-            let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
-            screenNumber = screen.map(displayID)
+        if style == .mini {
+            if let displayID = placement?.displayID {
+                miniDisplayID = displayID
+            } else if !isVisible || miniDisplayID == nil {
+                let screen =
+                    NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+                miniDisplayID = screen.map(displayID)
+            }
         }
         hostingView.rootView = content
         let wasVisible = isVisible
@@ -123,7 +125,7 @@ final class RecorderPanelController {
             cancelDrag()
             return
         }
-        screenNumber = displayID(screen)
+        miniDisplayID = displayID(screen)
         placement = nearestPlacement(on: screen)
         dragOrigin = nil
         targetsPanel.orderOut(nil)
@@ -183,7 +185,7 @@ final class RecorderPanelController {
             return NSScreen.screens.first { $0.safeAreaInsets.top > 0 }
                 ?? NSScreen.screens.first
         }
-        return NSScreen.screens.first { displayID($0) == screenNumber } ?? NSScreen.main
+        return NSScreen.screens.first { displayID($0) == miniDisplayID } ?? NSScreen.main
     }
 
     private func placePanel(animated: Bool) {
