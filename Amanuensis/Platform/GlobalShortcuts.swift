@@ -181,8 +181,10 @@ final class GlobalShortcuts {
                 guard let self, !self.modifierBindings.isEmpty else { return }
                 self.stopModifierHold()
                 self.resetModifierGesture()
+                // Keep the working monitor if AppKit cannot install its replacement.
+                guard let replacement = self.startModifierMonitor() else { return }
                 self.stopModifierMonitor?()
-                self.stopModifierMonitor = self.startModifierMonitor()
+                self.stopModifierMonitor = replacement
             }
         }
     }

@@ -50,7 +50,8 @@ private final class HotKeys {
 /// Replays AppKit events through the same monitor callback used by local and global input.
 @MainActor
 private final class ModifierKeys {
-    var handler: ((NSEvent) -> Void)?
+    private var handlers: [Int: (NSEvent) -> Void] = [:]
+    var activeCount: Int { handlers.count }
     var available = true
     var starts = 0
     var stops = 0
@@ -59,10 +60,11 @@ private final class ModifierKeys {
         GlobalShortcuts.ModifierMonitor { [self] handler in
             guard available else { return nil }
             starts += 1
-            self.handler = handler
+            let identifier = starts
+            handlers[identifier] = handler
             return { [self] in
                 stops += 1
-                self.handler = nil
+                handlers.removeValue(forKey: identifier)
             }
         }
     }
@@ -76,8 +78,12 @@ private final class ModifierKeys {
             keyCode: keyCode ?? 55)!
     }
 
-    func flags(_ flags: NSEvent.ModifierFlags) { handler?(Self.event(flags)) }
-    func key(_ flags: NSEvent.ModifierFlags) { handler?(Self.event(flags, keyCode: 0)) }
+    func flags(_ flags: NSEvent.ModifierFlags) {
+        for handler in Array(handlers.values) { handler(Self.event(flags)) }
+    }
+    func key(_ flags: NSEvent.ModifierFlags) {
+        for handler in Array(handlers.values) { handler(Self.event(flags, keyCode: 0)) }
+    }
 
     func tap(_ flags: NSEvent.ModifierFlags) {
         self.flags(flags)
@@ -156,10 +162,54 @@ struct ShortcutChecks {
         precondition(keys.active.count == 4)
         manager.setRecordingActive(false)
         precondition(keys.active.count == 3)
+        try await monitorReplacementChecks()
         try await modifierChecks()
         print(
             "Shortcut checks passed: registration rollback, modes, Escape, modifier capture/persistence, chord suppression, hold-to-talk, interruption, monitor recovery"
         )
+    }
+
+    @MainActor
+    private static func monitorReplacementChecks() async throws {
+        let keys = HotKeys()
+        let modifiers = ModifierKeys()
+        let manager = GlobalShortcuts(backend: keys.backend, modifierMonitor: modifiers.monitor)
+        var toggles = 0
+        var holds: [Bool] = []
+        precondition(
+            manager.setBindings(
+                toggle: ShortcutBinding(keyCode: nil, modifiers: UInt32(cmdKey | optionKey), display: "⌥⌘"),
+                pushToTalk: ShortcutBinding(
+                    keyCode: nil, modifiers: UInt32(controlKey | optionKey), display: "⌃⌥"),
+                changeMode: nil, onToggle: { toggles += 1 }, onPushToTalk: { holds.append($0) },
+                onChangeMode: {}, onCancel: {}))
+        modifiers.tap([.command, .option])
+        precondition(toggles == 1)
+
+        modifiers.available = false
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        modifiers.tap([.command, .option])
+        precondition(toggles == 2, "Failed monitor replacement must keep modifier shortcuts working")
+        precondition(modifiers.activeCount == 1 && modifiers.stops == 0)
+
+        modifiers.flags([.control, .option])
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        try await Task.sleep(for: .milliseconds(240))
+        modifiers.flags([])
+        precondition(holds.isEmpty, "Failed monitor replacement must cancel a pending hold")
+
+        modifiers.flags([.control, .option])
+        try await Task.sleep(for: .milliseconds(240))
+        precondition(holds == [true])
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        modifiers.flags([])
+        precondition(holds == [true, false], "Failed monitor replacement must release active push-to-talk")
+
+        modifiers.available = true
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        precondition(modifiers.activeCount == 1 && modifiers.starts == 2 && modifiers.stops == 1)
+        modifiers.tap([.command, .option])
+        precondition(toggles == 3, "A later successful replacement must invoke each shortcut once")
     }
 
     @MainActor
@@ -327,7 +377,7 @@ struct ShortcutChecks {
             manager.setBindings(
                 toggle: keyChord, pushToTalk: nil, changeMode: nil,
                 onToggle: {}, onPushToTalk: { _ in }, onChangeMode: {}, onCancel: {}))
-        precondition(modifiers.handler == nil && modifiers.stops == 3)
+        precondition(modifiers.activeCount == 0 && modifiers.stops == 3)
         modifiers.available = false
         precondition(!apply())
         precondition(

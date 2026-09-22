@@ -168,12 +168,13 @@ final class TextDelivery {
         pendingClipboard = PendingClipboard(
             snapshot: snapshot, changeCount: ownedChangeCount, session: session)
 
-        // No suspension between the final focus check and the keyboard events.
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        // Keep the check and posting synchronous. PID routing prevents a late app switch
+        // from redirecting the transcript, but macOS does not make check-and-post atomic.
         guard matchesCurrentDestination(target) else {
             return .held("The destination changed. Your transcript is ready to copy.")
         }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
         environment.post(down, target.processID)
         environment.post(up, target.processID)
 
@@ -201,7 +202,10 @@ final class TextDelivery {
 
     private func matchesCurrentDestination(_ target: InsertionTarget) -> Bool {
         guard let current = captureDestination(), current.processID == target.processID else { return false }
+        // Accessibility queries cross process boundaries; the app can lose foreground
+        // focus while still returning its previously focused field and window.
         return CFEqual(current.field, target.field) && CFEqual(current.window, target.window)
+            && environment.frontmostApplication()?.processID == target.processID
     }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {

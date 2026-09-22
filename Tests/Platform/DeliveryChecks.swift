@@ -78,6 +78,24 @@ struct DeliveryChecks {
         precondition(editor.events.isEmpty)
         print("PASS: Changing windows prevents the paste")
 
+        let foregroundTarget = delivery.captureDestination()
+        editor.onEditableCheck = {
+            if pasteboard.string(forType: .string) == "A completed transcript" {
+                editor.frontmostProcessID = 7006
+            }
+        }
+        let changedDuringCheck = await delivery.deliver(
+            text: "A completed transcript", to: foregroundTarget)
+        guard case .held = changedDuringCheck else {
+            fatalError(
+                "An app that loses foreground focus during the final AX check must not receive a paste")
+        }
+        precondition(editor.events.isEmpty)
+        precondition(pasteboard.string(forType: .string) == "Existing clipboard")
+        editor.frontmostProcessID = 7001
+        editor.onEditableCheck = {}
+        print("PASS: App switches during the final Accessibility query abort and restore the clipboard")
+
         var observedTranscript = false
         editor.onPost = { event in
             if event.type == .keyDown {
@@ -112,6 +130,7 @@ struct DeliveryChecks {
 @MainActor
 private final class PasteEditor {
     let app = AXUIElementCreateApplication(7001)
+    var frontmostProcessID: pid_t = 7001
     var field = AXUIElementCreateApplication(7002)
     var window = AXUIElementCreateApplication(7003)
     var role = kAXTextAreaRole
@@ -122,10 +141,11 @@ private final class PasteEditor {
     var events: [CGEvent] = []
     var eventTargets: [pid_t] = []
     var onPost: (CGEvent) -> Void = { _ in }
+    var onEditableCheck: () -> Void = {}
 
     var environment: TextDeliveryEnvironment {
         TextDeliveryEnvironment(
-            frontmostApplication: { (7001, "Test editor") },
+            frontmostApplication: { [self] in (frontmostProcessID, "Test editor") },
             attribute: { [self] element, name in
                 if CFEqual(element, app) {
                     if name == kAXFocusedUIElementAttribute { return field }
@@ -139,6 +159,7 @@ private final class PasteEditor {
                 return nil
             },
             isAttributeSettable: { [self] _, name in
+                onEditableCheck()
                 if name == kAXSelectedTextAttribute { return selectedTextIsSettable }
                 return name == kAXValueAttribute && valueIsSettable
             },
