@@ -218,11 +218,11 @@ enum RecorderLayout {
             x: screen.midX - fittedWidth / 2, y: menuBar.minY, width: fittedWidth, height: height)
     }
 
-    // Reserve room for the open controls so edge presets can expand around a fixed center.
-    static let anchorSize = CGSize(width: 300, height: 44)
+    // Keep horizontal centers stable on hover while top and bottom presets expand inward.
+    static let anchorWidth: CGFloat = 300
 }
 
-/// Normalized anchor positions keep the recorder centered as its size changes.
+/// Normalized positions keep the recorder aligned to the chosen screen edge as its size changes.
 struct RecorderPlacement: Codable, Equatable, Sendable {
     var x: Double
     var y: Double
@@ -255,7 +255,7 @@ struct RecorderPlacement: Codable, Equatable, Sendable {
     func frame(size: CGSize, in bounds: CGRect) -> CGRect {
         let width = min(size.width, bounds.width)
         let height = min(size.height, bounds.height)
-        let anchors = anchorBounds(in: bounds)
+        let anchors = anchorBounds(in: bounds, height: height)
         let centerX = anchors.minX + anchors.width * min(max(x, 0), 1)
         let centerY = anchors.minY + anchors.height * min(max(y, 0), 1)
         return CGRect(
@@ -264,10 +264,10 @@ struct RecorderPlacement: Codable, Equatable, Sendable {
             width: width, height: height)
     }
 
-    private func anchorBounds(in bounds: CGRect) -> CGRect {
+    private func anchorBounds(in bounds: CGRect, height: CGFloat) -> CGRect {
         bounds.insetBy(
-            dx: min(RecorderLayout.anchorSize.width, bounds.width) / 2,
-            dy: min(RecorderLayout.anchorSize.height, bounds.height) / 2)
+            dx: min(RecorderLayout.anchorWidth, bounds.width) / 2,
+            dy: min(height, bounds.height) / 2)
     }
 
     init(x: Double, y: Double, displayID: UInt32? = nil) {
@@ -278,7 +278,7 @@ struct RecorderPlacement: Codable, Equatable, Sendable {
 
     init(frame: CGRect, in bounds: CGRect, displayID: UInt32?) {
         self.init(x: 0.5, y: 0.5, displayID: displayID)
-        let anchors = anchorBounds(in: bounds)
+        let anchors = anchorBounds(in: bounds, height: frame.height)
         if anchors.width > 0 { x = min(max((frame.midX - anchors.minX) / anchors.width, 0), 1) }
         if anchors.height > 0 { y = min(max((frame.midY - anchors.minY) / anchors.height, 0), 1) }
     }
