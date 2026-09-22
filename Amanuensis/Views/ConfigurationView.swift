@@ -23,19 +23,24 @@ struct ConfigurationView: View {
                         }
                     }
                     Toggle("Keep recording controls visible", isOn: $model.settings.alwaysShowRecorder)
-                    if model.settings.recorderStyle != .hidden {
+                    if model.settings.recorderStyle == .mini {
                         Divider()
                         HStack(spacing: 24) {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Screen position").font(.headline)
                                 Text("Choose a spot, or drag the recorder onto a highlighted position.")
                                     .font(.caption).foregroundStyle(.secondary)
-                                Text("Hover over the waveform to show recording controls.")
+                                Text("Hover over the recorder to show recording controls.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             recorderPositionPicker
                         }
+                    } else if model.settings.recorderStyle == .notch {
+                        Text(
+                            "Notch stays in the menu bar, beside the camera or centered on displays without one."
+                        )
+                        .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 SectionCaption(title: "Keyboard shortcuts")
@@ -141,7 +146,6 @@ struct ConfigurationView: View {
     private func recorderPreview(_ style: RecorderStyle) -> some View {
         Button {
             model.settings.recorderStyle = style
-            if style == .notch { model.settings.recorderPlacement = nil }
         } label: {
             VStack(spacing: 10) {
                 ZStack(alignment: style == .notch ? .top : .center) {

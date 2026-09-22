@@ -85,26 +85,28 @@ struct RecorderChecks {
             recorder.onDraggingChanged = { model.isMovingRecorder = $0 }
             recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .top)
             await pause(350)
+            precondition(
+                panel.frame.size == NSSize(width: 36, height: 6),
+                "An idle recorder must return to the minimized bar")
             precondition(panel.frame.size == RecorderLayout.idleSize)
             model.phase = .recording
             await pause(350)
-            precondition(panel.frame.size == RecorderLayout.idleSize)
+            precondition(panel.frame.width >= 156 && panel.frame.height >= 36)
             model.phase = .complete
             await pause(350)
             precondition(panel.frame.size == RecorderLayout.idleSize)
-            print("PASS: Idle and recording keep the same compact bounds")
+            print("PASS: Recording expands the minimized bar, and completion minimizes it again")
 
             model.accessibilityGranted = false
             model.pasteNeedsAccessibility = true
             await pause(350)
-            precondition(panel.frame.height >= 38)
-            precondition(panel.frame.width > RecorderLayout.idleSize.width)
+            precondition(panel.frame.size == RecorderLayout.idleSize)
             model.accessibilityGranted = true
             model.pasteNeedsAccessibility = false
             await pause(350)
             precondition(panel.frame.size == RecorderLayout.idleSize)
             print(
-                "PASS: Missing paste permission reveals a recovery control; clearing it restores the idle pill"
+                "PASS: Missing paste permission does not keep the recorder expanded"
             )
 
             for phase in [DictationPhase.idle, .recording] {
@@ -135,26 +137,127 @@ struct RecorderChecks {
                 "PASS: Clicking records; dragging either the idle pill or recording button snaps without recording"
             )
 
+            let miniDisplayID = recorder.miniDisplayID
+            precondition(miniDisplayID != nil)
             model.phase = .idle
             model.settings.recorderStyle = .notch
             recorder.show(content: AnyView(RecorderView(model: model)), style: .notch, placement: .top)
             await pause(350)
-            let safeTop = min(screen.visibleFrame.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
-            precondition(panel.frame.size == RecorderLayout.idleSize(for: .notch))
-            precondition(abs(panel.frame.maxY - safeTop) < 1)
-            precondition(!panel.hasShadow)
+            precondition(
+                recorder.miniDisplayID == miniDisplayID,
+                "Notch must retain Mini's selected display when no display ID is saved in settings")
+            let menuBarHeight = max(NSStatusBar.system.thickness, panel.screen!.safeAreaInsets.top)
+            precondition(
+                panel.frame.minY >= panel.screen!.frame.maxY - menuBarHeight,
+                "Notch controls must stay inside the menu bar, not below the camera")
+            let menuBarTop = panel.screen!.frame.maxY
+            precondition(panel.frame.width == RecorderLayout.idleSize(for: .notch).width)
+            precondition(panel.frame.height == menuBarHeight)
+            precondition(abs(panel.frame.maxY - menuBarTop) < 1)
+            precondition(!panel.hasShadow && panel.level == .statusBar)
+            if let cameraSide = panel.screen!.auxiliaryTopRightArea {
+                precondition(cameraSide.contains(panel.frame))
+            } else {
+                precondition(abs(panel.frame.midX - panel.screen!.frame.midX) < 1)
+            }
             model.pasteNeedsAccessibility = true
             model.accessibilityGranted = false
+            model.phase = .recording
             await pause(350)
-            precondition(abs(panel.frame.maxY - safeTop) < 1)
-            print("PASS: Notch uses its own silhouette and expands below the camera/menu safe area")
+            precondition(panel.frame.height == menuBarHeight)
+            precondition(abs(panel.frame.maxY - menuBarTop) < 1)
+            precondition(panel.frame.width > RecorderLayout.idleSize(for: .notch).width)
+            let fixedFrame = panel.frame
+            recorder.show(content: AnyView(RecorderView(model: model)), style: .notch, placement: .bottom)
+            await pause(300)
+            precondition(panel.frame == fixedFrame)
+            saved = nil
+            recorder.beginDrag(at: NSPoint(x: fixedFrame.midX, y: fixedFrame.midY))
+            recorder.continueDrag(at: drop)
+            recorder.finishDrag(at: drop)
+            precondition(panel.frame == fixedFrame && saved == nil && !model.isMovingRecorder)
+            print(
+                "PASS: Notch stays inside the menu bar while expanding and ignores saved positions and dragging"
+            )
+
+            model.pasteNeedsAccessibility = false
+            model.accessibilityGranted = true
+            model.phase = .idle
+            await pause(300)
+            let beforeNotchClick = model.toggleCount
+            let notchPoint = NSPoint(x: panel.frame.width / 2, y: panel.frame.height / 2)
+            await postMouse(.leftMouseDown, at: notchPoint, to: panel)
+            await postMouse(.leftMouseUp, at: notchPoint, to: panel)
+            precondition(model.toggleCount == beforeNotchClick + 1)
+            precondition(!panel.canBecomeKey && !panel.canBecomeMain)
+            model.settings.recorderStyle = .mini
+            recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .bottom)
+            await pause(300)
+            precondition(recorder.miniDisplayID == miniDisplayID)
+            let restoredDisplayID =
+                (panel.screen!.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+                .uint32Value
+            precondition(restoredDisplayID == miniDisplayID)
+            precondition(panel.level == .floating && panel.frame.size == RecorderLayout.idleSize)
+            print(
+                "PASS: Menu-bar clicks still record without taking focus, and Mini restores its display and floating placement"
+            )
+
+            for style in [RecorderStyle.mini, .notch] {
+                model.settings.recorderStyle = style
+                recorder.show(content: AnyView(RecorderView(model: model)), style: style, placement: .top)
+                for phase in [DictationPhase.preparing, .transcribing, .cleaning, .delivering] {
+                    model.phase = phase
+                    await pause(350)
+                    let labelWidth = (phase.rawValue as NSString).size(withAttributes: [
+                        .font: NSFont.systemFont(ofSize: 11)
+                    ]).width
+                    precondition(
+                        panel.frame.width >= labelWidth + 100,
+                        "\(style) must leave room for the full \(phase.rawValue) label and adjacent controls")
+                }
+                for phase in [DictationPhase.complete, .failed, .interrupted, .idle] {
+                    model.phase = phase
+                    await pause(350)
+                    precondition(panel.frame.width == 36, "Every finished state must minimize the recorder")
+                }
+            }
+            print("PASS: Both styles fit full processing labels and minimize after completion or failure")
+
+            let silentHeight = waveformPeak(level: 0)
+            let quietHeight = waveformPeak(level: 0.01)
+            let speakingHeight = waveformPeak(level: 0.1)
+            precondition(silentHeight <= 4)
+            precondition(quietHeight >= 8, "Quiet speech must visibly lift the dots into bars")
+            precondition(speakingHeight > quietHeight && speakingHeight <= 22)
+            precondition(waveformPeak(level: 1, active: false) == silentHeight)
+            print("PASS: Rendered bars respond visibly to quiet and normal speech, then return to dots")
 
             recorder.hide()
             precondition(!panel.isVisible)
+            let notchFirst = RecorderPanelController()
+            notchFirst.show(content: AnyView(Color.clear), style: .notch, placement: nil)
+            precondition(notchFirst.miniDisplayID == nil)
+            notchFirst.show(content: AnyView(Color.clear), style: .mini, placement: nil)
+            precondition(notchFirst.miniDisplayID != nil)
+            notchFirst.hide()
+            print("PASS: Starting in Notch selects a display the first time Mini is shown")
             print("Recorder checks passed.")
             app.terminate(nil)
         }
         app.run()
+    }
+
+    /// Measure the tallest rendered bar, including the actual SwiftUI frame and fill.
+    @MainActor private static func waveformPeak(level: Double, active: Bool = true) -> Int {
+        let renderer = ImageRenderer(content: RecorderWaveform(level: level, active: active))
+        renderer.scale = 1
+        let bitmap = NSBitmapImageRep(cgImage: renderer.cgImage!)
+        return (0..<bitmap.pixelsWide).map { x in
+            (0..<bitmap.pixelsHigh).filter { y in
+                (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5
+            }.count
+        }.max() ?? 0
     }
 
     @MainActor private static func postMouse(

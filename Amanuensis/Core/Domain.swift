@@ -182,10 +182,40 @@ enum RecorderStyle: String, Codable, CaseIterable, Sendable {
 }
 
 enum RecorderLayout {
-    static let idleSize = CGSize(width: 156, height: 36)
+    static let idleSize = CGSize(width: 36, height: 6)
 
     static func idleSize(for style: RecorderStyle) -> CGSize {
-        style == .notch ? CGSize(width: 232, height: 38) : idleSize
+        style == .notch ? CGSize(width: 36, height: 28) : idleSize
+    }
+
+    static func activeSize(for style: RecorderStyle) -> CGSize {
+        CGSize(width: 156, height: style == .notch ? 28 : 36)
+    }
+
+    /// Notch controls resize horizontally within the menu bar, beside the camera when present.
+    static func notchFrame(
+        width: CGFloat, screen: CGRect, menuBarHeight: CGFloat,
+        leftCameraArea: CGRect?, rightCameraArea: CGRect?
+    ) -> CGRect {
+        let height = min(menuBarHeight, screen.height)
+        let menuBar = CGRect(
+            x: screen.minX, y: screen.maxY - height, width: screen.width, height: height)
+        let cameraAreas = [rightCameraArea, leftCameraArea].compactMap { $0 }
+            .map { $0.intersection(menuBar) }.filter { !$0.isEmpty && !$0.isNull }
+        let gap: CGFloat = 6
+        if let area = cameraAreas.first(where: { $0.width >= width + gap * 2 })
+            ?? cameraAreas.max(by: { $0.width < $1.width })
+        {
+            let inset = min(gap, area.width / 4)
+            let fittedWidth = min(width, area.width - inset * 2)
+            let x =
+                area.midX > screen.midX
+                ? area.minX + inset : area.maxX - inset - fittedWidth
+            return CGRect(x: x, y: area.minY, width: fittedWidth, height: area.height)
+        }
+        let fittedWidth = min(width, screen.width)
+        return CGRect(
+            x: screen.midX - fittedWidth / 2, y: menuBar.minY, width: fittedWidth, height: height)
     }
 
     // Reserve room for the open controls so edge presets can expand around a fixed center.
@@ -210,29 +240,24 @@ struct RecorderPlacement: Codable, Equatable, Sendable {
     }
 
     static func nearestPreset(
-        to point: CGPoint, size: CGSize, in bounds: CGRect, displayID: UInt32?,
-        style: RecorderStyle = .mini
+        to point: CGPoint, size: CGSize, in bounds: CGRect, displayID: UInt32?
     ) -> RecorderPlacement {
         var nearest =
             presets.min { first, second in
-                let a = first.frame(size: size, in: bounds, style: style)
-                let b = second.frame(size: size, in: bounds, style: style)
+                let a = first.frame(size: size, in: bounds)
+                let b = second.frame(size: size, in: bounds)
                 return hypot(a.midX - point.x, a.midY - point.y) < hypot(b.midX - point.x, b.midY - point.y)
             } ?? .bottom
         nearest.displayID = displayID
         return nearest
     }
 
-    func frame(size: CGSize, in bounds: CGRect, style: RecorderStyle = .mini) -> CGRect {
+    func frame(size: CGSize, in bounds: CGRect) -> CGRect {
         let width = min(size.width, bounds.width)
         let height = min(size.height, bounds.height)
         let anchors = anchorBounds(in: bounds)
         let centerX = anchors.minX + anchors.width * min(max(x, 0), 1)
-        // A notch hangs from the top edge while its controls expand downward.
-        let centerY =
-            style == .notch && y >= 1
-            ? bounds.maxY - height / 2
-            : anchors.minY + anchors.height * min(max(y, 0), 1)
+        let centerY = anchors.minY + anchors.height * min(max(y, 0), 1)
         return CGRect(
             x: min(max(centerX - width / 2, bounds.minX), bounds.maxX - width),
             y: min(max(centerY - height / 2, bounds.minY), bounds.maxY - height),

@@ -41,7 +41,9 @@ The current signing setup is for local use. Developer ID signing, notarization, 
 
 Completed transcripts appear in **History**, with Original and Result views. If insertion cannot safely complete, copy the result from History. Cleanup failure preserves the original transcript and does not automatically insert it.
 
-The floating recorder is solid black with a white waveform icon and audio-level bars. Mini is a compact rounded pill; Notch has a flat top and rounded lower corners. Hover to choose a mode or show recording controls. Drag anywhere on the recorder, including across displays, to reveal 17 screen positions. Release to snap to the highlighted position. The same positions are available in **Settings → Appearance → Screen position**. Placement is saved, with room for the controls to open within the usable screen area. Top-positioned Notch controls dock below the camera or menu bar.
+The recorder rests as a small bar and expands while recording or processing. White dots rise into bars with your voice, and processing labels get enough room to display in full. Hover to choose a mode or show recording controls. **Mini** is a floating pill. Drag it, including across displays, to reveal 17 screen positions, then release to snap to the highlighted position. These positions are also available in **Settings → Appearance → Screen position**, which appears only for Mini. Its placement is saved.
+
+**Notch** stays inside the menu bar, beside the MacBook camera or centered on the primary display when there is no camera cutout. Its controls expand horizontally within the menu bar. It ignores saved Mini positions and cannot be dragged. Switching styles preserves Mini's saved position.
 
 Shortcuts can also use two or more modifier keys without a letter or space, such as **⌥⌘**. Press and release the combination to toggle recording. Modifier-only push-to-talk starts after a brief hold and finishes when a modifier is released. Typing another key cancels a modifier gesture. These shortcuts need Accessibility access to work in other apps; ordinary key shortcuts do not.
 

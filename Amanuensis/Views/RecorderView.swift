@@ -10,14 +10,17 @@ struct RecorderView: View {
     @State private var revealControls = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var controlsSize = CGSize(width: 132, height: 26)
+    @State private var activitySize = CGSize(width: 156, height: 26)
     @State private var collapseTask: Task<Void, Never>?
 
     private var isOpen: Bool {
-        revealControls || showingModes || showingPermission || model.pasteNeedsAccessibility
+        revealControls || showingModes || showingPermission
     }
 
+    private var isMinimized: Bool { !isOpen && !model.phase.isBusy }
     private var style: RecorderStyle { model.settings.recorderStyle }
     private var idleSize: CGSize { RecorderLayout.idleSize(for: style) }
+    private var activeSize: CGSize { RecorderLayout.activeSize(for: style) }
     private var silhouette: RecorderSilhouette { RecorderSilhouette(style: style) }
 
     private var recordingLabel: String {
@@ -39,9 +42,14 @@ struct RecorderView: View {
                     .accessibilityHidden(!isOpen)
                 compactContents
                     .frame(width: geometry.size.width, height: geometry.size.height)
-                    .opacity(isOpen ? 0 : 1)
-                    .allowsHitTesting(!isOpen)
-                    .accessibilityHidden(isOpen)
+                    .opacity(!isOpen && !isMinimized ? 1 : 0)
+                    .allowsHitTesting(!isOpen && !isMinimized)
+                    .accessibilityHidden(isOpen || isMinimized)
+                minimizedContents
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .opacity(isMinimized ? 1 : 0)
+                    .allowsHitTesting(isMinimized)
+                    .accessibilityHidden(!isMinimized)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .background(.black, in: silhouette)
@@ -54,7 +62,8 @@ struct RecorderView: View {
             DragGesture(minimumDistance: 5, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { model.moveRecorder(translation: $0.translation) }
-                .onEnded { _ in model.finishMovingRecorder() }
+                .onEnded { _ in model.finishMovingRecorder() },
+            including: style == .mini ? .all : .subviews
         )
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: isOpen)
         .onHover { inside in
@@ -70,6 +79,8 @@ struct RecorderView: View {
         .onAppear { updateSize() }
         .onChange(of: isOpen) { _, _ in updateSize() }
         .onChange(of: controlsSize) { _, _ in updateSize() }
+        .onChange(of: activitySize) { _, _ in updateSize() }
+        .onChange(of: model.phase) { _, _ in updateSize() }
         .onChange(of: style) { _, _ in updateSize() }
         .onChange(of: showingModes) { _, showing in
             if !showing { scheduleCollapse() }
@@ -96,6 +107,8 @@ struct RecorderView: View {
             if busy {
                 showingModes = false
                 showingPermission = false
+            } else {
+                scheduleCollapse()
             }
         }
         .onDisappear {
@@ -105,12 +118,36 @@ struct RecorderView: View {
     }
 
     private func updateSize() {
-        model.resizeRecorder(
-            to: isOpen
-                ? CGSize(
-                    width: max(idleSize.width, ceil(controlsSize.width) + 24),
-                    height: max(idleSize.height, ceil(controlsSize.height) + 12))
-                : idleSize)
+        if isMinimized {
+            model.resizeRecorder(to: idleSize)
+        } else {
+            let content = isOpen ? controlsSize : activitySize
+            model.resizeRecorder(
+                to: CGSize(
+                    width: max(activeSize.width, ceil(content.width) + (isOpen ? 24 : 0)),
+                    height: max(activeSize.height, ceil(content.height) + 12)))
+        }
+    }
+
+    private var minimizedContents: some View {
+        Button(action: model.toggleRecording) {
+            Capsule()
+                .fill(model.pasteNeedsAccessibility ? Color.orange : .white.opacity(0.8))
+                .frame(width: 24, height: 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(silhouette)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Start recording")
+        .accessibilityHint(
+            model.pasteNeedsAccessibility
+                ? "Automatic paste needs Accessibility access. Show recorder controls for options."
+                : "Hover or use actions to show recorder controls."
+        )
+        .accessibilityActions {
+            Button("Show recorder controls") { revealControls = true }
+        }
+        .help("Click to record. Hover for controls.")
     }
 
     private var compactContents: some View {
@@ -122,12 +159,18 @@ struct RecorderView: View {
                 Spacer(minLength: 4)
                 if model.phase.isBusy && model.phase != .recording {
                     ProgressView().controlSize(.mini)
-                    Text(model.phase.rawValue).font(.system(size: 11)).lineLimit(1)
+                    Text(model.phase.rawValue).font(.system(size: 11)).fixedSize()
                 } else {
                     RecorderWaveform(level: model.recordingLevel, active: model.phase == .recording)
                 }
             }
             .padding(.horizontal, style == .notch ? 20 : 16)
+            .fixedSize()
+            .onGeometryChange(for: CGSize.self) {
+                $0.size
+            } action: {
+                activitySize = $0
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(silhouette)
         }
@@ -137,7 +180,11 @@ struct RecorderView: View {
             model.phase.isBusy && model.phase != .recording ? model.phase.rawValue : recordingLabel
         )
         .accessibilityValue(model.phase == .recording ? durationLabel(model.recordingDuration) : "")
-        .accessibilityHint("Use actions for more recorder controls. Drag to reposition.")
+        .accessibilityHint(
+            style == .mini
+                ? "Use actions for more recorder controls. Drag to reposition."
+                : "Use actions for more recorder controls."
+        )
         .accessibilityActions {
             Button("Show recorder controls") { revealControls = true }
             if model.phase.isBusy && model.phase != .delivering {
@@ -147,7 +194,9 @@ struct RecorderView: View {
         .help(
             model.phase == .recording
                 ? "Click to finish recording. Hover for controls."
-                : "Click to record. Hover for controls. Drag to reposition.")
+                : style == .mini
+                    ? "Click to record. Hover for controls. Drag to reposition."
+                    : "Click to record. Hover for controls.")
     }
 
     private var controls: some View {
@@ -166,10 +215,7 @@ struct RecorderView: View {
             .buttonStyle(.plain).disabled(model.phase.isBusy)
             .accessibilityLabel("Change mode, current mode: \(model.currentMode.name)")
             .help("Change mode")
-            .popover(
-                isPresented: $showingModes,
-                arrowEdge: (model.settings.recorderPlacement ?? defaultPlacement).y > 0.5 ? .bottom : .top
-            ) {
+            .popover(isPresented: $showingModes, arrowEdge: popoverEdge) {
                 modeMenu
             }
 
@@ -252,12 +298,8 @@ struct RecorderView: View {
         }
     }
 
-    private var defaultPlacement: RecorderPlacement {
-        model.settings.recorderStyle == .notch ? .top : .bottom
-    }
-
     private var popoverEdge: Edge {
-        (model.settings.recorderPlacement ?? defaultPlacement).y > 0.5 ? .bottom : .top
+        style == .notch || (model.settings.recorderPlacement ?? .bottom).y > 0.5 ? .bottom : .top
     }
 
     private var modeMenu: some View {
@@ -341,16 +383,23 @@ struct RecorderWaveform: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let profile: [Double] = [0.35, 0.6, 0.45, 0.85, 0.65, 1, 0.7, 0.5, 0.85, 0.6, 0.4, 0.55]
 
+    private var intensity: Double {
+        guard active, level.isFinite, level > 0 else { return 0 }
+        // Capture supplies linear amplitude. Map -55...-12 dB to visible motion so ordinary speech
+        // moves the bars without amplifying the recorded audio or animating silence.
+        return min(1, max(0, (20 * log10(level) + 55) / 43))
+    }
+
     var body: some View {
         HStack(spacing: 3) {
             ForEach(profile.indices, id: \.self) { index in
                 Capsule()
                     .fill(.white)
-                    .frame(width: 3, height: active ? 4 + 17 * min(1, max(0, level)) * profile[index] : 4)
+                    .frame(width: 3, height: 4 + 17 * intensity * profile[index])
             }
         }
         .frame(height: 22)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: level)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: intensity)
         .accessibilityHidden(true)
     }
 }
