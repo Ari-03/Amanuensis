@@ -9,7 +9,7 @@ struct RecorderView: View {
     @GestureState private var dragging = false
     @State private var revealControls = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var controlsSize = CGSize(width: 132, height: 26)
+    @State private var controlsSize = CGSize(width: 62, height: 26)
     @State private var activitySize = CGSize(width: 156, height: 26)
     @State private var collapseTask: Task<Void, Never>?
 
@@ -124,7 +124,9 @@ struct RecorderView: View {
             let content = isOpen ? controlsSize : activitySize
             model.resizeRecorder(
                 to: CGSize(
-                    width: max(activeSize.width, ceil(content.width) + (isOpen ? 24 : 0)),
+                    width: max(
+                        model.phase.isBusy ? activeSize.width : idleSize.width,
+                        ceil(content.width) + (isOpen ? 24 : 0)),
                     height: max(activeSize.height, ceil(content.height) + 12)))
         }
     }
@@ -153,7 +155,7 @@ struct RecorderView: View {
     private var compactContents: some View {
         Button(action: model.toggleRecording) {
             HStack(spacing: 12) {
-                Image(systemName: "waveform")
+                Image(systemName: model.phase == .recording ? "stop.fill" : "mic.fill")
                     .font(.system(size: 19, weight: .semibold))
                     .frame(width: 24)
                 Spacer(minLength: 4)
@@ -220,7 +222,7 @@ struct RecorderView: View {
             }
 
             Button(action: model.toggleRecording) {
-                Image(systemName: model.phase == .recording ? "stop.fill" : "waveform")
+                Image(systemName: model.phase == .recording ? "stop.fill" : "mic.fill")
                     .font(.system(size: model.phase == .recording ? 12 : 17, weight: .semibold))
                     .frame(width: 26, height: 26)
                     .contentShape(Rectangle())
@@ -291,8 +293,6 @@ struct RecorderView: View {
                 .buttonStyle(.plain).help("Cancel recording")
                 .accessibilityLabel("Cancel recording")
                 .disabled(model.phase == .delivering)
-            } else {
-                RecorderWaveform(level: 0, active: false)
             }
 
         }

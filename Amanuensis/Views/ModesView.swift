@@ -210,8 +210,10 @@ struct ModesView: View {
                             Text($0.rawValue).tag($0)
                         }
                     }
-                    Text("Lower and mute require an output device with volume control.").font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(
+                        "Lower and mute use your output's macOS volume control. Some display and digital audio outputs do not support it."
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
                 }
                 Button("Delete mode", role: .destructive) { deleting = true }.disabled(model.modes.count <= 1)
                     .confirmationDialog(

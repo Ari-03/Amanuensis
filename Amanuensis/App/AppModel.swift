@@ -160,6 +160,7 @@ final class AppModel {
             report(AppFailure("Local storage must be available before recording."))
             return
         }
+        recorder.followDisplay(containing: NSEvent.mouseLocation)
         refreshAccessibility()
         pasteNeedsAccessibility = false
         let frontmost = NSWorkspace.shared.frontmostApplication

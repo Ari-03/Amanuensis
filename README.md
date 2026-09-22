@@ -41,9 +41,11 @@ The current signing setup is for local use. Developer ID signing, notarization, 
 
 Completed transcripts appear in **History**, with Original and Result views. If insertion cannot safely complete, copy the result from History. Cleanup failure preserves the original transcript and does not automatically insert it.
 
-The recorder rests as a small bar and expands while recording or processing. White dots rise into bars with your voice, and processing labels get enough room to display in full. Hover to choose a mode or show recording controls. **Mini** is a floating pill. Drag it, including across displays, to reveal 17 screen positions, then release to snap to the highlighted position. These positions are also available in **Settings → Appearance → Screen position**, which appears only for Mini. Its placement is saved.
+The recorder rests as a small bar and expands while recording or processing. Hover while idle to choose a mode or start recording with the microphone button. Audio bars appear during recording, and processing labels display in full. **Mini** is a floating pill. Drag it, including across displays, to reveal 17 screen positions, then release to snap to the highlighted position. These positions are also available in **Settings → Appearance → Screen position**, which appears only for Mini. Its placement is saved. Top and bottom positions sit eight points inside the available screen edge and expand inward, clear of the menu bar and Dock.
 
-**Notch** stays inside the menu bar, beside the MacBook camera or centered on the primary display when there is no camera cutout. Its controls expand horizontally within the menu bar. It ignores saved Mini positions and cannot be dragged. Switching styles preserves Mini's saved position.
+Starting a recording moves the controls to the display containing the mouse pointer, keeping Mini's chosen position on that display. They stay there through recording and processing, even if the pointer moves elsewhere.
+
+**Notch** stays inside the menu bar, beside the camera or centered when there is no camera cutout. Before the first recording, it uses the MacBook display or the primary display. Its controls expand horizontally within the menu bar. It ignores saved Mini positions and cannot be dragged. Switching styles preserves Mini's saved position.
 
 Shortcuts can also use two or more modifier keys without a letter or space, such as **⌥⌘**. Press and release the combination to toggle recording. Modifier-only push-to-talk starts after a brief hold and finishes when a modifier is released. Typing another key cancels a modifier gesture. These shortcuts need Accessibility access to work in other apps; ordinary key shortcuts do not.
 
@@ -56,6 +58,8 @@ Normal quit and system sleep preserve unfinished audio and text for recovery. Ex
 **Require local processing** starts enabled. To use OpenAI or Groq transcription, or OpenAI or Claude cleanup, configure the provider in Models, select it in a mode, and turn off that restriction in Settings. Credentials are stored in macOS Keychain. Testing a provider queries model metadata; it does not upload audio or transcript text.
 
 Meeting capture also needs the macOS screen/system-audio recording permission. Speaker identification is not implemented.
+
+**Playback while recording** can lower or mute outputs with writable macOS volume controls, including devices that expose virtual main volume. Some display and digital audio outputs have no such control. If adjustment is unavailable, the error names the output so you can choose Keep playing or switch outputs. Playback restores when capture ends, while preserving volume changes you make during recording.
 
 ## Models and data
 

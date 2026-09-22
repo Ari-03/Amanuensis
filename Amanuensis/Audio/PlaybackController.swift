@@ -1,3 +1,4 @@
+import AudioToolbox
 import CoreAudio
 import Foundation
 
@@ -18,6 +19,7 @@ enum PlaybackOutputValue {
 protocol PlaybackOutputControlling {
     func defaultOutputDevice() throws -> AudioDeviceID
     func deviceUID(_ device: AudioDeviceID) throws -> String
+    func deviceName(_ device: AudioDeviceID) throws -> String
     func isWritable(_ selector: AudioObjectPropertySelector, on device: AudioDeviceID) -> Bool
     func read(_ selector: AudioObjectPropertySelector, on device: AudioDeviceID) throws -> PlaybackOutputValue
     func write(_ value: PlaybackOutputValue, selector: AudioObjectPropertySelector, on device: AudioDeviceID)
@@ -48,15 +50,22 @@ final class PlaybackController {
     func availableBehaviors() -> [PlaybackBehavior] {
         guard let device = try? output.defaultOutputDevice() else { return [.keepPlaying] }
         var behaviors: [PlaybackBehavior] = [.keepPlaying]
-        if output.isWritable(kAudioDevicePropertyVolumeScalar, on: device) {
+        let hasVolume = volumeSelector(on: device) != nil
+        if hasVolume {
             behaviors.append(.lower)
         }
         if output.isWritable(kAudioDevicePropertyMute, on: device)
-            || output.isWritable(kAudioDevicePropertyVolumeScalar, on: device)
+            || hasVolume
         {
             behaviors.append(.mute)
         }
         return behaviors
+    }
+
+    private func volumeSelector(on device: AudioDeviceID) -> AudioObjectPropertySelector? {
+        // Virtual main volume also covers channel controls while preserving their balance.
+        [kAudioDevicePropertyVolumeScalar, kAudioHardwareServiceDeviceProperty_VirtualMainVolume]
+            .first { output.isWritable($0, on: device) }
     }
 
     func begin(_ behavior: PlaybackBehavior) throws {
@@ -70,11 +79,10 @@ final class PlaybackController {
         let selector: AudioObjectPropertySelector
         if behavior == .mute, output.isWritable(kAudioDevicePropertyMute, on: device) {
             selector = kAudioDevicePropertyMute
+        } else if let volume = volumeSelector(on: device) {
+            selector = volume
         } else {
-            selector = kAudioDevicePropertyVolumeScalar
-        }
-        guard output.isWritable(selector, on: device) else {
-            throw PlaybackControlError.unsupportedOutput(behavior.rawValue)
+            throw PlaybackControlError.unsupportedOutput(try? output.deviceName(device))
         }
 
         let original = try output.read(selector, on: device)
@@ -159,8 +167,18 @@ private struct CoreAudioPlaybackOutput: PlaybackOutputControlling {
     }
 
     func deviceUID(_ device: AudioDeviceID) throws -> String {
+        try stringProperty(kAudioDevicePropertyDeviceUID, on: device)
+    }
+
+    func deviceName(_ device: AudioDeviceID) throws -> String {
+        try stringProperty(kAudioObjectPropertyName, on: device)
+    }
+
+    private func stringProperty(_ selector: AudioObjectPropertySelector, on device: AudioDeviceID) throws
+        -> String
+    {
         var property = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -227,7 +245,7 @@ private struct CoreAudioPlaybackOutput: PlaybackOutputControlling {
 private enum PlaybackControlError: LocalizedError {
     case alreadyActive
     case pauseUnsupported
-    case unsupportedOutput(String)
+    case unsupportedOutput(String?)
     case noOutput
     case outputChanged
     case changeNotApplied
@@ -238,8 +256,8 @@ private enum PlaybackControlError: LocalizedError {
         case .alreadyActive: "A playback adjustment is already active."
         case .pauseUnsupported:
             "Pausing media is not available yet. Choose Keep playing, Lower volume, or Mute."
-        case .unsupportedOutput(let behavior):
-            "This output device does not provide a writable control for \(behavior.lowercased()). Choose Keep playing."
+        case .unsupportedOutput(let name):
+            "macOS does not expose volume control for \(name ?? "this audio output"). Choose Keep playing or switch to an output with macOS volume control."
         case .noOutput: "No audio output device is available."
         case .outputChanged: "The audio output changed before recording began. Try again."
         case .changeNotApplied: "The output device did not apply the requested playback setting."

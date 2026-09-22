@@ -51,10 +51,11 @@ struct RecorderChecks {
                 precondition(panel.frame.width > original.width && panel.frame.width < 256)
             }
             precondition(abs(panel.frame.midX - original.midX) < 1)
-            precondition(abs(panel.frame.midY - original.midY) < 1)
+            precondition(abs(panel.frame.maxY - original.maxY) < 1)
             await pause(220)
             precondition(panel.frame.size == NSSize(width: 256, height: 44))
-            print("PASS: Native bounds animate through intermediate sizes around a fixed center")
+            precondition(abs(panel.frame.maxY - (panel.screen!.visibleFrame.maxY - 8)) < 1)
+            print("PASS: Native bounds expand inward from the top edge with an 8-point gap")
 
             var saved: RecorderPlacement?
             var dragging = false
@@ -72,6 +73,7 @@ struct RecorderChecks {
             await pause(220)
             precondition(saved?.x == 1 && saved?.y == 0 && saved?.displayID != nil)
             precondition(!dragging && panel.frame.size == RecorderLayout.idleSize)
+            precondition(abs(panel.frame.minY - (panel.screen!.visibleFrame.minY + 8)) < 1)
             precondition(app.windows.filter { $0.isVisible && $0 is NSPanel }.count == 1)
             print(
                 "PASS: Drag displays targets, freezes resizing, saves the snapped display and position, and removes targets"
@@ -235,6 +237,7 @@ struct RecorderChecks {
 
             recorder.hide()
             precondition(!panel.isVisible)
+            await checkInvocationDisplays()
             let notchFirst = RecorderPanelController()
             notchFirst.show(content: AnyView(Color.clear), style: .notch, placement: nil)
             precondition(notchFirst.miniDisplayID == nil)
@@ -246,6 +249,45 @@ struct RecorderChecks {
             app.terminate(nil)
         }
         app.run()
+    }
+
+    /// Refreshes and resizes must retain the invocation display even with an older saved display.
+    @MainActor private static func checkInvocationDisplays() async {
+        let recorder = RecorderPanelController()
+        let savedID =
+            (NSScreen.screens.first!.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber)
+            .uint32Value
+        let placement = RecorderPlacement(x: 0.75, y: 0, displayID: savedID)
+        for style in [RecorderStyle.mini, .notch] {
+            for screen in NSScreen.screens {
+                recorder.followDisplay(containing: NSPoint(x: screen.frame.midX, y: screen.frame.midY))
+                recorder.show(content: AnyView(Color.clear), style: style, placement: placement)
+                let panel = NSApp.windows.first { $0.isVisible && $0 is NSPanel }!
+                for size in [CGSize(width: 180, height: 38), RecorderLayout.idleSize(for: style)] {
+                    recorder.resize(to: size)
+                    recorder.show(content: AnyView(Color.clear), style: style, placement: placement)
+                    await pause(220)
+                    precondition(
+                        panel.screen == screen, "Saved placement must not override the invocation display")
+                    if style == .mini {
+                        let expected = placement.frame(
+                            size: size, in: screen.visibleFrame.insetBy(dx: 16, dy: 8))
+                        precondition(
+                            panel.frame == expected, "The same selected position must be used on each display"
+                        )
+                    }
+                    precondition(!panel.canBecomeKey && !panel.canBecomeMain)
+                }
+                recorder.hide()
+                recorder.show(content: AnyView(Color.clear), style: style, placement: placement)
+                precondition(
+                    panel.screen == screen, "Hidden controls must also appear on the invocation display")
+                recorder.hide()
+            }
+        }
+        print(
+            "PASS: Invocation display survives refresh, resize, and hide/show for both styles on \(NSScreen.screens.count) connected display(s)"
+        )
     }
 
     /// Measure the tallest rendered bar, including the actual SwiftUI frame and fill.

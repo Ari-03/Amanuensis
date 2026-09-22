@@ -154,9 +154,8 @@ struct ConfigurationView: View {
                         Image(systemName: "eye.slash").foregroundStyle(.secondary)
                     } else {
                         HStack(spacing: style == .notch ? 26 : 12) {
-                            Image(systemName: "waveform")
-                            RecorderWaveform(level: 0, active: false)
-                                .scaleEffect(0.7).frame(width: 48, height: 16)
+                            Image(systemName: "slider.horizontal.3")
+                            Image(systemName: "mic.fill")
                         }
                         .font(.system(size: 11)).foregroundStyle(.white)
                         .padding(.horizontal, 11).padding(.vertical, 7)

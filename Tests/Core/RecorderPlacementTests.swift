@@ -5,7 +5,7 @@ import Testing
 @testable import AmanuensisCore
 
 struct RecorderPlacementTests {
-    @Test func hoverExpansionKeepsTheSameCenterAtEveryPreset() {
+    @Test func hoverExpansionPreservesHorizontalCenterAndVerticalAnchor() {
         let bounds = CGRect(x: -1500, y: 80, width: 1400, height: 900)
         for preset in RecorderPlacement.presets {
             let idle = preset.frame(size: RecorderLayout.idleSize, in: bounds)
@@ -15,8 +15,22 @@ struct RecorderPlacementTests {
             ] {
                 let open = preset.frame(size: size, in: bounds)
                 #expect(open.midX == idle.midX)
-                #expect(open.midY == idle.midY)
+                #expect(open.minY + open.height * preset.y == idle.minY + idle.height * preset.y)
                 #expect(bounds.contains(open))
+            }
+        }
+    }
+
+    @Test func topAndBottomPresetsStayAtTheEdgeAtEverySize() {
+        let bounds = CGRect(x: -1500, y: 80, width: 1400, height: 900)
+        for preset in RecorderPlacement.presets where preset.y == 0 || preset.y == 1 {
+            for size in [
+                RecorderLayout.idleSize, CGSize(width: 86, height: 38), CGSize(width: 280, height: 44),
+            ] {
+                let frame = preset.frame(size: size, in: bounds)
+                #expect(preset.y == 0 ? frame.minY == bounds.minY : frame.maxY == bounds.maxY)
+                let restored = RecorderPlacement(frame: frame, in: bounds, displayID: nil)
+                #expect(restored.x == preset.x && restored.y == preset.y)
             }
         }
     }

@@ -10,8 +10,9 @@ final class RecorderPanelController {
     private let targetsPanel: RecorderPanel
     private var placement: RecorderPlacement = .bottom
     private var style: RecorderStyle = .mini
-    /// Mini keeps its chosen display while Notch uses the menu bar on its own display.
+    /// Dragged placement survives style changes; each recording can choose a different display.
     private(set) var miniDisplayID: UInt32?
+    private var recordingDisplayID: UInt32?
     private var screenObserver: NSObjectProtocol?
     private var contentSize = RecorderLayout.idleSize
     private var animation: Task<Void, Never>?
@@ -92,6 +93,15 @@ final class RecorderPanelController {
         panel.orderOut(nil)
     }
 
+    /// Capture the invocation display once, before preparation or later pointer movement.
+    func followDisplay(containing point: NSPoint) {
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main
+        else { return }
+        cancelDrag()
+        recordingDisplayID = displayID(screen)
+        placePanel(animated: false)
+    }
+
     func updateDrag(translation: CGSize) {
         let mouse = NSEvent.mouseLocation
         if dragOrigin == nil {
@@ -126,6 +136,7 @@ final class RecorderPanelController {
             return
         }
         miniDisplayID = displayID(screen)
+        recordingDisplayID = nil
         placement = nearestPlacement(on: screen)
         dragOrigin = nil
         targetsPanel.orderOut(nil)
@@ -174,13 +185,16 @@ final class RecorderPanelController {
     }
 
     private func availableFrame(on screen: NSScreen) -> NSRect {
-        var frame = screen.visibleFrame.insetBy(dx: 16, dy: 16)
+        var frame = screen.visibleFrame.insetBy(dx: 16, dy: 8)
         let safeTop = screen.frame.maxY - screen.safeAreaInsets.top - 8
         frame.size.height = max(0, min(frame.maxY, safeTop) - frame.minY)
         return frame
     }
 
     private var recorderScreen: NSScreen? {
+        if let screen = NSScreen.screens.first(where: { displayID($0) == recordingDisplayID }) {
+            return screen
+        }
         if style == .notch {
             return NSScreen.screens.first { $0.safeAreaInsets.top > 0 }
                 ?? NSScreen.screens.first
