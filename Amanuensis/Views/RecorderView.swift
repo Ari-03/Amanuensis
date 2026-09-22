@@ -9,12 +9,19 @@ struct RecorderView: View {
     @GestureState private var dragging = false
     @State private var revealControls = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var controlsSize = CGSize(width: 64, height: 26)
+    @State private var controlsSize = CGSize(width: 132, height: 26)
     @State private var collapseTask: Task<Void, Never>?
 
     private var isOpen: Bool {
-        revealControls || showingModes || showingPermission || model.phase.isBusy
-            || model.pasteNeedsAccessibility
+        revealControls || showingModes || showingPermission || model.pasteNeedsAccessibility
+    }
+
+    private var style: RecorderStyle { model.settings.recorderStyle }
+    private var idleSize: CGSize { RecorderLayout.idleSize(for: style) }
+    private var silhouette: RecorderSilhouette { RecorderSilhouette(style: style) }
+
+    private var recordingLabel: String {
+        model.phase == .recording ? "Finish recording" : "Start recording"
     }
 
     var body: some View {
@@ -30,24 +37,19 @@ struct RecorderView: View {
                     .opacity(isOpen ? 1 : 0)
                     .allowsHitTesting(isOpen)
                     .accessibilityHidden(!isOpen)
-                Button(action: model.toggleRecording) {
-                    Color.clear
-                        .frame(width: RecorderLayout.idleSize.width, height: RecorderLayout.idleSize.height)
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Start recording")
-                .help("Click to record. Drag to choose a screen position.")
-                .opacity(isOpen ? 0 : 1)
-                .allowsHitTesting(!isOpen)
-                .accessibilityHidden(isOpen)
+                compactContents
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .opacity(isOpen ? 0 : 1)
+                    .allowsHitTesting(!isOpen)
+                    .accessibilityHidden(isOpen)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
-            .background(.regularMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.primary.opacity(0.15)))
-            .clipped()
+            .background(.black, in: silhouette)
+            .clipShape(silhouette)
         }
-        .contentShape(Capsule())
+        .foregroundStyle(.white)
+        .preferredColorScheme(.dark)
+        .contentShape(silhouette)
         .highPriorityGesture(
             DragGesture(minimumDistance: 5, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
@@ -68,6 +70,7 @@ struct RecorderView: View {
         .onAppear { updateSize() }
         .onChange(of: isOpen) { _, _ in updateSize() }
         .onChange(of: controlsSize) { _, _ in updateSize() }
+        .onChange(of: style) { _, _ in updateSize() }
         .onChange(of: showingModes) { _, showing in
             if !showing { scheduleCollapse() }
         }
@@ -104,12 +107,51 @@ struct RecorderView: View {
     private func updateSize() {
         model.resizeRecorder(
             to: isOpen
-                ? CGSize(width: ceil(controlsSize.width) + 8, height: ceil(controlsSize.height) + 8)
-                : RecorderLayout.idleSize)
+                ? CGSize(
+                    width: max(idleSize.width, ceil(controlsSize.width) + 24),
+                    height: max(idleSize.height, ceil(controlsSize.height) + 12))
+                : idleSize)
+    }
+
+    private var compactContents: some View {
+        Button(action: model.toggleRecording) {
+            HStack(spacing: 12) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 19, weight: .semibold))
+                    .frame(width: 24)
+                Spacer(minLength: 4)
+                if model.phase.isBusy && model.phase != .recording {
+                    ProgressView().controlSize(.mini)
+                    Text(model.phase.rawValue).font(.system(size: 11)).lineLimit(1)
+                } else {
+                    RecorderWaveform(level: model.recordingLevel, active: model.phase == .recording)
+                }
+            }
+            .padding(.horizontal, style == .notch ? 20 : 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(silhouette)
+        }
+        .buttonStyle(.plain)
+        .disabled(model.phase.isBusy && model.phase != .recording)
+        .accessibilityLabel(
+            model.phase.isBusy && model.phase != .recording ? model.phase.rawValue : recordingLabel
+        )
+        .accessibilityValue(model.phase == .recording ? durationLabel(model.recordingDuration) : "")
+        .accessibilityHint("Use actions for more recorder controls. Drag to reposition.")
+        .accessibilityActions {
+            Button("Show recorder controls") { revealControls = true }
+            if model.phase.isBusy && model.phase != .delivering {
+                Button("Cancel recording", action: model.cancelRecording)
+            }
+        }
+        .help(
+            model.phase == .recording
+                ? "Click to finish recording. Hover for controls."
+                : "Click to record. Hover for controls. Drag to reposition.")
     }
 
     private var controls: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             Button {
                 showingPermission = false
                 showingModes.toggle()
@@ -119,7 +161,7 @@ struct RecorderView: View {
                     Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
                 }
                 .font(.system(size: 12, weight: .medium))
-                .frame(width: 32, height: 26).contentShape(Rectangle())
+                .frame(width: 28, height: 26).contentShape(Rectangle())
             }
             .buttonStyle(.plain).disabled(model.phase.isBusy)
             .accessibilityLabel("Change mode, current mode: \(model.currentMode.name)")
@@ -132,15 +174,14 @@ struct RecorderView: View {
             }
 
             Button(action: model.toggleRecording) {
-                Image(systemName: model.phase == .recording ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(model.phase == .recording ? .red : .primary)
+                Image(systemName: model.phase == .recording ? "stop.fill" : "waveform")
+                    .font(.system(size: model.phase == .recording ? 12 : 17, weight: .semibold))
                     .frame(width: 26, height: 26)
-                    .background(.primary.opacity(0.1), in: Circle())
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain).disabled(model.phase.isBusy && model.phase != .recording)
-            .accessibilityLabel(model.phase == .recording ? "Finish recording" : "Start recording")
-            .help(model.phase == .recording ? "Finish recording" : "Start recording")
+            .accessibilityLabel(recordingLabel)
+            .help(recordingLabel)
 
             if !model.phase.isBusy
                 && (model.pasteNeedsAccessibility
@@ -187,7 +228,7 @@ struct RecorderView: View {
             if model.phase.isBusy {
                 HStack(spacing: 6) {
                     if model.phase == .recording {
-                        AudioLevelView(level: model.recordingLevel, active: true).frame(width: 36)
+                        RecorderWaveform(level: model.recordingLevel, active: true)
                     } else {
                         ProgressView().controlSize(.mini)
                     }
@@ -204,6 +245,8 @@ struct RecorderView: View {
                 .buttonStyle(.plain).help("Cancel recording")
                 .accessibilityLabel("Cancel recording")
                 .disabled(model.phase == .delivering)
+            } else {
+                RecorderWaveform(level: 0, active: false)
             }
 
         }
@@ -253,6 +296,62 @@ struct RecorderView: View {
             else { return }
             revealControls = false
         }
+    }
+}
+
+/// The notch's shoulders meet the screen edge; the mini recorder floats with rounded ends.
+struct RecorderSilhouette: Shape {
+    var style: RecorderStyle
+
+    func path(in rect: CGRect) -> Path {
+        guard style == .notch else {
+            return RoundedRectangle(cornerRadius: 14, style: .continuous).path(in: rect)
+        }
+        let shoulder: CGFloat = min(5, rect.height / 4)
+        let radius: CGFloat = min(17, rect.height / 2)
+        let left = rect.minX + shoulder
+        let right = rect.maxX - shoulder
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: right, y: rect.minY + shoulder),
+            control: CGPoint(x: right, y: rect.minY))
+        path.addLine(to: CGPoint(x: right, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: right - radius, y: rect.maxY),
+            control: CGPoint(x: right, y: rect.maxY))
+        path.addLine(to: CGPoint(x: left + radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: left, y: rect.maxY - radius),
+            control: CGPoint(x: left, y: rect.maxY))
+        path.addLine(to: CGPoint(x: left, y: rect.minY + shoulder))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY),
+            control: CGPoint(x: left, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Quiet audio rests as dots; incoming microphone levels give the bars their height.
+struct RecorderWaveform: View {
+    var level: Double
+    var active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let profile: [Double] = [0.35, 0.6, 0.45, 0.85, 0.65, 1, 0.7, 0.5, 0.85, 0.6, 0.4, 0.55]
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(profile.indices, id: \.self) { index in
+                Capsule()
+                    .fill(.white)
+                    .frame(width: 3, height: active ? 4 + 17 * min(1, max(0, level)) * profile[index] : 4)
+            }
+        }
+        .frame(height: 22)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: level)
+        .accessibilityHidden(true)
     }
 }
 

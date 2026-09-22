@@ -1,10 +1,10 @@
 # Implementation status
 
-Updated September 20, 2026. This document describes the current source and validation evidence. The [product brief](product-brief.md) remains the requested scope; the [implementation plan](implementation-plan.md) contains earlier proposed decisions.
+Updated September 21, 2026. This document describes the current source and validation evidence. The [product brief](product-brief.md) remains the requested scope; the [implementation plan](implementation-plan.md) contains earlier proposed decisions.
 
 ## Current implementation
 
-The starter has been replaced with a native SwiftUI app and AppKit recording controls. Home, Modes, Vocabulary, Models, History, Sound, and Settings are connected to shared application state. Home and Settings edit the same recording shortcut. The app also has a menu-bar menu and mini, panel, notch-positioned, and hidden recorder options.
+The starter has been replaced with a native SwiftUI app and AppKit recording controls. Home, Modes, Vocabulary, Models, History, Sound, and Settings are connected to shared application state. Home and Settings edit the same recording shortcut. The app also has a menu-bar menu and mini, notch, and hidden recorder options. The visible recorders use solid black backgrounds with white audio-level bars; hover reveals controls. Modes uses one opaque background across its list and editor, and the main-window status badge has been removed.
 
 One MainActor `AppModel` owns recording state, session identity, cancellation, and frozen mode/model/vocabulary choices. Its processing sequence is capture, transcription, optional cleanup, deterministic replacements, and insertion. Raw text is persisted before cleanup. Cleanup failure keeps the raw result in History without auto-inserting it. Empty cleanup output produces nothing to insert. Destination checks and copy recovery are implemented for unsuccessful insertion. Cancellation waits for teardown before another job can start, and normal application termination restores a temporarily changed clipboard. Normal quit and sleep preserve unfinished audio and text; explicit Cancel discards the active recording.
 
@@ -15,7 +15,7 @@ The development Mac now has four managed model imports: Whisper Tiny, Parakeet V
 | Area | Present in source | Remaining validation or limitation |
 | --- | --- | --- |
 | Microphones | Persistent priority list, explicit exclusions, device discovery, selected input, interruption handling | Real microphone permission, capture, reconnect, and device-loss behavior need live checks. |
-| Recording controls | Editable global toggle shortcut, optional push-to-talk, mode shortcut, Escape cancellation, menu-bar and floating controls | Carbon shortcut checks passed. Cross-app shortcut conflicts, keyboard layouts, full-screen Spaces, and multiple displays need live checks. |
+| Recording controls | Editable global toggle shortcut, optional push-to-talk, mode shortcut, modifier-only combinations, Escape cancellation, menu-bar and floating controls | Carbon and modifier event-sequence checks passed. Global modifier monitoring requires Accessibility access. Cross-app shortcut conflicts, keyboard layouts, full-screen Spaces, and multiple displays need live checks. |
 | Modes | Six initial presets, create/edit/delete, per-mode recording shortcuts, app associations, speech/cleanup selection, tone, lists, custom prompt, insertion settings | Website matching is absent. Automatic selection matches app bundle IDs. |
 | Vocabulary | Persistent word hints and deterministic word/phrase replacements | Local speech adapters do not currently accept vocabulary hints. Cloud speech receives hints. Entries can be added or deleted; a dedicated edit action is absent. Replacement behavior has separate core tests. |
 | Apple Speech | macOS SpeechTranscriber, English asset readiness and preparation, local transcription | Asset download and real recognition on this Mac remain unverified. |
@@ -40,6 +40,8 @@ Ollama has a catalog descriptor but is hidden from selectors and rejected by rec
 
 ## Validation evidence
 
+- September 21: `Scripts/check.sh` passed strict formatting, 20 core tests, storage, network, shortcut, playback, delivery, and helper checks. `Scripts/check-recorder.sh` passed native resizing, drag/click behavior, permission recovery, and notch docking. Light/dark Modes and compact recorder renders were inspected. The Release app built and its signature verified.
+- A granted-permission paste regression reproduced an editor that permits selected-text replacement but not whole-value replacement. The fixed delivery path passes nine checks covering editor capabilities, permission rechecks, protected fields, destination changes, PID-targeted Command-V, and clipboard ownership/restoration. This tests the real capture/delivery logic with substituted OS responses, not successful insertion into a live app. This session had no Accessibility/event-post permission and reported `loginwindow` as the frontmost app. Ad-hoc signing can still require granting access to the rebuilt app.
 - The S1-mini helper ran real inference with the pinned official model on the development Apple Silicon Mac. Names, numeric correction, filler suppression, invalid controls, checksum rejection, and cancellation checks passed. See the [recorded helper results](../BuildSupport/S1Mini/README.md).
 - The LocalSpeech package passed Swift 6.3.3 compilation, five local-file preflight/snapshot tests, and formatting checks. Subsequent standalone speech tests returned the exact synthetic English sentence with network access denied: Whisper Tiny in 2.88 seconds, Parakeet V2 in 5.38 seconds, and Cohere in 3.17 seconds. Each used the same 3.2-second recording. These single observations are not benchmarks or evidence of general accuracy.
 - The packaged app's `--speech-smoke` test completed Whisper Tiny transcription followed by S1-mini cleanup under a sandbox rule denying network access. This exercised the bundled MLX Metal resources and helper. Managed imports of all four models also passed.

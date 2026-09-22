@@ -1,3 +1,4 @@
+import AppKit
 import Carbon
 import Foundation
 
@@ -46,10 +47,48 @@ private final class HotKeys {
     }
 }
 
+/// Replays AppKit events through the same monitor callback used by local and global input.
+@MainActor
+private final class ModifierKeys {
+    var handler: ((NSEvent) -> Void)?
+    var available = true
+    var starts = 0
+    var stops = 0
+
+    var monitor: GlobalShortcuts.ModifierMonitor {
+        GlobalShortcuts.ModifierMonitor { [self] handler in
+            guard available else { return nil }
+            starts += 1
+            self.handler = handler
+            return { [self] in
+                stops += 1
+                self.handler = nil
+            }
+        }
+    }
+
+    static func event(_ flags: NSEvent.ModifierFlags, keyCode: UInt16? = nil) -> NSEvent {
+        NSEvent.keyEvent(
+            with: keyCode == nil ? .flagsChanged : .keyDown,
+            location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+            context: nil, characters: keyCode == nil ? "" : "a",
+            charactersIgnoringModifiers: keyCode == nil ? "" : "a", isARepeat: false,
+            keyCode: keyCode ?? 55)!
+    }
+
+    func flags(_ flags: NSEvent.ModifierFlags) { handler?(Self.event(flags)) }
+    func key(_ flags: NSEvent.ModifierFlags) { handler?(Self.event(flags, keyCode: 0)) }
+
+    func tap(_ flags: NSEvent.ModifierFlags) {
+        self.flags(flags)
+        self.flags([])
+    }
+}
+
 @main
 struct ShortcutChecks {
     @MainActor
-    static func main() {
+    static func main() async throws {
         let keys = HotKeys()
         let manager = GlobalShortcuts(backend: keys.backend)
         let toggle = ShortcutBinding(keyCode: 1, modifiers: UInt32(cmdKey), display: "Cmd S")
@@ -117,8 +156,181 @@ struct ShortcutChecks {
         precondition(keys.active.count == 4)
         manager.setRecordingActive(false)
         precondition(keys.active.count == 3)
+        try await modifierChecks()
         print(
-            "Shortcut checks passed: rejection, conflicts, staging rollback, callbacks, mode ordering, Escape"
+            "Shortcut checks passed: registration rollback, modes, Escape, modifier capture/persistence, chord suppression, hold-to-talk, interruption, monitor recovery"
         )
+    }
+
+    @MainActor
+    private static func modifierChecks() async throws {
+        let commandOption = ShortcutBinding(
+            keyCode: nil, modifiers: UInt32(cmdKey | optionKey), display: "⌥⌘")
+        let controlOption = ShortcutBinding(
+            keyCode: nil, modifiers: UInt32(controlKey | optionKey), display: "⌃⌥")
+        let keyChord = ShortcutBinding.recording
+        let legacy = Data(#"{"keyCode":49,"modifiers":2304,"display":"⌥⌘Space"}"#.utf8)
+        let decodedLegacy = try JSONDecoder().decode(ShortcutBinding.self, from: legacy)
+        precondition(decodedLegacy == keyChord)
+        let saved = try JSONEncoder().encode(commandOption)
+        let decodedJSON = try JSONDecoder().decode(ShortcutBinding.self, from: saved)
+        precondition(decodedJSON == commandOption)
+        let plist = try PropertyListEncoder().encode(commandOption)
+        let decodedPlist = try PropertyListDecoder().decode(ShortcutBinding.self, from: plist)
+        precondition(decodedPlist == commandOption)
+
+        let capture = KeyCapture.CaptureView()
+        var captured: [ShortcutBinding] = []
+        capture.onResult = { if let binding = $0 { captured.append(binding) } }
+        capture.flagsChanged(with: ModifierKeys.event(.command))
+        capture.flagsChanged(with: ModifierKeys.event([.command, .option]))
+        capture.flagsChanged(with: ModifierKeys.event(.option))
+        precondition(captured.isEmpty, "Capture must wait until every modifier has been released")
+        capture.flagsChanged(with: ModifierKeys.event([]))
+        precondition(captured == [commandOption])
+        capture.flagsChanged(with: ModifierKeys.event(.shift))
+        capture.flagsChanged(with: ModifierKeys.event([]))
+        precondition(captured == [commandOption], "A lone modifier must not create a shortcut")
+        capture.flagsChanged(with: ModifierKeys.event([.command, .option]))
+        capture.keyDown(with: ModifierKeys.event([.command, .option], keyCode: 0))
+        capture.flagsChanged(with: ModifierKeys.event([]))
+        precondition(captured.count == 2 && captured.last?.keyCode == 0)
+
+        let keys = HotKeys()
+        let modifiers = ModifierKeys()
+        let manager = GlobalShortcuts(backend: keys.backend, modifierMonitor: modifiers.monitor)
+        var toggles = 0
+        var holds: [Bool] = []
+        var changes = 0
+        var interruptions = 0
+        @discardableResult func apply(_ toggle: ShortcutBinding = commandOption) -> Bool {
+            manager.setBindings(
+                toggle: toggle, pushToTalk: controlOption, changeMode: keyChord,
+                onToggle: { toggles += 1 }, onPushToTalk: { holds.append($0) },
+                onChangeMode: { changes += 1 }, onCancel: {},
+                onInterruption: { interruptions += 1 })
+        }
+        precondition(apply())
+        precondition(keys.active.count == 1, "Modifier-only shortcuts must not be sent to Carbon")
+        modifiers.key([])
+        modifiers.flags(.command)
+        modifiers.flags([.command, .option])
+        modifiers.flags([.command, .option])
+        modifiers.flags(.option)
+        precondition(toggles == 0)
+        modifiers.flags([])
+        precondition(toggles == 1, "Typing without modifiers must not cancel the next modifier gesture")
+        modifiers.flags(.option)
+        modifiers.flags([.command, .option])
+        modifiers.flags(.command)
+        modifiers.flags([])
+        precondition(toggles == 2, "Either modifier order must work")
+        modifiers.flags([.command, .option])
+        modifiers.key([.command, .option])
+        modifiers.flags([])
+        precondition(toggles == 2, "Normal key chords must not toggle recording")
+        modifiers.flags([.command, .option])
+        keys.press(keyChord)
+        modifiers.flags([])
+        precondition(changes == 1 && toggles == 2, "Carbon chords must also suppress modifier taps")
+        modifiers.flags([.command, .option, .shift])
+        modifiers.flags([.command, .option])
+        modifiers.flags([])
+        precondition(toggles == 2, "Releasing a larger combination must not fire a subset")
+        modifiers.flags([.command, .option])
+        modifiers.flags(.command)
+        modifiers.flags([.command, .option])
+        modifiers.flags([])
+        precondition(toggles == 2, "Re-adding modifiers during release must not trigger")
+
+        let same = ShortcutBinding(
+            keyCode: nil, modifiers: commandOption.modifiers, display: "Option Command")
+        precondition(
+            !manager.setBindings(
+                toggle: commandOption, pushToTalk: same, changeMode: nil,
+                onToggle: {}, onPushToTalk: { _ in }, onChangeMode: {}, onCancel: {}))
+        modifiers.tap([.command, .option])
+        precondition(toggles == 3, "Rejected edits must retain modifier callbacks")
+        manager.setRecordingActive(true)
+        manager.setRecordingActive(false)
+        modifiers.tap([.command, .option])
+        precondition(toggles == 4, "Registering Escape must preserve modifier bindings")
+
+        modifiers.tap([.control, .option])
+        try await Task.sleep(for: .milliseconds(240))
+        precondition(holds.isEmpty, "A short tap must not start push-to-talk")
+        modifiers.flags([.control, .option])
+        modifiers.key([.control, .option])
+        try await Task.sleep(for: .milliseconds(240))
+        modifiers.flags([])
+        precondition(holds.isEmpty, "Typing a normal key chord must cancel a pending hold")
+        modifiers.flags([.control, .option])
+        try await Task.sleep(for: .milliseconds(240))
+        precondition(holds == [true])
+        modifiers.flags(.control)
+        precondition(holds == [true, false], "Push-to-talk must stop on the first modifier release")
+        modifiers.flags([])
+
+        modifiers.flags([.control, .option])
+        try await Task.sleep(for: .milliseconds(240))
+        precondition(holds == [true, false, true])
+        manager.setRecordingActive(true)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
+        precondition(holds == [true, false, true] && interruptions == 1)
+        modifiers.flags([])
+        manager.setRecordingActive(false)
+        modifiers.tap([.command, .option])
+        precondition(toggles == 5, "Sleep must clear modifier state before the next gesture")
+        modifiers.flags([.control, .option])
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        try await Task.sleep(for: .milliseconds(240))
+        modifiers.flags([])
+        precondition(holds == [true, false, true], "Session interruption must cancel a pending hold")
+
+        modifiers.flags([.command, .option])
+        precondition(apply())
+        modifiers.flags([])
+        precondition(toggles == 5, "Saving a shortcut must not trigger it with keys already held")
+        modifiers.tap([.command, .option])
+        precondition(toggles == 6)
+        modifiers.flags([.control, .option])
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        precondition(modifiers.starts == 2 && modifiers.stops == 1)
+        try await Task.sleep(for: .milliseconds(240))
+        modifiers.flags([])
+        precondition(holds == [true, false, true], "Monitor replacement must cancel a pending hold")
+        modifiers.tap([.command, .option])
+        precondition(toggles == 7, "Monitoring must reconnect after returning from System Settings")
+        modifiers.flags([.control, .option])
+        try await Task.sleep(for: .milliseconds(240))
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        modifiers.flags([])
+        precondition(
+            Array(holds.suffix(2)) == [true, false], "Replacing a monitor must release active push-to-talk")
+        precondition(modifiers.starts == 3 && modifiers.stops == 2)
+
+        let mode = UUID()
+        var recordedModes: [UUID] = []
+        precondition(
+            manager.setBindings(
+                toggle: keyChord, pushToTalk: nil, changeMode: controlOption,
+                onToggle: {}, onPushToTalk: { _ in }, onChangeMode: { changes += 1 }, onCancel: {},
+                modeBindings: [mode: commandOption], onModeRecording: { recordedModes.append($0) }))
+        modifiers.tap([.command, .option])
+        modifiers.tap([.control, .option])
+        precondition(
+            recordedModes == [mode] && changes == 2,
+            "Modifier shortcuts must support mode recording and mode switching")
+
+        precondition(
+            manager.setBindings(
+                toggle: keyChord, pushToTalk: nil, changeMode: nil,
+                onToggle: {}, onPushToTalk: { _ in }, onChangeMode: {}, onCancel: {}))
+        precondition(modifiers.handler == nil && modifiers.stops == 3)
+        modifiers.available = false
+        precondition(!apply())
+        precondition(
+            keys.active.values.contains(keyChord), "Monitor startup failure must retain old key chords")
     }
 }

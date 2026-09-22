@@ -8,15 +8,42 @@ struct RecorderPlacementTests {
     @Test func hoverExpansionKeepsTheSameCenterAtEveryPreset() {
         let bounds = CGRect(x: -1500, y: 80, width: 1400, height: 900)
         for preset in RecorderPlacement.presets {
-            let idle = preset.frame(size: CGSize(width: 36, height: 6), in: bounds)
+            let idle = preset.frame(size: RecorderLayout.idleSize, in: bounds)
             for size in [
-                CGSize(width: 72, height: 34), CGSize(width: 100, height: 34), CGSize(width: 171, height: 34),
+                CGSize(width: 180, height: 38), CGSize(width: 230, height: 38),
+                CGSize(width: 280, height: 44),
             ] {
                 let open = preset.frame(size: size, in: bounds)
                 #expect(open.midX == idle.midX)
                 #expect(open.midY == idle.midY)
                 #expect(bounds.contains(open))
             }
+        }
+    }
+
+    @Test func notchStaysAttachedToTopWhileExpanding() {
+        let bounds = CGRect(x: -1500, y: 80, width: 1400, height: 900)
+        for placement in RecorderPlacement.presets where placement.y == 1 {
+            let idle = placement.frame(size: RecorderLayout.idleSize(for: .notch), in: bounds, style: .notch)
+            let open = placement.frame(size: CGSize(width: 280, height: 44), in: bounds, style: .notch)
+            #expect(idle.maxY == bounds.maxY)
+            #expect(open.maxY == bounds.maxY)
+            #expect(idle.midX == open.midX)
+            #expect(bounds.contains(open))
+            #expect(
+                RecorderPlacement.nearestPreset(
+                    to: CGPoint(x: idle.midX, y: idle.midY), size: idle.size,
+                    in: bounds, displayID: nil, style: .notch) == placement)
+        }
+    }
+
+    @Test func floatingNotchPlacementsRemainCentered() {
+        let bounds = CGRect(x: 0, y: 0, width: 1400, height: 900)
+        for placement in RecorderPlacement.presets where placement.y < 1 {
+            let idle = placement.frame(size: RecorderLayout.idleSize(for: .notch), in: bounds, style: .notch)
+            let open = placement.frame(size: CGSize(width: 280, height: 44), in: bounds, style: .notch)
+            #expect(idle.midX == open.midX && idle.midY == open.midY)
+            #expect(bounds.contains(open))
         }
     }
 
