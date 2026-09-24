@@ -395,7 +395,7 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
                     output.connections.flatMap(\.audioChannels).map(\.averagePowerLevel).max() ?? -160
                 let level = decibels.isFinite ? min(1, max(0, pow(10, Double(decibels) / 20))) : 0
                 let seconds = output.recordedDuration.seconds
-                self.meter?(level, self.spectrum.bands, seconds.isFinite ? max(0, seconds) : 0)
+                self.meter?(level, self.spectrum.snapshot(), seconds.isFinite ? max(0, seconds) : 0)
             }
             timer = source
             source.resume()
@@ -456,19 +456,8 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
         _ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        guard output === analysisOutput, !stopRequested, sampleBuffer.isValid,
-            CMSampleBufferDataIsReady(sampleBuffer), let description = sampleBuffer.formatDescription
-        else { return }
-        let format = AVAudioFormat(cmAudioFormatDescription: description)
-        guard format.commonFormat == .pcmFormatFloat32, format.channelCount == 1 else { return }
-        try? sampleBuffer.withAudioBufferList { list, _ in
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: list.unsafePointer),
-                let samples = buffer.floatChannelData?[0]
-            else { return }
-            spectrum.append(
-                UnsafeBufferPointer(start: samples, count: sampleBuffer.numSamples),
-                sampleRate: format.sampleRate)
-        }
+        guard output === analysisOutput, !stopRequested else { return }
+        spectrum.append(sampleBuffer)
     }
 
     private func observeInterruptions(device: AVCaptureDevice, session: AVCaptureSession) {

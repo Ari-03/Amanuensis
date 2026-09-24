@@ -304,7 +304,7 @@ private nonisolated final class MeetingAudioWorker: NSObject, SCStreamOutput, SC
             let seconds = max(microphone?.duration ?? 0, system?.duration ?? 0)
             if seconds - lastMeterTime >= 0.05 {
                 lastMeterTime = seconds
-                meter?(Double(peak), microphone?.spectrum.bands ?? AudioSpectrum.silence, seconds)
+                meter?(Double(peak), microphone?.spectrum.snapshot() ?? AudioSpectrum.silence, seconds)
             }
         } catch {
             failure = error

@@ -1,3 +1,4 @@
+import AVFoundation
 import Accelerate
 import Foundation
 
@@ -17,7 +18,8 @@ nonisolated final class AudioSpectrum {
     private var imaginary = [Float](repeating: 0, count: size / 2)
     private var position = 0
     private var sampleRate = 0.0
-    private(set) var bands = silence
+    private var bands = silence
+    private var lastSampleTime: TimeInterval?
 
     deinit { vDSP_destroy_fftsetup(setup) }
 
@@ -25,15 +27,45 @@ nonisolated final class AudioSpectrum {
         position = 0
         sampleRate = 0
         bands = Self.silence
+        lastSampleTime = nil
+    }
+
+    /// Stop displaying old speech when capture pauses, even if another audio source keeps metering.
+    func snapshot(at time: TimeInterval = ProcessInfo.processInfo.systemUptime) -> [Double] {
+        if let lastSampleTime, time - lastSampleTime > 0.2 { reset() }
+        return bands
+    }
+
+    /// Reads the mono Float32 PCM format requested by the microphone's analysis output.
+    func append(_ sampleBuffer: CMSampleBuffer) {
+        guard sampleBuffer.isValid, CMSampleBufferDataIsReady(sampleBuffer), sampleBuffer.numSamples > 0,
+            let description = sampleBuffer.formatDescription, description.mediaType == .audio
+        else { return }
+        let format = AVAudioFormat(cmAudioFormatDescription: description)
+        guard format.commonFormat == .pcmFormatFloat32, format.channelCount == 1 else { return }
+        try? sampleBuffer.withAudioBufferList { list, _ in
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: list.unsafePointer),
+                sampleBuffer.numSamples <= Int(buffer.frameCapacity),
+                let samples = buffer.floatChannelData?[0]
+            else { return }
+            append(
+                UnsafeBufferPointer(start: samples, count: sampleBuffer.numSamples),
+                sampleRate: format.sampleRate)
+        }
     }
 
     /// Accumulates complete analysis windows even when capture delivers small audio buffers.
-    func append(_ input: UnsafeBufferPointer<Float>, sampleRate: Double) {
-        guard sampleRate.isFinite, sampleRate > 0 else { return }
+    func append(
+        _ input: UnsafeBufferPointer<Float>, sampleRate: Double,
+        at time: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) {
+        guard !input.isEmpty, sampleRate.isFinite, sampleRate > 0 else { return }
+        _ = snapshot(at: time)
         if self.sampleRate != sampleRate {
             reset()
             self.sampleRate = sampleRate
         }
+        lastSampleTime = time
         for sample in input {
             samples[position] = sample.isFinite ? sample : 0
             position += 1
