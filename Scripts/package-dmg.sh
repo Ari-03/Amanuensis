@@ -19,9 +19,7 @@ fi
 app="$app_root/artifacts/Amanuensis.app"
 codesign --verify --deep --strict "$app"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
-revision="$(git rev-parse --short=12 HEAD)"
-if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then revision="$revision-dirty"; fi
-name="Amanuensis-$version-$revision-arm64"
+name="Amanuensis-$version-preview-arm64"
 work="$(mktemp -d "${TMPDIR:-/tmp}/amanuensis-dmg.XXXXXX")"
 mounted=false
 cleanup() {
@@ -61,5 +59,8 @@ mounted=false
 
 mv "$work/$name.dmg" "$app_root/artifacts/$name.dmg"
 cd "$app_root/artifacts"
-shasum -a 256 "$name.dmg" >"$name.dmg.sha256"
+shasum -a 256 "$name.dmg"
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    printf 'dmg-path=artifacts/%s.dmg\n' "$name" >>"$GITHUB_OUTPUT"
+fi
 printf 'Ready: %s/artifacts/%s.dmg\n' "$app_root" "$name"
