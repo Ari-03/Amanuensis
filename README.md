@@ -45,7 +45,7 @@ CI uses an Apple Silicon `macos-26` runner with Xcode 26.6, checks the Metal com
 
 These are development builds with ad-hoc signatures. Developer ID signing and notarization are not configured, so macOS may block a downloaded copy. For a build you trust, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445). Distribution without this warning requires an Apple Developer Program membership, a Developer ID Application certificate, and notarization credentials. See [Apple's notarization documentation](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
 
-The intended `main` protection requires pull requests, the **Checks** and **Build DMG** jobs, an up-to-date branch, and resolved review conversations. It blocks force pushes and branch deletion and applies to administrators too. Required reviewer approvals stay at zero so a sole maintainer can merge their own PR after CI passes. GitHub stores these settings outside the repository, under **Settings → Branches**.
+The repository's `main` protection requires pull requests, the **Checks** and **Build DMG** jobs, an up-to-date branch, and resolved review conversations. It blocks force pushes and branch deletion and applies to administrators too. Required reviewer approvals stay at zero so a sole maintainer can merge their own PR after CI passes. GitHub stores these settings outside the repository, under **Settings → Branches**.
 
 ## First recording
 
