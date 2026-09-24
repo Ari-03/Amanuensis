@@ -163,7 +163,7 @@ struct RecorderView: View {
                     ProgressView().controlSize(.mini)
                     Text(model.phase.rawValue).font(.system(size: 11)).fixedSize()
                 } else {
-                    RecorderWaveform(level: model.recordingLevel, active: model.phase == .recording)
+                    RecorderWaveform(bands: model.recordingSpectrum, active: model.phase == .recording)
                 }
             }
             .padding(.horizontal, style == .notch ? 20 : 16)
@@ -276,7 +276,7 @@ struct RecorderView: View {
             if model.phase.isBusy {
                 HStack(spacing: 6) {
                     if model.phase == .recording {
-                        RecorderWaveform(level: model.recordingLevel, active: true)
+                        RecorderWaveform(bands: model.recordingSpectrum, active: true)
                     } else {
                         ProgressView().controlSize(.mini)
                     }
@@ -376,31 +376,28 @@ struct RecorderSilhouette: Shape {
     }
 }
 
-/// Quiet audio rests as dots; incoming microphone levels give the bars their height.
+/// Each bar shows measured energy in one frequency band, from low to high.
 struct RecorderWaveform: View {
-    var level: Double
+    var bands: [Double]
     var active: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private let profile: [Double] = [0.35, 0.6, 0.45, 0.85, 0.65, 1, 0.7, 0.5, 0.85, 0.6, 0.4, 0.55]
-
-    private var intensity: Double {
-        guard active, level.isFinite, level > 0 else { return 0 }
-        // Capture supplies linear amplitude. Map -55...-12 dB to visible motion so ordinary speech
-        // moves the bars without amplifying the recorded audio or animating silence.
-        return min(1, max(0, (20 * log10(level) + 55) / 43))
-    }
 
     var body: some View {
         HStack(spacing: 3) {
-            ForEach(profile.indices, id: \.self) { index in
+            ForEach(0..<AudioSpectrum.bandCount, id: \.self) { index in
                 Capsule()
                     .fill(.white)
-                    .frame(width: 3, height: 4 + 17 * intensity * profile[index])
+                    .frame(width: 3, height: 4 + 17 * intensity(at: index))
             }
         }
         .frame(height: 22)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: intensity)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: bands)
         .accessibilityHidden(true)
+    }
+
+    private func intensity(at index: Int) -> Double {
+        guard active, bands.indices.contains(index), bands[index].isFinite else { return 0 }
+        return min(1, max(0, bands[index]))
     }
 }
 

@@ -10,6 +10,7 @@ import ScreenCaptureKit
 final class MeetingCapture {
     private(set) var isRecording = false
     private(set) var level = 0.0
+    private(set) var spectrum = AudioSpectrum.silence
     private(set) var duration = 0.0
     private(set) var selectedDeviceName = "No microphone selected"
     var onInterruption: (@MainActor (String) -> Void)?
@@ -76,10 +77,11 @@ final class MeetingCapture {
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         configuration.showsCursor = false
         let newWorker = try MeetingAudioWorker(outputURL: outputURL)
-        newWorker.meter = { [weak self] value, seconds in
+        newWorker.meter = { [weak self] value, spectrum, seconds in
             Task { @MainActor [weak self] in
                 guard let self, self.operationID == operation else { return }
                 self.level = value
+                self.spectrum = spectrum
                 self.duration = seconds
             }
         }
@@ -88,6 +90,7 @@ final class MeetingCapture {
                 guard let self, self.operationID == operation else { return }
                 self.isRecording = false
                 self.level = 0
+                self.spectrum = AudioSpectrum.silence
                 self.onInterruption?(message)
             }
         }
@@ -102,6 +105,7 @@ final class MeetingCapture {
             stream = newStream
             duration = 0
             level = 0
+            spectrum = AudioSpectrum.silence
             selectedDeviceName = device.localizedName
             deviceObserver = NotificationCenter.default.addObserver(
                 forName: AVCaptureDevice.wasDisconnectedNotification, object: device, queue: .main
@@ -194,6 +198,7 @@ final class MeetingCapture {
         isFinishing = false
         isRecording = false
         level = 0
+        spectrum = AudioSpectrum.silence
     }
 }
 
@@ -222,7 +227,7 @@ private nonisolated final class MeetingAudioWorker: NSObject, SCStreamOutput, SC
     @unchecked Sendable
 {
     let queue = DispatchQueue(label: "ari.Amanuensis.meeting-audio")
-    var meter: (@Sendable (Double, Double) -> Void)?
+    var meter: (@Sendable (Double, [Double], Double) -> Void)?
     var interrupted: (@Sendable (String) -> Void)?
     private let outputURL: URL
     private let temporaryDirectory: URL
@@ -299,7 +304,7 @@ private nonisolated final class MeetingAudioWorker: NSObject, SCStreamOutput, SC
             let seconds = max(microphone?.duration ?? 0, system?.duration ?? 0)
             if seconds - lastMeterTime >= 0.05 {
                 lastMeterTime = seconds
-                meter?(Double(peak), seconds)
+                meter?(Double(peak), microphone?.spectrum.bands ?? AudioSpectrum.silence, seconds)
             }
         } catch {
             failure = error
@@ -425,6 +430,7 @@ private nonisolated final class MeetingAudioTrack {
     let url: URL
     let firstTimestamp: Double
     var duration: Double { Double(writtenFrames) / format.sampleRate }
+    let spectrum = AudioSpectrum()
     private let format: AVAudioFormat
     private var file: AVAudioFile?
     private var converter: AVAudioConverter?
@@ -489,6 +495,9 @@ private nonisolated final class MeetingAudioTrack {
                 if output.frameLength > 0 {
                     try file.write(from: output)
                     writtenFrames += Int64(output.frameLength)
+                    spectrum.append(
+                        UnsafeBufferPointer(start: samples, count: Int(output.frameLength)),
+                        sampleRate: format.sampleRate)
                     for index in 0..<Int(output.frameLength) { peak = max(peak, abs(samples[index])) }
                 }
                 if status != .haveData { break }

@@ -9,7 +9,7 @@ final class AppModel {
     var modes = DictationMode.initial
     var phase: DictationPhase = .idle
     var recordingDuration: TimeInterval = 12
-    var recordingLevel = 0.6
+    var recordingSpectrum = Array(repeating: 0.6, count: AudioSpectrum.bandCount)
     var isMovingRecorder = false
     var pasteNeedsAccessibility = false
     var accessibilityGranted = true
@@ -226,14 +226,24 @@ struct RecorderChecks {
             }
             print("PASS: Both styles fit full processing labels and minimize after completion or failure")
 
-            let silentHeight = waveformPeak(level: 0)
-            let quietHeight = waveformPeak(level: 0.01)
-            let speakingHeight = waveformPeak(level: 0.1)
+            let silentHeight = waveformPeak(intensity: 0)
+            let quietHeight = waveformPeak(intensity: 0.35)
+            let speakingHeight = waveformPeak(intensity: 0.85)
             precondition(silentHeight <= 4)
             precondition(quietHeight >= 8, "Quiet speech must visibly lift the dots into bars")
             precondition(speakingHeight > quietHeight && speakingHeight <= 22)
-            precondition(waveformPeak(level: 1, active: false) == silentHeight)
+            precondition(waveformPeak(intensity: 1, active: false) == silentHeight)
             print("PASS: Rendered bars respond visibly to quiet and normal speech, then return to dots")
+
+            var bands = AudioSpectrum.silence
+            bands[1] = 1
+            let lowBars = waveformHeights(bands: bands)
+            bands[1] = 0
+            bands[10] = 1
+            let highBars = waveformHeights(bands: bands)
+            precondition(lowBars[1] > lowBars[10] && highBars[10] > highBars[1])
+            precondition(waveformHeights(bands: [.nan, .infinity, -1]).allSatisfy { $0 <= 4 })
+            print("PASS: Individual frequency bands change the rendered shape independently")
 
             recorder.hide()
             precondition(!panel.isVisible)
@@ -291,15 +301,21 @@ struct RecorderChecks {
     }
 
     /// Measure the tallest rendered bar, including the actual SwiftUI frame and fill.
-    @MainActor private static func waveformPeak(level: Double, active: Bool = true) -> Int {
-        let renderer = ImageRenderer(content: RecorderWaveform(level: level, active: active))
+    @MainActor private static func waveformPeak(intensity: Double, active: Bool = true) -> Int {
+        waveformHeights(bands: Array(repeating: intensity, count: AudioSpectrum.bandCount), active: active)
+            .max() ?? 0
+    }
+
+    @MainActor private static func waveformHeights(bands: [Double], active: Bool = true) -> [Int] {
+        let renderer = ImageRenderer(
+            content: RecorderWaveform(bands: bands, active: active))
         renderer.scale = 1
         let bitmap = NSBitmapImageRep(cgImage: renderer.cgImage!)
-        return (0..<bitmap.pixelsWide).map { x in
+        return (0..<AudioSpectrum.bandCount).map { index in
             (0..<bitmap.pixelsHigh).filter { y in
-                (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5
+                (bitmap.colorAt(x: index * 6 + 1, y: y)?.alphaComponent ?? 0) > 0.5
             }.count
-        }.max() ?? 0
+        }
     }
 
     @MainActor private static func postMouse(
