@@ -20,7 +20,13 @@ struct S1MiniRunnerChecks {
         )
         let mode = DictationMode.initial[0]
         func clean(_ text: String) async throws -> String {
-            try await runner.clean(text: text, modelURL: model, mode: mode)
+            do {
+                return try await runner.clean(text: text, modelURL: model, mode: mode)
+            } catch {
+                FileHandle.standardError.write(
+                    Data("[DEBUG-ci-helper] Request \(text.prefix(32)): \(error)\n".utf8))
+                throw error
+            }
         }
         let first = try await clean("first")
         let pid = first.split(separator: ":")[0]
