@@ -12,21 +12,15 @@ struct S1MiniRunnerChecks {
         let helper = root.appendingPathComponent("fake-helper")
         let model = root.appendingPathComponent("model.gguf")
         try Data("model".utf8).write(to: model)
-        // Hosted Macs need time for cold Python startup. The hanging fixtures sleep for 10 seconds,
-        // so this deadline still verifies timeout and forced termination without racing startup.
+        // Allow for slower subprocess startup on hosted Macs. The hanging fixtures sleep for
+        // 10 seconds, so this still verifies timeout and forced termination.
         let runner = S1MiniRunner(
             helperURL: helper, timeout: .seconds(3),
             jobRootURL: root.appendingPathComponent("jobs"), idleTimeout: .seconds(30)
         )
         let mode = DictationMode.initial[0]
         func clean(_ text: String) async throws -> String {
-            do {
-                return try await runner.clean(text: text, modelURL: model, mode: mode)
-            } catch {
-                FileHandle.standardError.write(
-                    Data("[DEBUG-ci-helper] Request \(text.prefix(32)): \(error)\n".utf8))
-                throw error
-            }
+            try await runner.clean(text: text, modelURL: model, mode: mode)
         }
         let first = try await clean("first")
         let pid = first.split(separator: ":")[0]
