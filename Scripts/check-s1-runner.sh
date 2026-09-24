@@ -43,6 +43,9 @@ for line in sys.stdin:
         time.sleep(10)
 PY
 chmod +x "$test_root/fake-helper"
+# Warm the fixture interpreter before timing requests. Its first launch can take seconds
+# on a fresh macOS runner, independently of the subprocess behavior under test.
+"$test_root/fake-helper" </dev/null
 xcrun swiftc -swift-version 6 "$repo_root/Amanuensis/Core/Domain.swift" \
   "$repo_root/Amanuensis/Inference/S1MiniRunner.swift" \
   "$repo_root/Tests/Inference/S1MiniRunnerChecks.swift" -o "$test_root/checks"

@@ -12,8 +12,10 @@ struct S1MiniRunnerChecks {
         let helper = root.appendingPathComponent("fake-helper")
         let model = root.appendingPathComponent("model.gguf")
         try Data("model".utf8).write(to: model)
+        // Allow for slower subprocess startup on hosted Macs. The hanging fixtures sleep for
+        // 10 seconds, so this still verifies timeout and forced termination.
         let runner = S1MiniRunner(
-            helperURL: helper, timeout: .milliseconds(400),
+            helperURL: helper, timeout: .seconds(3),
             jobRootURL: root.appendingPathComponent("jobs"), idleTimeout: .seconds(30)
         )
         let mode = DictationMode.initial[0]
