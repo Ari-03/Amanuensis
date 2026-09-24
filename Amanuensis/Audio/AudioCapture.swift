@@ -8,6 +8,7 @@ final class AudioCapture {
     private(set) var devices: [MicrophoneDevice] = []
     private(set) var selectedDeviceName = "No microphone selected"
     private(set) var level = 0.0
+    private(set) var spectrum = AudioSpectrum.silence
     private(set) var duration = 0.0
     private(set) var isRecording = false
     var onInterruption: (@MainActor (String) -> Void)?
@@ -83,14 +84,16 @@ final class AudioCapture {
         guard !inputIDs.isEmpty else { throw AudioCaptureError.noMicrophone }
         duration = 0
         level = 0
+        spectrum = AudioSpectrum.silence
 
         let name = try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await worker.start(requestID: requestID, inputIDs: inputIDs, outputURL: outputURL) {
-                [weak self] level, duration in
+                [weak self] level, spectrum, duration in
                 Task { @MainActor [weak self] in
                     guard let self, self.operationID == requestID else { return }
                     self.level = level
+                    self.spectrum = spectrum
                     self.duration = duration
                 }
             } interrupted: { [weak self] message in
@@ -98,6 +101,7 @@ final class AudioCapture {
                     guard let self, self.operationID == requestID else { return }
                     self.isRecording = false
                     self.level = 0
+                    self.spectrum = AudioSpectrum.silence
                     self.onInterruption?(message)
                 }
             }
@@ -119,6 +123,7 @@ final class AudioCapture {
             if operationID == requestID {
                 isRecording = false
                 level = 0
+                spectrum = AudioSpectrum.silence
             }
         }
         let result = try await worker.stop()
@@ -141,6 +146,7 @@ final class AudioCapture {
         isStarting = false
         isRecording = false
         level = 0
+        spectrum = AudioSpectrum.silence
         duration = 0
         if let cancellation { return cancellation.task }
         let task = Task { [worker] in await worker.cancelAndWait() }
@@ -173,11 +179,14 @@ private nonisolated struct FinishedRecording: Sendable {
 
 /// AVFoundation state and continuations are confined to queue. Delegate callbacks hop to it.
 private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOutputRecordingDelegate,
+    AVCaptureAudioDataOutputSampleBufferDelegate,
     @unchecked Sendable
 {
     private let queue = DispatchQueue(label: "ari.Amanuensis.audio-capture")
     private var session: AVCaptureSession?
     private var output: AVCaptureAudioFileOutput?
+    private var analysisOutput: AVCaptureAudioDataOutput?
+    private let spectrum = AudioSpectrum()
     private var timer: DispatchSourceTimer?
     private var observers: [NSObjectProtocol] = []
     private var startContinuation: CheckedContinuation<String, any Error>?
@@ -190,11 +199,11 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
     private var cancelled = false
     private var stopRequested = false
     private var interrupt: (@Sendable (String) -> Void)?
-    private var meter: (@Sendable (Double, Double) -> Void)?
+    private var meter: (@Sendable (Double, [Double], Double) -> Void)?
 
     func start(
         requestID: UUID, inputIDs: [String], outputURL: URL,
-        metering: @escaping @Sendable (Double, Double) -> Void,
+        metering: @escaping @Sendable (Double, [Double], Double) -> Void,
         interrupted: @escaping @Sendable (String) -> Void
     ) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
@@ -229,6 +238,21 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
                     let newOutput = AVCaptureAudioFileOutput()
                     guard newSession.canAddOutput(newOutput) else { throw AudioCaptureError.cannotRecord }
                     newSession.addOutput(newOutput)
+                    let analysis = AVCaptureAudioDataOutput()
+                    guard newSession.canAddOutput(analysis) else { throw AudioCaptureError.cannotRecord }
+                    newSession.addOutput(analysis)
+                    analysis.audioSettings = [
+                        AVFormatIDKey: kAudioFormatLinearPCM,
+                        AVSampleRateKey: 48_000,
+                        AVNumberOfChannelsKey: 1,
+                        AVLinearPCMBitDepthKey: 32,
+                        AVLinearPCMIsFloatKey: true,
+                        AVLinearPCMIsBigEndianKey: false,
+                        AVLinearPCMIsNonInterleaved: false,
+                    ]
+                    analysis.setSampleBufferDelegate(self, queue: queue)
+                    analysisOutput = analysis
+                    spectrum.reset()
                     if fileType == .m4a {
                         newOutput.audioSettings = [
                             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -371,7 +395,7 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
                     output.connections.flatMap(\.audioChannels).map(\.averagePowerLevel).max() ?? -160
                 let level = decibels.isFinite ? min(1, max(0, pow(10, Double(decibels) / 20))) : 0
                 let seconds = output.recordedDuration.seconds
-                self.meter?(level, seconds.isFinite ? max(0, seconds) : 0)
+                self.meter?(level, self.spectrum.snapshot(), seconds.isFinite ? max(0, seconds) : 0)
             }
             timer = source
             source.resume()
@@ -427,6 +451,15 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
         }
     }
 
+    /// Runs on the same serial queue as file capture; the recorded file keeps its existing encoding.
+    func captureOutput(
+        _ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        guard output === analysisOutput, !stopRequested else { return }
+        spectrum.append(sampleBuffer)
+    }
+
     private func observeInterruptions(device: AVCaptureDevice, session: AVCaptureSession) {
         for (name, object) in [
             (AVCaptureDevice.wasDisconnectedNotification, device as AnyObject),
@@ -453,6 +486,9 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
         timer = nil
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
+        analysisOutput?.setSampleBufferDelegate(nil, queue: nil)
+        analysisOutput = nil
+        spectrum.reset()
         session?.stopRunning()
         session = nil
         activeRequestID = nil

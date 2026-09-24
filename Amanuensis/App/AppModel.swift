@@ -69,6 +69,10 @@ final class AppModel {
         activeEntry?.mode.recordSystemAudio == true ? meetingAudio.level : audio.level
     }
 
+    var recordingSpectrum: [Double] {
+        activeEntry?.mode.recordSystemAudio == true ? meetingAudio.spectrum : audio.spectrum
+    }
+
     var microphoneName: String {
         if phase == .recording {
             return activeEntry?.mode.recordSystemAudio == true
