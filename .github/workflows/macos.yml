@@ -39,6 +39,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify build tools
+        id: tools
         run: |
           test "$(uname -m)" = arm64
           xcodebuild -version
@@ -48,6 +49,15 @@ jobs:
             xcodebuild -downloadComponent MetalToolchain
           fi
           xcrun metal --version
+          xcode_version="$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f 1)"
+          printf 'cache-prefix=%s-%s-%s\n' "$(uname -m)" "$ImageVersion" "$xcode_version" >> "$GITHUB_OUTPUT"
+      - name: Restore Xcode build cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: DerivedData
+          key: release-v1-${{ steps.tools.outputs.cache-prefix }}-${{ hashFiles('**/Package.resolved', '**/Package.swift', 'Amanuensis.xcodeproj/project.pbxproj', 'BuildSupport/S1Mini/build.sh', 'BuildSupport/S1Mini/CMakeLists.txt', 'Scripts/build.sh') }}-${{ github.sha }}
+          restore-keys: |
+            release-v1-${{ steps.tools.outputs.cache-prefix }}-${{ hashFiles('**/Package.resolved', '**/Package.swift', 'Amanuensis.xcodeproj/project.pbxproj', 'BuildSupport/S1Mini/build.sh', 'BuildSupport/S1Mini/CMakeLists.txt', 'Scripts/build.sh') }}-
       - name: Build and verify DMG
         run: Scripts/package-dmg.sh
       - name: Upload DMG and checksum
