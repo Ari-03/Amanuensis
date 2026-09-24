@@ -29,7 +29,23 @@ The verified development artifact is approximately 59 MB, excluding downloaded m
 
 For development in Xcode, open `Amanuensis.xcodeproj`, select the Amanuensis scheme, and build or run. The build phase fetches the pinned llama.cpp source and builds the S1-mini helper automatically, then reuses CMake's incremental build cache. No generated helper binary needs to be copied between checkouts. CMake installed through Homebrew or its standard macOS app is found even when Xcode is launched from Finder. The first helper build needs internet access and takes longer. Swift Package Manager at the repository root builds the core test target, not the complete macOS app.
 
-The current signing setup is for local use. Developer ID signing, notarization, and automatic updates are not configured.
+## DMG and automated builds
+
+```sh
+Scripts/package-dmg.sh
+```
+
+This builds the Release app and creates `artifacts/Amanuensis-<version>-<commit>-arm64.dmg` with an Applications shortcut and installation instructions. The script verifies the disk image, mounts it read-only, and checks the app and helper signatures before writing a SHA-256 checksum alongside it. Uncommitted changes add `-dirty` to the filename. To package an app you have already built, use `Scripts/package-dmg.sh --skip-build`; the filename uses the current checkout's revision, so rebuild first if the source has changed.
+
+Open the DMG, drag Amanuensis to Applications, eject the disk, and launch the installed app. It requires Apple Silicon and macOS 26 or later. Downloaded models and your personal data are not included.
+
+The [macOS workflow](.github/workflows/macos.yml) runs the existing checks and builds a DMG for every pull request to `main` and every push to `main`. It also supports manual runs from GitHub Actions. Download the DMG and checksum from the run's **Artifacts** section on the [Actions page](https://github.com/Ari-03/Amanuensis/actions/workflows/macos.yml). Artifacts expire after 30 days. These builds do not create GitHub Releases or update installed apps.
+
+CI uses an Apple Silicon `macos-26` runner with Xcode 26.6, checks the Metal compiler, and installs Apple's Metal Toolchain component if needed. Swift dependencies use the committed `Package.resolved`; the helper source is pinned and checksum-verified. See GitHub's [runner inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md).
+
+These are development builds with ad-hoc signatures. Developer ID signing and notarization are not configured, so macOS may block a downloaded copy. For a build you trust, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445). Distribution without this warning requires an Apple Developer Program membership, a Developer ID Application certificate, and notarization credentials. See [Apple's notarization documentation](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+
+The intended `main` protection requires pull requests, the **Checks** and **Build DMG** jobs, an up-to-date branch, and resolved review conversations. It blocks force pushes and branch deletion and applies to administrators too. Required reviewer approvals stay at zero so a sole maintainer can merge their own PR after CI passes. GitHub stores these settings outside the repository, under **Settings → Branches**.
 
 ## First recording
 
