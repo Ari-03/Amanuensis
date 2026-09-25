@@ -35,6 +35,7 @@ final class AppModel {
     let meetingAudio = MeetingCapture()
     let appleSpeech = AppleSpeechEngine()
     let library: ModelLibrary
+    let updater = AppUpdater()
 
     @ObservationIgnored private let store: LocalStore?
     @ObservationIgnored private let localSpeech = LocalSpeechEngine()
@@ -131,6 +132,8 @@ final class AppModel {
         refreshConnectedProviders()
         configureShortcuts()
         enforceRetention()
+        // Smoke runs exercise bundled models offline and must not reach GitHub or replace the bundle.
+        if !CommandLine.arguments.contains("--speech-smoke") { updater.startAutomaticChecks() }
         Task { [weak self] in
             guard let self else { return }
             _ = try? await appleSpeech.checkReadiness()
@@ -158,6 +161,10 @@ final class AppModel {
     private func beginRecording(mode override: DictationMode? = nil) {
         guard !phase.isBusy, activeID == nil, cancellingID == nil, !isEditingShortcut, modelReleaseCount == 0
         else {
+            return
+        }
+        guard !updater.isInstalling else {
+            report(AppFailure("Amanuensis is installing an update and will restart in a moment."))
             return
         }
         guard let store else {
@@ -528,6 +535,10 @@ final class AppModel {
 
     func retryRecording(_ original: RecordingEntry) async {
         guard !phase.isBusy, activeID == nil, cancellingID == nil, modelReleaseCount == 0, let store else {
+            return
+        }
+        guard !updater.isInstalling else {
+            report(AppFailure("Amanuensis is installing an update and will restart in a moment."))
             return
         }
         guard let sourceURL = store.acquireAudioLease(for: original) else {

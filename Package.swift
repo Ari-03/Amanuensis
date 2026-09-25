@@ -18,7 +18,7 @@ let package = Package(
         ),
         .testTarget(
             name: "AmanuensisCoreTests", dependencies: ["AmanuensisCore"], path: "Tests",
-            exclude: ["Storage", "Network", "Platform", "Inference"]
+            exclude: ["Storage", "Network", "Platform", "Inference", "App"]
         ),
     ]
 )

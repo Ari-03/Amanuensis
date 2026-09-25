@@ -75,6 +75,23 @@ struct HomeView: View {
                         }
                     }.font(.caption).foregroundStyle(.secondary)
                 }
+                if case .ready(let release) = model.updater.state, model.updater.postponed != release.version
+                {
+                    SettingsCard {
+                        Label("Update ready", systemImage: "arrow.down.circle").font(.headline)
+                        Text(
+                            "Amanuensis \(release.version.description) has downloaded. Restart to finish updating."
+                        )
+                        .foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            Button("Restart to update") { model.updater.installAndRelaunch() }
+                                .buttonStyle(.borderedProminent).disabled(model.phase.isBusy)
+                            if let notes = release.notesURL { Link("What's new", destination: notes) }
+                            Button("Later") { model.updater.postponed = release.version }.buttonStyle(
+                                .borderless)
+                        }
+                    }
+                }
                 if !model.appleSpeechReady && model.currentMode.speechModelID == "apple-speech" {
                     SettingsCard {
                         Label("Set up Apple speech", systemImage: "arrow.down.circle").font(.headline)

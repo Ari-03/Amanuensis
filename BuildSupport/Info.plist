@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Merged into the generated Info.plist. The updater reads GitHub Releases from this repository. -->
+    <key>AmanuensisUpdateRepository</key>
+    <string>Ari-03/Amanuensis</string>
+    <!-- Base64 Ed25519 public key. Release disk images are signed with the matching private key,
+         which is stored as the AMANUENSIS_UPDATE_PRIVATE_KEY GitHub Actions secret. -->
+    <key>AmanuensisUpdatePublicKey</key>
+    <string>fZ7EQhDOrrj7aneeYswJa1fQ4hAx3cl/uM7c32yWAKI=</string>
+</dict>
+</plist>

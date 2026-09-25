@@ -23,17 +23,25 @@ struct AmanuensisApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appSettings) {
-                Button("Settings…") {
-                    model.selectedSection = .configuration
-                    NSApp.activate(ignoringOtherApps: true)
-                    NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
-                }.keyboardShortcut(",")
+                Button("Settings…", action: showSettings).keyboardShortcut(",")
+            }
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    model.updater.checkForUpdates()
+                    showSettings()
+                }
             }
         }
         MenuBarExtra("Amanuensis", systemImage: model.phase == .recording ? "record.circle.fill" : "waveform")
         {
             MenuBarContent(model: model)
         }
+    }
+
+    private func showSettings() {
+        model.selectedSection = .configuration
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -62,6 +70,10 @@ private struct MenuBarContent: View {
             }.disabled(model.phase.isBusy)
         }
         Divider()
+        if case .ready(let release) = model.updater.state {
+            Button("Restart to update to \(release.version)") { model.updater.installAndRelaunch() }
+                .disabled(model.phase.isBusy)
+        }
         Button("Open Amanuensis") {
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)

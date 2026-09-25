@@ -35,11 +35,11 @@ For development in Xcode, open `Amanuensis.xcodeproj`, select the Amanuensis sch
 Scripts/package-dmg.sh
 ```
 
-This builds the Release app and creates `artifacts/Amanuensis-0.1.0-preview-arm64.dmg` with an Applications shortcut and installation instructions. The version comes from the app's Xcode marketing version. The script verifies the disk image, mounts it read-only, checks the app and helper signatures, and prints the SHA-256 digest in the build log. To package an app you have already built, use `Scripts/package-dmg.sh --skip-build`; rebuild first if the source has changed.
+This builds the Release app and creates `artifacts/Amanuensis-0.1.0-arm64.dmg` with an Applications shortcut and installation instructions. The version comes from the app's Xcode marketing version; release builds override it from the git tag as described under Updates. The script verifies the disk image, mounts it read-only, checks the app and helper signatures, and prints the SHA-256 digest in the build log. To package an app you have already built, use `Scripts/package-dmg.sh --skip-build`; rebuild first if the source has changed.
 
 Open the DMG, drag Amanuensis to Applications, eject the disk, and launch the installed app. It requires Apple Silicon and macOS 26 or later. Downloaded models and your personal data are not included.
 
-The [macOS workflow](.github/workflows/macos.yml) runs the existing checks and builds a DMG for every pull request to `main` and every push to `main`. It also supports manual runs from GitHub Actions. Download the DMG directly from the run's **Artifacts** section on the [Actions page](https://github.com/Ari-03/Amanuensis/actions/workflows/macos.yml). It is a single DMG without a ZIP wrapper or separate checksum file; GitHub's **Digest** column shows its SHA-256. The commit is recorded on the workflow run instead of in the filename. Artifacts expire after 30 days. These builds do not create GitHub Releases or update installed apps.
+The [macOS workflow](.github/workflows/macos.yml) runs the existing checks and builds a DMG for every pull request to `main` and every push to `main`. It also supports manual runs from GitHub Actions. Download the DMG directly from the run's **Artifacts** section on the [Actions page](https://github.com/Ari-03/Amanuensis/actions/workflows/macos.yml). It is a single DMG without a ZIP wrapper or separate checksum file; GitHub's **Digest** column shows its SHA-256. The commit is recorded on the workflow run instead of in the filename. Artifacts expire after 30 days. These builds do not create GitHub Releases; tagged releases do, as described under Updates.
 
 CI uses an Apple Silicon `macos-26` runner with Xcode 26.6, checks the Metal compiler, and installs Apple's Metal Toolchain component if needed. Swift dependencies use the committed `Package.resolved`; the helper source is pinned and checksum-verified. See GitHub's [runner inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md).
 
@@ -48,6 +48,30 @@ CI caches Xcode's `DerivedData` to reuse downloaded dependencies and compiled co
 These are development builds with ad-hoc signatures. Developer ID signing and notarization are not configured, so macOS may block a downloaded copy. For a build you trust, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445). Distribution without this warning requires an Apple Developer Program membership, a Developer ID Application certificate, and notarization credentials. See [Apple's notarization documentation](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
 
 The repository's `main` protection requires pull requests, the **Checks** and **Build DMG** jobs, an up-to-date branch, and resolved review conversations. It blocks force pushes and branch deletion and applies to administrators too. Required reviewer approvals stay at zero so a sole maintainer can merge their own PR after CI passes. GitHub stores these settings outside the repository, under **Settings → Branches**.
+
+## Updates
+
+The app checks GitHub Releases for newer builds. **Settings → Updates** shows the installed version, a **Stable** or **Preview** channel picker, an automatic-check toggle, and **Check now**. The app menu also has **Check for Updates…**. Automatic checks run shortly after launch and every six hours. Stable receives only full releases. Preview also receives prereleases, and still receives every stable release, so it is never behind Stable. A build whose version has a prerelease suffix starts on Preview; other builds start on Stable.
+
+When a newer version exists on the chosen channel, the app downloads its disk image, verifies the Ed25519 signature published beside it, and shows **Restart to update** on Home, in Settings, and in the menu-bar menu. Installing mounts the image, copies the app next to the running bundle, verifies its code signature and version, clears quarantine, swaps the bundles, and relaunches. Installing is blocked while recording, and it fails with an explanation if the app runs from a read-only or translocated location. A rejected signature discards the download. Because these builds are ad-hoc signed, macOS may ask you to grant Accessibility access again after an update.
+
+To publish a release, set `MARKETING_VERSION` in the Xcode project to the base version, merge to `main`, then push a tag:
+
+```sh
+git tag v0.2.0-preview.1 && git push origin v0.2.0-preview.1   # Preview channel
+git tag v0.2.0 && git push origin v0.2.0                       # Stable channel
+```
+
+The [release workflow](.github/workflows/release.yml) rejects a tag whose base version differs from the project, runs `Scripts/check.sh`, builds the DMG with the tag's version, signs it, and creates the GitHub Release with generated notes. Tags with a suffix such as `-preview.1` become prereleases. Each release carries `Amanuensis-<version>-arm64.dmg` and its `.sig`; the updater ignores releases without both, along with drafts.
+
+Signing needs a one-time setup. Generate a key pair, keep the private key out of the repository, and add it as the `AMANUENSIS_UPDATE_PRIVATE_KEY` repository secret:
+
+```sh
+xcrun swift Scripts/update-key.swift generate ~/.config/amanuensis/update-signing-key
+gh secret set AMANUENSIS_UPDATE_PRIVATE_KEY < ~/.config/amanuensis/update-signing-key
+```
+
+The command prints the public key, which belongs in `BuildSupport/Info.plist` under `AmanuensisUpdatePublicKey`. Installed apps only accept updates signed with the matching private key, so replacing the key strands existing installations until they update manually. The same script signs and verifies files; the workflow verifies each DMG against the public key inside the built app before publishing. Builds without a repository or public key in their Info.plist show that updates are unavailable. Speech smoke runs never check for updates.
 
 ## First recording
 
@@ -94,10 +118,11 @@ Settings, history, model files, and recordings live under `~/Library/Application
 ```sh
 Scripts/check.sh
 Scripts/check-recorder.sh
+Scripts/check-updater.sh
 swift test --package-path Packages/LocalSpeech
 BuildSupport/S1Mini/smoke-test.sh /absolute/path/to/s1-mini-q4_k_m.gguf
 ```
 
-`Scripts/check.sh` runs strict Swift formatting, core tests, SQLite storage checks, network checks, shortcuts, playback, paste-permission checks, helper isolation, and a whitespace check. `Scripts/check-recorder.sh` requires a macOS desktop session and checks native resizing, drag targets, snapping, and permission recovery without posting global input. The final command above runs real S1-mini inference and requires the model.
+`Scripts/check.sh` runs strict Swift formatting, core tests, SQLite storage checks, network checks, shortcuts, playback, paste-permission checks, helper isolation, and a whitespace check. `Scripts/check-recorder.sh` requires a macOS desktop session and checks native resizing, drag targets, snapping, and permission recovery without posting global input. `Scripts/check-updater.sh` needs a built app and DMG; it serves the DMG from a local web server with a throwaway signing key and checks channel filtering, signature rejection, verified download, and the in-place bundle swap against a scratch copy of the app. CI runs it after every DMG build. The final command above runs real S1-mini inference and requires the model.
 
 Real Whisper Tiny, Parakeet V2, and Cohere transcription also passed with network access denied on one short synthetic English sentence. A packaged-app smoke test covered Whisper Tiny through S1-mini, including bundled Metal resources. These checks do not establish microphone capture, cross-app insertion, broad model accuracy, or performance benchmarks.

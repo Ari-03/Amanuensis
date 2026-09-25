@@ -114,6 +114,8 @@ struct ConfigurationView: View {
                         Button("Reset…") { resetUsage = true }
                     }
                 }
+                SectionCaption(title: "Updates")
+                UpdateSettingsCard(updater: model.updater, recording: model.phase.isBusy)
             }.padding(28).frame(maxWidth: 960).frame(maxWidth: .infinity)
         }
 
@@ -220,5 +222,88 @@ struct ConfigurationView: View {
         }
         .buttonStyle(.plain).help(label).accessibilityLabel(label)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Version, channel, and update status. Installing is blocked while a recording is in progress.
+private struct UpdateSettingsCard: View {
+    @Bindable var updater: AppUpdater
+    let recording: Bool
+
+    var body: some View {
+        SettingsCard {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Amanuensis \(updater.currentVersion.description)").fontWeight(.medium)
+                    statusLine
+                }
+                Spacer()
+                actionButton
+            }
+            if case .unavailable = updater.state {
+                EmptyView()
+            } else {
+                Divider()
+                Toggle("Check for updates automatically", isOn: $updater.checksAutomatically)
+                Picker("Update channel", selection: $updater.channel) {
+                    ForEach(UpdateChannel.allCases) { Text($0.label).tag($0) }
+                }.pickerStyle(.segmented)
+                Text(
+                    updater.channel == .stable
+                        ? "Stable receives finished releases."
+                        : "Preview also receives early builds, and every stable release."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var statusLine: some View {
+        switch updater.state {
+        case .idle, .upToDate:
+            Text(idleStatus).font(.caption).foregroundStyle(.secondary)
+        case .unavailable(let reason), .failed(let reason):
+            Text(reason).font(.caption).foregroundStyle(.secondary)
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Checking for updates…").font(.caption).foregroundStyle(.secondary)
+            }
+        case .downloading(let release, let fraction):
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Downloading \(release.version.description)…").font(.caption).foregroundStyle(.secondary)
+                ProgressView(value: fraction).frame(maxWidth: 240)
+            }
+        case .ready(let release):
+            HStack(spacing: 8) {
+                Text("Version \(release.version.description) is ready to install.").font(.caption)
+                    .foregroundStyle(.secondary)
+                if let notes = release.notesURL { Link("What's new", destination: notes).font(.caption) }
+            }
+        case .installing(let release):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Installing \(release.version.description)…").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var idleStatus: String {
+        let base =
+            updater.state == .upToDate ? "Amanuensis is up to date." : "Updates come from GitHub Releases."
+        guard let checked = updater.lastChecked else { return base }
+        return base + " Last checked \(checked.formatted(.relative(presentation: .named)))."
+    }
+
+    @ViewBuilder private var actionButton: some View {
+        switch updater.state {
+        case .idle, .upToDate, .failed:
+            Button("Check now", action: updater.checkForUpdates)
+        case .ready:
+            Button("Restart to update", action: updater.installAndRelaunch).buttonStyle(.borderedProminent)
+                .disabled(recording)
+        case .unavailable, .checking, .downloading, .installing:
+            EmptyView()
+        }
     }
 }
