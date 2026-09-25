@@ -1,0 +1,90 @@
+name: Release
+
+# Pushing a tag such as v0.2.0 publishes a stable release; v0.2.0-preview.1 publishes a prerelease.
+# The tag's base version must match MARKETING_VERSION in the Xcode project.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check formatting and run tests
+        run: Scripts/check.sh
+
+  release:
+    name: Publish release
+    needs: checks
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Resolve version from tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(Scripts/release-version.sh "$TAG")"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Require the update signing key
+        env:
+          AMANUENSIS_UPDATE_PRIVATE_KEY: ${{ secrets.AMANUENSIS_UPDATE_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$AMANUENSIS_UPDATE_PRIVATE_KEY" ]]; then
+            echo "Add the AMANUENSIS_UPDATE_PRIVATE_KEY repository secret before releasing." >&2
+            echo "Generate it with: xcrun swift Scripts/update-key.swift generate <file>" >&2
+            exit 1
+          fi
+      - uses: ./.github/actions/xcode-setup
+      - name: Build and verify DMG
+        id: package
+        env:
+          AMANUENSIS_VERSION: ${{ steps.version.outputs.version }}
+          AMANUENSIS_BUILD_NUMBER: ${{ github.run_number }}
+        run: Scripts/package-dmg.sh
+      - name: Check in-app updater against the DMG
+        run: Scripts/check-updater.sh artifacts/Amanuensis.app "${{ steps.package.outputs.dmg-path }}"
+      - name: Sign DMG for the in-app updater
+        env:
+          AMANUENSIS_UPDATE_PRIVATE_KEY: ${{ secrets.AMANUENSIS_UPDATE_PRIVATE_KEY }}
+          DMG: ${{ steps.package.outputs.dmg-path }}
+        run: |
+          xcrun swift Scripts/update-key.swift sign "$DMG" > "$DMG.sig"
+          public_key="$(/usr/libexec/PlistBuddy -c 'Print :AmanuensisUpdatePublicKey' \
+            artifacts/Amanuensis.app/Contents/Info.plist)"
+          xcrun swift Scripts/update-key.swift verify "$DMG" "$DMG.sig" "$public_key"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+            artifacts/Amanuensis.app/Contents/Info.plist)" = "${{ steps.version.outputs.version }}"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          DMG: ${{ steps.package.outputs.dmg-path }}
+        run: |
+          flags=(--verify-tag --generate-notes --title "Amanuensis $VERSION")
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" "${flags[@]}" "$DMG" "$DMG.sig"

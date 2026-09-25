@@ -35,6 +35,7 @@ final class AppModel {
     let meetingAudio = MeetingCapture()
     let appleSpeech = AppleSpeechEngine()
     let library: ModelLibrary
+    let updater = AppUpdater()
 
     @ObservationIgnored private let store: LocalStore?
     @ObservationIgnored private let localSpeech = LocalSpeechEngine()
@@ -131,6 +132,8 @@ final class AppModel {
         refreshConnectedProviders()
         configureShortcuts()
         enforceRetention()
+        // Smoke runs exercise bundled models offline and must not reach GitHub or replace the bundle.
+        if !CommandLine.arguments.contains("--speech-smoke") { updater.startAutomaticChecks() }
         Task { [weak self] in
             guard let self else { return }
             _ = try? await appleSpeech.checkReadiness()

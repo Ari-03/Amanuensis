@@ -19,7 +19,8 @@ fi
 app="$app_root/artifacts/Amanuensis.app"
 codesign --verify --deep --strict "$app"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
-name="Amanuensis-$version-preview-arm64"
+# The updater looks for this exact name pattern among a release's assets.
+name="Amanuensis-$version-arm64"
 work="$(mktemp -d "${TMPDIR:-/tmp}/amanuensis-dmg.XXXXXX")"
 mounted=false
 cleanup() {

@@ -1,0 +1,27 @@
+name: Set up Xcode build
+description: Verifies the Apple Silicon toolchain, installs the Metal Toolchain if needed, and restores the Xcode build cache.
+runs:
+  using: composite
+  steps:
+    - name: Verify build tools
+      id: tools
+      shell: bash
+      run: |
+        test "$(uname -m)" = arm64
+        xcodebuild -version
+        xcrun swift --version
+        cmake --version
+        if ! xcrun metal --version; then
+          xcodebuild -downloadComponent MetalToolchain
+        fi
+        xcrun metal --version
+        xcode_version="$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f 1)"
+        printf 'cache-prefix=%s-%s-%s\n' "$(uname -m)" "$ImageVersion" "$xcode_version" >> "$GITHUB_OUTPUT"
+    - name: Restore Xcode build cache
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: DerivedData
+        key: release-v1-${{ steps.tools.outputs.cache-prefix }}-${{ hashFiles('**/Package.resolved', '**/Package.swift', 'Amanuensis.xcodeproj/project.pbxproj', 'BuildSupport/S1Mini/build.sh', 'BuildSupport/S1Mini/CMakeLists.txt', 'Scripts/build.sh') }}-${{ github.sha }}
+        restore-keys: |
+          release-v1-${{ steps.tools.outputs.cache-prefix }}-${{ hashFiles('**/Package.resolved', '**/Package.swift', 'Amanuensis.xcodeproj/project.pbxproj', 'BuildSupport/S1Mini/build.sh', 'BuildSupport/S1Mini/CMakeLists.txt', 'Scripts/build.sh') }}-
+          release-v1-${{ steps.tools.outputs.cache-prefix }}-
