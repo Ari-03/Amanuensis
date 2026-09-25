@@ -58,20 +58,28 @@ tr 'A-Za-z' 'N-ZA-Mn-za-m' <"$work/good.sig" >"$work/bad.sig"
 cp "$work/bad.sig" "$work/serve/$dmg_name.sig"
 size="$(stat -f %z "$dmg")"
 
+# A cold interpreter on a CI runner can take many seconds to start, so wait generously and stop
+# early if the server exits.
 python3 -u -m http.server 0 --bind 127.0.0.1 --directory "$work/serve" >"$work/server.log" 2>&1 &
 server_pid=$!
 port=""
-for _ in $(seq 1 50); do
+for _ in $(seq 1 600); do
     port="$(sed -n 's/.*port \([0-9]*\).*/\1/p' "$work/server.log" | head -n 1)"
     if [[ -n "$port" ]]; then break; fi
+    if ! kill -0 "$server_pid" 2>/dev/null; then break; fi
     sleep 0.1
 done
 if [[ -z "$port" ]]; then
-    echo "The local web server did not start" >&2
+    echo "The local web server did not start ($(python3 --version 2>&1))" >&2
     cat "$work/server.log" >&2
     exit 1
 fi
 base="http://127.0.0.1:$port"
+curl --silent --fail --retry 20 --retry-delay 1 --retry-all-errors --output /dev/null "$base/" || {
+    echo "The local web server at $base is not answering" >&2
+    cat "$work/server.log" >&2
+    exit 1
+}
 cat >"$work/serve/releases.json" <<JSON
 [
   {"tag_name": "v9.9.9", "draft": true, "prerelease": false, "html_url": "$base/draft",
