@@ -51,6 +51,18 @@ struct UpdateTests {
         #expect(UpdateRelease.newest(in: releases, channel: .stable, after: olderPreview) == nil)
     }
 
+    @Test func findsTheNextPageInLinkHeaders() {
+        let header =
+            "<https://api.github.com/repositories/1/releases?per_page=100&page=2>; rel=\"next\", "
+            + "<https://api.github.com/repositories/1/releases?per_page=100&page=4>; rel=\"last\""
+        #expect(
+            UpdateRelease.nextPage(in: header)?.absoluteString
+                == "https://api.github.com/repositories/1/releases?per_page=100&page=2")
+        let last = "<https://api.github.com/repositories/1/releases?page=1>; rel=\"prev\""
+        #expect(UpdateRelease.nextPage(in: last) == nil)
+        #expect(UpdateRelease.nextPage(in: "") == nil)
+    }
+
     @Test func parsesGitHubReleasesAndSkipsUnusableOnes() throws {
         let json = """
             [

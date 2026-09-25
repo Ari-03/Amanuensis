@@ -22,6 +22,11 @@ final class AppUpdater {
 
     private(set) var state: State = .idle
     private(set) var lastChecked: Date?
+    /// True while the bundle is being replaced; recording must not start, because the app relaunches next.
+    var isInstalling: Bool {
+        if case .installing = state { return true }
+        return false
+    }
     /// A release the user postponed from the Home banner for this session.
     var postponed: AppVersion?
     var channel: UpdateChannel {
@@ -224,20 +229,36 @@ private struct UpdateInstaller: Sendable {
         try? FileManager.default.removeItem(at: downloads)
     }
 
+    /// Reads every page of the release list, so a stable release is found behind any number of previews.
     func fetchReleases() async throws -> [UpdateRelease] {
-        var request = URLRequest(url: feedURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        request.setValue("Amanuensis/\(version)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await session.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200 else {
-            throw UpdateFailure(
-                status == 403 || status == 429
-                    ? "GitHub is rate limiting update checks. Try again later."
-                    : "GitHub returned status \(status) while checking for updates.")
+        var components = URLComponents(url: feedURL, resolvingAgainstBaseURL: false)
+        let existing = components?.queryItems ?? []
+        components?.queryItems = existing + [URLQueryItem(name: "per_page", value: "100")]
+        var next = components?.url ?? feedURL
+        var releases: [UpdateRelease] = []
+        for _ in 0..<10 {
+            var request = URLRequest(url: next)
+            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+            request.setValue("Amanuensis/\(version)", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await session.data(for: request)
+            let http = response as? HTTPURLResponse
+            let status = http?.statusCode ?? 0
+            guard status == 200 else {
+                throw UpdateFailure(
+                    status == 403 || status == 429
+                        ? "GitHub is rate limiting update checks. Try again later."
+                        : "GitHub returned status \(status) while checking for updates.")
+            }
+            releases += try UpdateRelease.parse(githubReleases: data)
+            guard let link = http?.value(forHTTPHeaderField: "Link"),
+                let url = UpdateRelease.nextPage(in: link)
+            else {
+                break
+            }
+            next = url
         }
-        return try UpdateRelease.parse(githubReleases: data)
+        return releases
     }
 
     /// Downloads the signature and disk image, then verifies the image before returning its location.
@@ -253,8 +274,8 @@ private struct UpdateInstaller: Sendable {
 
         let files = FileManager.default
         try files.createDirectory(at: downloads, withIntermediateDirectories: true)
-        let destination = downloads.appendingPathComponent(release.archiveName)
-        try? files.removeItem(at: destination)
+        // Each attempt gets its own file, so a cancelled attempt's cleanup cannot remove a newer download.
+        let destination = downloads.appendingPathComponent("\(UUID().uuidString)-\(release.archiveName)")
         do {
             try await write(release.archiveURL, to: destination, expecting: release.archiveByteCount) {
                 await progress($0)
@@ -341,16 +362,23 @@ private struct UpdateInstaller: Sendable {
         _ = try? await run("/usr/bin/hdiutil", ["detach", mount.path, "-force"])
         try? files.removeItem(at: mount)
 
-        let previous = parent.appendingPathComponent(".Amanuensis-previous-\(UUID().uuidString).app")
-        try files.moveItem(at: bundleURL, to: previous)
-        do {
-            try files.moveItem(at: staged, to: bundleURL)
-        } catch {
-            try? files.moveItem(at: previous, to: bundleURL)
+        // An atomic swap leaves an app at the installed path at every instant. Volumes without swap
+        // support fall back to two renames, with the old bundle restored if the second one fails.
+        if renamex_np(staged.path, bundleURL.path, UInt32(RENAME_SWAP)) == 0 {
             try? files.removeItem(at: staged)
-            throw UpdateFailure("Could not move the new version into place: \(error.localizedDescription)")
+        } else {
+            let previous = parent.appendingPathComponent(".Amanuensis-previous-\(UUID().uuidString).app")
+            try files.moveItem(at: bundleURL, to: previous)
+            do {
+                try files.moveItem(at: staged, to: bundleURL)
+            } catch {
+                try? files.moveItem(at: previous, to: bundleURL)
+                try? files.removeItem(at: staged)
+                throw UpdateFailure(
+                    "Could not move the new version into place: \(error.localizedDescription)")
+            }
+            try? files.removeItem(at: previous)
         }
-        try? files.removeItem(at: previous)
         try? files.removeItem(at: archive)
     }
 

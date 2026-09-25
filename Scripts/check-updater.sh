@@ -24,6 +24,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The packaged app must carry a usable repository and 32-byte Ed25519 key, or it would report updates
+# as unavailable. The scratch copy below replaces the key with a throwaway one for this run.
+packaged_plist="$app/Contents/Info.plist"
+packaged_key="$(/usr/libexec/PlistBuddy -c 'Print :AmanuensisUpdatePublicKey' "$packaged_plist")"
+packaged_repo="$(/usr/libexec/PlistBuddy -c 'Print :AmanuensisUpdateRepository' "$packaged_plist")"
+if [[ "$(printf '%s' "$packaged_key" | base64 -D 2>/dev/null | wc -c | tr -d ' ')" != 32 ]]; then
+    echo "The packaged app's AmanuensisUpdatePublicKey is not a base64 Ed25519 key" >&2
+    exit 1
+fi
+if [[ ! "$packaged_repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+    echo "The packaged app's AmanuensisUpdateRepository is not owner/name: '$packaged_repo'" >&2
+    exit 1
+fi
+
 # The "installed" copy reports an old version and trusts a throwaway key generated for this run.
 mkdir -p "$work/installed" "$work/serve"
 ditto "$app" "$work/installed/Amanuensis.app"

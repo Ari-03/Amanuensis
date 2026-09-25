@@ -163,6 +163,10 @@ final class AppModel {
         else {
             return
         }
+        guard !updater.isInstalling else {
+            report(AppFailure("Amanuensis is installing an update and will restart in a moment."))
+            return
+        }
         guard let store else {
             report(AppFailure("Local storage must be available before recording."))
             return
@@ -531,6 +535,10 @@ final class AppModel {
 
     func retryRecording(_ original: RecordingEntry) async {
         guard !phase.isBusy, activeID == nil, cancellingID == nil, modelReleaseCount == 0, let store else {
+            return
+        }
+        guard !updater.isInstalling else {
+            report(AppFailure("Amanuensis is installing an update and will restart in a moment."))
             return
         }
         guard let sourceURL = store.acquireAudioLease(for: original) else {

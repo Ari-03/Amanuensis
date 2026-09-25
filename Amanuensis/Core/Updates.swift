@@ -105,6 +105,18 @@ struct UpdateRelease: Equatable, Sendable {
         }
     }
 
+    /// The `rel="next"` target of a GitHub `Link` header, if the release list continues on another page.
+    static func nextPage(in header: String) -> URL? {
+        for part in header.split(separator: ",") {
+            let pieces = part.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard pieces.count >= 2, pieces.dropFirst().contains("rel=\"next\""),
+                pieces[0].hasPrefix("<"), pieces[0].hasSuffix(">")
+            else { continue }
+            return URL(string: String(pieces[0].dropFirst().dropLast()))
+        }
+        return nil
+    }
+
     /// The newest release on the channel that is ahead of the installed version, if any.
     static func newest(in releases: [UpdateRelease], channel: UpdateChannel, after current: AppVersion)
         -> UpdateRelease?

@@ -5,7 +5,8 @@
 set -euo pipefail
 app_root="$(cd "$(dirname "$0")/.." && pwd)"
 tag="${1:-}"
-if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+# Prerelease identifiers are dot-separated and never empty, matching the app's AppVersion parser.
+if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
     echo "Tag '$tag' must look like v1.2.3 or v1.2.3-preview.1" >&2
     exit 1
 fi
