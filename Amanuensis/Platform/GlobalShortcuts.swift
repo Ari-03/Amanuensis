@@ -236,7 +236,7 @@ final class GlobalShortcuts {
         return true
     }
 
-    /// Keep this active through recording, transcription, and cleanup so Escape cancels the session.
+    /// Keep this active through recording, transcription, and cleanup so Escape can request cancellation.
     func setRecordingActive(_ active: Bool) {
         guard active != recordingActive else { return }
         recordingActive = active

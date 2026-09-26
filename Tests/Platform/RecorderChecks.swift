@@ -15,13 +15,15 @@ final class AppModel {
     var accessibilityGranted = true
     var history: [RecordingEntry] = []
     var toggleCount = 0
+    var isCancellationPending = false
     var onResize: ((CGSize) -> Void)?
     var onDrag: ((CGSize) -> Void)?
     var onEndDrag: (() -> Void)?
     var onCancelDrag: (() -> Void)?
     var currentMode: DictationMode { modes.first { $0.id == settings.selectedModeID } ?? modes[0] }
     func toggleRecording() { toggleCount += 1 }
-    func cancelRecording() { phase = .idle }
+    func requestCancelRecording() { isCancellationPending = true }
+    func dismissCancellation() { isCancellationPending = false }
     func selectMode(_ id: UUID) { settings.selectedModeID = id }
     func resizeRecorder(to size: CGSize) { onResize?(size) }
     func moveRecorder(translation: CGSize) { onDrag?(translation) }
@@ -223,8 +225,31 @@ struct RecorderChecks {
                     await pause(350)
                     precondition(panel.frame.width == 36, "Every finished state must minimize the recorder")
                 }
+                model.phase = .recording
+                model.isCancellationPending = true
+                recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .top)
+                await pause(350)
+                let promptWidth = ("Cancel transcription? Press Esc again to discard." as NSString)
+                    .size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width
+                precondition(panel.frame.width >= promptWidth + 100, "The cancellation prompt must fit")
+                precondition(!panel.canBecomeKey && !panel.canBecomeMain)
+                precondition(panel.level == .floating, "Confirmation must not be constrained by the menu bar")
+                precondition(panel.frame.height >= 26)
+                precondition(
+                    model.settings.recorderStyle == style, "Confirmation must preserve the saved style")
+                model.dismissCancellation()
+                recorder.show(content: AnyView(RecorderView(model: model)), style: style, placement: .top)
+                await pause(350)
+                precondition(model.phase == .recording, "Dismissing confirmation must leave recording active")
+                precondition(panel.frame.width < promptWidth)
+                if style == .notch {
+                    precondition(panel.level == .statusBar && panel.frame.height == menuBarHeight)
+                }
             }
             print("PASS: Both styles fit full processing labels and minimize after completion or failure")
+            print(
+                "PASS: Confirmation floats without stealing focus, then restores the configured recorder style"
+            )
 
             let silentHeight = waveformPeak(intensity: 0)
             let quietHeight = waveformPeak(intensity: 0.35)

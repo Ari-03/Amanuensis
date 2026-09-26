@@ -416,3 +416,21 @@ enum DictationPhase: String, Sendable {
     case interrupted = "Recording interrupted"
     var isBusy: Bool { [.preparing, .recording, .transcribing, .cleaning, .delivering].contains(self) }
 }
+
+/// A destructive cancel needs a second press within a short window, measured with monotonic time.
+struct CancellationConfirmation {
+    static let timeout: TimeInterval = 5
+    private var deadline: TimeInterval?
+    var isPending: Bool { deadline != nil }
+
+    mutating func request(at time: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        if let deadline, time < deadline {
+            dismiss()
+            return true
+        }
+        deadline = time + Self.timeout
+        return false
+    }
+
+    mutating func dismiss() { deadline = nil }
+}

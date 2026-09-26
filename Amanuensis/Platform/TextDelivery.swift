@@ -40,11 +40,11 @@ enum DeliveryOutcome: Equatable {
     var message: String {
         switch self {
         case .commandPosted:
-            "Paste command sent. Your transcript remains in History."
+            "Paste command sent. Your transcript is also on the clipboard if you need to paste it manually."
         case .copied:
             "Copied to the clipboard."
         case .accessibilityRequired:
-            "Allow Accessibility access for this copy of Amanuensis to paste automatically, or copy your transcript."
+            "Copied to the clipboard. Allow Accessibility access for this copy of Amanuensis to paste automatically."
         case .held(let reason):
             reason
         }
@@ -57,15 +57,7 @@ final class TextDelivery {
     private let pasteboard: NSPasteboard
     private let hasAccessibilityAccess: () -> Bool
     private let environment: TextDeliveryEnvironment
-    private let sessionType = NSPasteboard.PasteboardType("dev.amanuensis.paste-session")
     private var isDelivering = false
-    private var pendingClipboard: PendingClipboard?
-
-    private struct PendingClipboard {
-        let snapshot: ClipboardSnapshot
-        let changeCount: Int
-        let session: String
-    }
 
     init(
         pasteboard: NSPasteboard = .general,
@@ -114,84 +106,44 @@ final class TextDelivery {
         guard !isDelivering else {
             return .held("Another paste is finishing. Copy this transcript from History.")
         }
+        // Keep a manual fallback even when AX cannot describe the editor or it ignores Command-V.
+        // A posted event is not proof of insertion, so never restore the previous clipboard.
+        guard copy(text: text) else {
+            return .held("Could not copy to the clipboard. Your transcript remains in History.")
+        }
+        let ownedChangeCount = pasteboard.changeCount
         guard hasAccessibilityAccess() else {
             return .accessibilityRequired
         }
-        guard let target else {
-            return .held(
-                "Focus an editable text field in another app before recording. Your transcript is ready to copy."
-            )
-        }
-        guard matchesCurrentDestination(target) else {
-            return .held(
-                "The destination changed or could not be verified. Your transcript is ready to copy.")
-        }
+        guard let target, matchesCurrentDestination(target) else { return .copied }
 
         isDelivering = true
-        defer {
-            restorePendingClipboard()
-            isDelivering = false
-        }
-
-        // Abort if any representation cannot be preserved, including deferred data.
-        let originalChangeCount = pasteboard.changeCount
-        guard let snapshot = clipboardSnapshot(),
-            pasteboard.changeCount == originalChangeCount,
-            matchesCurrentDestination(target)
-        else {
-            return .held("The destination or clipboard changed. Your transcript is ready to copy.")
-        }
-
-        let session = UUID().uuidString
-        let item = NSPasteboardItem()
-        item.setString(text, forType: .string)
-        item.setString(session, forType: sessionType)
-        item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+        defer { isDelivering = false }
 
         guard let source = CGEventSource(stateID: .privateState),
             let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
             let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
-        else { return .held("Could not create the paste command. Copy your transcript instead.") }
-
-        let clearedChangeCount = pasteboard.clearContents()
-        guard pasteboard.writeObjects([item]) else {
-            let failureChangeCount = pasteboard.changeCount
-            if failureChangeCount == clearedChangeCount {
-                restore(snapshot)
-            } else {
-                // A partial write may already carry our marker. Never overwrite a later copy.
-                restoreIfOwned(snapshot, changeCount: failureChangeCount, session: session)
-            }
-            return .held("Could not prepare the clipboard. Your transcript remains in History.")
-        }
-        let ownedChangeCount = pasteboard.changeCount
-        pendingClipboard = PendingClipboard(
-            snapshot: snapshot, changeCount: ownedChangeCount, session: session)
+        else { return .copied }
 
         down.flags = .maskCommand
         up.flags = .maskCommand
         // Keep the check and posting synchronous. PID routing prevents a late app switch
         // from redirecting the transcript, but macOS does not make check-and-post atomic.
-        guard matchesCurrentDestination(target) else {
-            return .held("The destination changed. Your transcript is ready to copy.")
+        guard matchesCurrentDestination(target) else { return .copied }
+        guard pasteboard.changeCount == ownedChangeCount else {
+            return .held("The clipboard changed before pasting. Copy your transcript from History.")
         }
         environment.post(down, target.processID)
         environment.post(up, target.processID)
 
-        // macOS provides no paste-consumed acknowledgment. Retain History as recovery.
+        // Serialize attempts while the editor handles the command. Leave the transcript available
+        // for slow editors and manual paste, without overwriting anything the user copies later.
         await withCheckedContinuation { continuation in
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(750)) {
                 continuation.resume()
             }
         }
         return .commandPosted
-    }
-
-    /// Call during normal shutdown, before the pending asynchronous paste delay can finish.
-    func restorePendingClipboard() {
-        guard let pending = pendingClipboard else { return }
-        pendingClipboard = nil
-        restoreIfOwned(pending.snapshot, changeCount: pending.changeCount, session: pending.session)
     }
 
     @discardableResult
@@ -229,37 +181,5 @@ final class TextDelivery {
         if environment.isAttributeSettable(field, kAXSelectedTextAttribute) { return true }
         return [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(where: { $0 == role })
             && environment.isAttributeSettable(field, kAXValueAttribute)
-    }
-
-    private typealias ClipboardSnapshot = [[(NSPasteboard.PasteboardType, Data)]]
-
-    private func clipboardSnapshot() -> ClipboardSnapshot? {
-        var snapshot: ClipboardSnapshot = []
-        for item in pasteboard.pasteboardItems ?? [] {
-            var representations: [(NSPasteboard.PasteboardType, Data)] = []
-            for type in item.types {
-                guard let data = item.data(forType: type) else { return nil }
-                representations.append((type, data))
-            }
-            snapshot.append(representations)
-        }
-        return snapshot
-    }
-
-    private func restoreIfOwned(_ snapshot: ClipboardSnapshot, changeCount: Int, session: String) {
-        guard pasteboard.changeCount == changeCount,
-            pasteboard.string(forType: sessionType) == session
-        else { return }
-        restore(snapshot)
-    }
-
-    private func restore(_ snapshot: ClipboardSnapshot) {
-        let items = snapshot.map { representations in
-            let item = NSPasteboardItem()
-            for (type, data) in representations { item.setData(data, forType: type) }
-            return item
-        }
-        pasteboard.clearContents()
-        if !items.isEmpty { pasteboard.writeObjects(items) }
     }
 }

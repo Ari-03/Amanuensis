@@ -50,12 +50,19 @@ private struct MenuBarContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Text(model.statusMessage)
+        Text(
+            model.isCancellationPending
+                ? "Cancel transcription? Press Esc again to discard." : model.statusMessage)
         Button(model.phase == .recording ? "Finish recording" : "Start recording") {
             model.toggleRecording()
         }.disabled(model.phase.isBusy && model.phase != .recording)
         if model.phase.isBusy {
-            Button("Cancel", role: .destructive) { model.cancelRecording() }
+            if model.isCancellationPending {
+                Button("Keep going", action: model.dismissCancellation)
+            }
+            Button(model.isCancellationPending ? "Discard" : "Cancel", role: .destructive) {
+                model.requestCancelRecording()
+            }.disabled(model.phase == .delivering)
         }
         Divider()
         ForEach(model.modes) { mode in

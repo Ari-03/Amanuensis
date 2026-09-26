@@ -31,10 +31,10 @@ private final class HotKeys {
         )
     }
 
-    func press(_ binding: ShortcutBinding) {
+    func press(_ binding: ShortcutBinding, repeating times: Int = 1) {
         let reference = active.first(where: { $0.value == binding })!.key
         var identifier = EventHotKeyID(signature: 0x414D_414E, id: identifiers[reference]!)
-        for kind in [kEventHotKeyPressed, kEventHotKeyReleased] {
+        for kind in Array(repeating: kEventHotKeyPressed, count: times) + [kEventHotKeyReleased] {
             var event: EventRef?
             precondition(CreateEvent(nil, OSType(kEventClassKeyboard), UInt32(kind), 0, 0, &event) == noErr)
             precondition(
@@ -162,6 +162,26 @@ struct ShortcutChecks {
         precondition(keys.active.count == 4)
         manager.setRecordingActive(false)
         precondition(keys.active.count == 3)
+
+        var confirmation = CancellationConfirmation()
+        var cancelRequests = 0
+        var cancellations = 0
+        precondition(
+            manager.setBindings(
+                toggle: toggle, pushToTalk: nil, changeMode: nil,
+                onToggle: {}, onPushToTalk: { _ in }, onChangeMode: {},
+                onCancel: {
+                    cancelRequests += 1
+                    if confirmation.request(at: 100) { cancellations += 1 }
+                }))
+        manager.setRecordingActive(true)
+        let escape = ShortcutBinding(keyCode: UInt32(kVK_Escape), modifiers: 0, display: "Escape")
+        keys.press(escape, repeating: 5)
+        precondition(cancelRequests == 1 && cancellations == 0 && confirmation.isPending)
+        keys.press(escape)
+        precondition(cancelRequests == 2 && cancellations == 1 && !confirmation.isPending)
+        manager.setRecordingActive(false)
+        print("PASS: Holding Escape only prompts; a second distinct press confirms cancellation")
         try await monitorReplacementChecks()
         try await modifierChecks()
         print(

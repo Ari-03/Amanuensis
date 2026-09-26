@@ -14,11 +14,14 @@ struct RecorderView: View {
     @State private var collapseTask: Task<Void, Never>?
 
     private var isOpen: Bool {
-        revealControls || showingModes || showingPermission
+        model.isCancellationPending || revealControls || showingModes || showingPermission
     }
 
     private var isMinimized: Bool { !isOpen && !model.phase.isBusy }
-    private var style: RecorderStyle { model.settings.recorderStyle }
+    private var style: RecorderStyle {
+        // Confirmation needs more room than the camera-side menu bar can guarantee.
+        model.isCancellationPending ? .mini : model.settings.recorderStyle
+    }
     private var idleSize: CGSize { RecorderLayout.idleSize(for: style) }
     private var activeSize: CGSize { RecorderLayout.activeSize(for: style) }
     private var silhouette: RecorderSilhouette { RecorderSilhouette(style: style) }
@@ -30,7 +33,7 @@ struct RecorderView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                controls
+                expandedContents
                     .fixedSize()
                     .onGeometryChange(for: CGSize.self) {
                         $0.size
@@ -190,7 +193,7 @@ struct RecorderView: View {
         .accessibilityActions {
             Button("Show recorder controls") { revealControls = true }
             if model.phase.isBusy && model.phase != .delivering {
-                Button("Cancel recording", action: model.cancelRecording)
+                Button("Cancel recording", action: model.requestCancelRecording)
             }
         }
         .help(
@@ -199,6 +202,28 @@ struct RecorderView: View {
                 : style == .mini
                     ? "Click to record. Hover for controls. Drag to reposition."
                     : "Click to record. Hover for controls.")
+    }
+
+    @ViewBuilder
+    private var expandedContents: some View {
+        if model.isCancellationPending {
+            HStack(spacing: 12) {
+                Text("Cancel transcription? Press Esc again to discard.")
+                    .font(.system(size: 12)).fixedSize()
+                Button("Keep going", action: model.dismissCancellation)
+                    .font(.system(size: 12, weight: .medium))
+                Button(action: model.requestCancelRecording) {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .medium))
+                        .frame(width: 22, height: 26).contentShape(Rectangle())
+                }
+                .foregroundStyle(.orange)
+                .accessibilityLabel("Discard transcription")
+                .help("Discard transcription")
+            }
+            .buttonStyle(.plain)
+        } else {
+            controls
+        }
     }
 
     private var controls: some View {
@@ -286,7 +311,7 @@ struct RecorderView: View {
                     )
                     .font(.caption2).monospacedDigit().fixedSize()
                 }
-                Button(action: model.cancelRecording) {
+                Button(action: model.requestCancelRecording) {
                     Image(systemName: "xmark").font(.system(size: 10, weight: .medium))
                         .frame(width: 22, height: 26).contentShape(Rectangle())
                 }

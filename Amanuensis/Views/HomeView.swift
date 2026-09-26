@@ -41,7 +41,10 @@ struct HomeView: View {
                         }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         .disabled(model.phase.isBusy).accessibilityLabel("Change active mode")
-                        Text(model.statusMessage).font(.callout).foregroundStyle(.secondary)
+                        Text(
+                            model.isCancellationPending
+                                ? "Cancel transcription? Press Esc again to discard." : model.statusMessage
+                        ).font(.callout).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 18) {
                         Button(action: model.toggleRecording) {
@@ -58,7 +61,14 @@ struct HomeView: View {
                             onEditing: { model.isEditingShortcut = $0 })
                         Spacer()
                         if model.phase.isBusy {
-                            Button("Cancel", action: model.cancelRecording).buttonStyle(.borderless)
+                            if model.isCancellationPending {
+                                Button("Keep going", action: model.dismissCancellation).buttonStyle(
+                                    .borderless)
+                            }
+                            Button(
+                                model.isCancellationPending ? "Discard" : "Cancel",
+                                action: model.requestCancelRecording
+                            ).buttonStyle(.borderless)
                                 .disabled(model.phase == .delivering)
                         }
                     }
