@@ -730,7 +730,8 @@ final class AppModel {
 
     func deleteRecording(_ id: UUID) {
         if activeID == id {
-            requestCancelRecording()
+            // History already confirmed deletion in its destructive-action alert.
+            cancelRecording()
             return
         }
         do {
@@ -958,7 +959,7 @@ final class AppModel {
         {
             recorder.show(
                 content: AnyView(RecorderView(model: self)),
-                style: settings.recorderStyle == .hidden ? .mini : settings.recorderStyle,
+                style: isCancellationPending ? .mini : settings.recorderStyle,
                 placement: settings.recorderPlacement)
         } else {
             recorder.hide()

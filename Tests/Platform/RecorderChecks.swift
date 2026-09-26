@@ -227,21 +227,29 @@ struct RecorderChecks {
                 }
                 model.phase = .recording
                 model.isCancellationPending = true
+                recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .top)
                 await pause(350)
                 let promptWidth = ("Cancel transcription? Press Esc again to discard." as NSString)
                     .size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width
                 precondition(panel.frame.width >= promptWidth + 100, "The cancellation prompt must fit")
                 precondition(!panel.canBecomeKey && !panel.canBecomeMain)
-                if style == .notch {
-                    precondition(panel.frame.height == menuBarHeight, "Confirmation must fit the menu bar")
-                }
+                precondition(panel.level == .floating, "Confirmation must not be constrained by the menu bar")
+                precondition(panel.frame.height >= 26)
+                precondition(
+                    model.settings.recorderStyle == style, "Confirmation must preserve the saved style")
                 model.dismissCancellation()
+                recorder.show(content: AnyView(RecorderView(model: model)), style: style, placement: .top)
                 await pause(350)
                 precondition(model.phase == .recording, "Dismissing confirmation must leave recording active")
                 precondition(panel.frame.width < promptWidth)
+                if style == .notch {
+                    precondition(panel.level == .statusBar && panel.frame.height == menuBarHeight)
+                }
             }
             print("PASS: Both styles fit full processing labels and minimize after completion or failure")
-            print("PASS: Both styles fit cancellation confirmation without taking keyboard focus")
+            print(
+                "PASS: Confirmation floats without stealing focus, then restores the configured recorder style"
+            )
 
             let silentHeight = waveformPeak(intensity: 0)
             let quietHeight = waveformPeak(intensity: 0.35)

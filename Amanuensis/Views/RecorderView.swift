@@ -19,7 +19,8 @@ struct RecorderView: View {
 
     private var isMinimized: Bool { !isOpen && !model.phase.isBusy }
     private var style: RecorderStyle {
-        model.settings.recorderStyle == .hidden ? .mini : model.settings.recorderStyle
+        // Confirmation needs more room than the camera-side menu bar can guarantee.
+        model.isCancellationPending ? .mini : model.settings.recorderStyle
     }
     private var idleSize: CGSize { RecorderLayout.idleSize(for: style) }
     private var activeSize: CGSize { RecorderLayout.activeSize(for: style) }

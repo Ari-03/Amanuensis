@@ -95,7 +95,7 @@ Automatic paste requires **System Settings → Privacy & Security → Accessibil
 
 Grant access to the copy of Amanuensis you are running. Development builds use ad-hoc signing, so an older build's Accessibility entry may not authorize a freshly rebuilt copy. The app checks both Accessibility trust and permission to send the paste keystroke. Compatible editors can support replacing selected text even when replacing their entire value is unavailable.
 
-Normal quit and system sleep preserve unfinished audio and text for recovery. Confirming cancellation discards the active recording. The confirmation appears even when the recorder is set to Hidden.
+Normal quit and system sleep preserve unfinished audio and text for recovery. Confirming cancellation discards the active recording. Confirmation temporarily uses a floating panel so the full prompt stays visible, including with Notch or Hidden selected. Your recorder style is restored when the prompt closes. Deleting an active recording from History uses its existing Delete confirmation.
 
 **Require local processing** starts enabled. To use OpenAI or Groq transcription, or OpenAI or Claude cleanup, configure the provider in Models, select it in a mode, and turn off that restriction in Settings. Credentials are stored in macOS Keychain. Testing a provider queries model metadata; it does not upload audio or transcript text.
 
