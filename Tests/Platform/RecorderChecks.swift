@@ -15,13 +15,15 @@ final class AppModel {
     var accessibilityGranted = true
     var history: [RecordingEntry] = []
     var toggleCount = 0
+    var isCancellationPending = false
     var onResize: ((CGSize) -> Void)?
     var onDrag: ((CGSize) -> Void)?
     var onEndDrag: (() -> Void)?
     var onCancelDrag: (() -> Void)?
     var currentMode: DictationMode { modes.first { $0.id == settings.selectedModeID } ?? modes[0] }
     func toggleRecording() { toggleCount += 1 }
-    func cancelRecording() { phase = .idle }
+    func requestCancelRecording() { isCancellationPending = true }
+    func dismissCancellation() { isCancellationPending = false }
     func selectMode(_ id: UUID) { settings.selectedModeID = id }
     func resizeRecorder(to size: CGSize) { onResize?(size) }
     func moveRecorder(translation: CGSize) { onDrag?(translation) }
@@ -223,8 +225,23 @@ struct RecorderChecks {
                     await pause(350)
                     precondition(panel.frame.width == 36, "Every finished state must minimize the recorder")
                 }
+                model.phase = .recording
+                model.isCancellationPending = true
+                await pause(350)
+                let promptWidth = ("Cancel transcription? Press Esc again to discard." as NSString)
+                    .size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width
+                precondition(panel.frame.width >= promptWidth + 100, "The cancellation prompt must fit")
+                precondition(!panel.canBecomeKey && !panel.canBecomeMain)
+                if style == .notch {
+                    precondition(panel.frame.height == menuBarHeight, "Confirmation must fit the menu bar")
+                }
+                model.dismissCancellation()
+                await pause(350)
+                precondition(model.phase == .recording, "Dismissing confirmation must leave recording active")
+                precondition(panel.frame.width < promptWidth)
             }
             print("PASS: Both styles fit full processing labels and minimize after completion or failure")
+            print("PASS: Both styles fit cancellation confirmation without taking keyboard focus")
 
             let silentHeight = waveformPeak(intensity: 0)
             let quietHeight = waveformPeak(intensity: 0.35)

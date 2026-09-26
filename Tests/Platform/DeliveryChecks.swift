@@ -13,17 +13,17 @@ struct DeliveryChecks {
         let deniedOutcome = await denied.deliver(text: "A completed transcript", to: nil)
         precondition(deniedOutcome == .accessibilityRequired)
         precondition(deniedOutcome.message.contains("Allow Accessibility access"))
-        precondition(pasteboard.changeCount == changeCount)
-        precondition(pasteboard.string(forType: .string) == "Existing clipboard")
-        print("PASS: Missing permission produces an actionable result without changing the clipboard")
+        precondition(pasteboard.changeCount > changeCount)
+        precondition(
+            pasteboard.string(forType: .string) == "A completed transcript",
+            "A transcript that cannot be pasted must be available on the clipboard")
+        print("PASS: Missing permission copies the transcript and explains how to enable automatic paste")
 
         let allowed = TextDelivery(pasteboard: pasteboard, hasAccessibilityAccess: { true })
         let missingTarget = await allowed.deliver(text: "A completed transcript", to: nil)
-        guard case .held = missingTarget else {
-            fatalError("An unknown destination must not receive a paste")
-        }
-        precondition(pasteboard.changeCount == changeCount)
-        print("PASS: Permission alone never allows pasting to an unknown destination")
+        precondition(missingTarget == .copied)
+        precondition(pasteboard.string(forType: .string) == "A completed transcript")
+        print("PASS: An unknown destination falls back to the clipboard even with permission granted")
 
         var granted = false
         let changing = TextDelivery(pasteboard: pasteboard, hasAccessibilityAccess: { granted })
@@ -44,8 +44,8 @@ struct DeliveryChecks {
         precondition(editor.events.map(\.type) == [.keyDown, .keyUp])
         precondition(editor.events.allSatisfy { $0.flags == .maskCommand })
         precondition(editor.eventTargets == [7001, 7001])
-        precondition(pasteboard.string(forType: .string) == "Existing clipboard")
-        print("PASS: Editors that allow selected-text replacement can receive a paste")
+        precondition(pasteboard.string(forType: .string) == "A completed transcript")
+        print("PASS: Posting to an editor that never consumes the paste leaves a manual clipboard fallback")
 
         editor.role = kAXGroupRole
         precondition(delivery.captureDestination() != nil)
@@ -66,35 +66,49 @@ struct DeliveryChecks {
         editor.events = []
         editor.field = AXUIElementCreateApplication(7004)
         let changedField = await delivery.deliver(text: "A completed transcript", to: target)
-        guard case .held = changedField else { fatalError("A different field must not receive the paste") }
+        precondition(changedField == .copied)
         precondition(editor.events.isEmpty)
-        precondition(pasteboard.string(forType: .string) == "Existing clipboard")
-        print("PASS: Changing fields prevents the paste and leaves the clipboard intact")
+        precondition(pasteboard.string(forType: .string) == "A completed transcript")
+        print("PASS: Changing fields prevents the paste and copies the transcript")
 
         let currentTarget = delivery.captureDestination()
         editor.window = AXUIElementCreateApplication(7005)
         let changedWindow = await delivery.deliver(text: "A completed transcript", to: currentTarget)
-        guard case .held = changedWindow else { fatalError("A different window must not receive the paste") }
+        precondition(changedWindow == .copied)
         precondition(editor.events.isEmpty)
         print("PASS: Changing windows prevents the paste")
 
         let foregroundTarget = delivery.captureDestination()
+        var editableChecks = 0
         editor.onEditableCheck = {
-            if pasteboard.string(forType: .string) == "A completed transcript" {
+            editableChecks += 1
+            if editableChecks == 2 {
                 editor.frontmostProcessID = 7006
             }
         }
         let changedDuringCheck = await delivery.deliver(
             text: "A completed transcript", to: foregroundTarget)
-        guard case .held = changedDuringCheck else {
+        guard case .copied = changedDuringCheck else {
             fatalError(
                 "An app that loses foreground focus during the final AX check must not receive a paste")
         }
         precondition(editor.events.isEmpty)
-        precondition(pasteboard.string(forType: .string) == "Existing clipboard")
+        precondition(pasteboard.string(forType: .string) == "A completed transcript")
         editor.frontmostProcessID = 7001
         editor.onEditableCheck = {}
-        print("PASS: App switches during the final Accessibility query abort and restore the clipboard")
+        print("PASS: App switches during the final Accessibility query abort with a clipboard fallback")
+
+        let clipboardTarget = delivery.captureDestination()
+        editor.onEditableCheck = {
+            pasteboard.clearContents()
+            pasteboard.setString("A newer copy", forType: .string)
+        }
+        let replacedClipboard = await delivery.deliver(text: "A completed transcript", to: clipboardTarget)
+        guard case .held = replacedClipboard else { fatalError("Never paste a newer clipboard item") }
+        precondition(editor.events.isEmpty)
+        precondition(pasteboard.string(forType: .string) == "A newer copy")
+        editor.onEditableCheck = {}
+        print("PASS: A copy during destination verification is preserved and is not pasted automatically")
 
         var observedTranscript = false
         editor.onPost = { event in
@@ -121,9 +135,20 @@ struct DeliveryChecks {
         let richOutcome = await delivery.deliver(
             text: "A completed transcript", to: delivery.captureDestination())
         precondition(richOutcome == .commandPosted)
-        precondition(pasteboard.string(forType: .string) == "Original clipboard")
-        precondition(pasteboard.data(forType: .rtf) == richData)
-        print("PASS: All original clipboard representations are restored after posting")
+        precondition(pasteboard.string(forType: .string) == "A completed transcript")
+        precondition(pasteboard.data(forType: .rtf) == nil)
+        print("PASS: The fallback replaces older clipboard formats with the completed transcript")
+
+        let beforeEmpty = pasteboard.changeCount
+        _ = await delivery.deliver(text: "", to: nil)
+        precondition(pasteboard.changeCount == beforeEmpty)
+        let cancelled = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await delivery.deliver(text: "Cancelled transcript", to: nil)
+        }
+        _ = await cancelled.value
+        precondition(pasteboard.changeCount == beforeEmpty)
+        print("PASS: Empty and cancelled deliveries do not replace the clipboard")
     }
 }
 

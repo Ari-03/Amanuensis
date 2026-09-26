@@ -17,6 +17,7 @@ final class AppModel {
     var statistics = UsageStatistics()
     var phase: DictationPhase = .idle {
         didSet {
+            if phase != oldValue { dismissCancellation() }
             shortcuts.setRecordingActive(phase.isBusy)
             updateRecorder()
         }
@@ -29,6 +30,10 @@ final class AppModel {
     private(set) var accessibilityGranted = TextDelivery.isAccessibilityTrusted
     var isMovingRecorder = false
     var isEditingShortcut = false
+    private var cancellationConfirmation = CancellationConfirmation() {
+        didSet { updateRecorder() }
+    }
+    var isCancellationPending: Bool { cancellationConfirmation.isPending }
     /// Providers with an API key in the Keychain. Refreshed whenever a key is saved or removed.
     private(set) var connectedProviders: Set<ModelFamily> = []
     let audio = AudioCapture()
@@ -56,6 +61,7 @@ final class AppModel {
     @ObservationIgnored private var startupComplete = false
     @ObservationIgnored private var changingConfiguration = false
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
+    @ObservationIgnored private var cancellationExpiry: Task<Void, Never>?
 
     var currentMode: DictationMode {
         if phase.isBusy, let activeEntry { return activeEntry.mode }
@@ -152,7 +158,7 @@ final class AppModel {
         if phase == .recording {
             stopRecording()
         } else if phase == .preparing {
-            cancelRecording()
+            requestCancelRecording()
         } else if !phase.isBusy {
             beginRecording()
         }
@@ -259,11 +265,32 @@ final class AppModel {
         }
     }
 
-    func cancelRecording() {
+    /// User cancellation is separate from teardown, which must never wait for confirmation.
+    func requestCancelRecording() {
+        guard activeID != nil, phase.isBusy, phase != .delivering else { return }
+        if cancellationConfirmation.request() {
+            cancelRecording()
+            return
+        }
+        cancellationExpiry?.cancel()
+        cancellationExpiry = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(CancellationConfirmation.timeout)) } catch { return }
+            self?.dismissCancellation()
+        }
+    }
+
+    func dismissCancellation() {
+        cancellationExpiry?.cancel()
+        cancellationExpiry = nil
+        if isCancellationPending { cancellationConfirmation.dismiss() }
+    }
+
+    private func cancelRecording() {
+        dismissCancellation()
         guard let id = activeID else { return }
-        // The paste has already been posted. Finish clipboard restoration and preserve History.
+        // The paste has already been posted. Finish delivery and preserve History.
         guard phase != .delivering else {
-            statusMessage = "Finishing text insertion and restoring your clipboard…"
+            statusMessage = "Finishing text insertion…"
             return
         }
         let previousWork = work
@@ -703,7 +730,7 @@ final class AppModel {
 
     func deleteRecording(_ id: UUID) {
         if activeID == id {
-            cancelRecording()
+            requestCancelRecording()
             return
         }
         do {
@@ -825,7 +852,6 @@ final class AppModel {
     func shutdown() {
         cancelRecording()
         retentionTask?.cancel()
-        delivery.restorePendingClipboard()
         restorePlayback()
         recorder.hide()
     }
@@ -896,7 +922,7 @@ final class AppModel {
                 let index = modes.firstIndex(where: { $0.id == settings.selectedModeID }) ?? 0
                 selectMode(modes[(index + 1) % modes.count].id)
             },
-            onCancel: { [weak self] in self?.cancelRecording() },
+            onCancel: { [weak self] in self?.requestCancelRecording() },
             modeBindings: Dictionary(
                 uniqueKeysWithValues: (proposedModes ?? modes).compactMap { mode in
                     mode.startShortcut.map { (mode.id, $0) }
@@ -926,11 +952,13 @@ final class AppModel {
 
     private func updateRecorder() {
         guard startupComplete else { return }
-        if settings.recorderStyle != .hidden
-            && (settings.alwaysShowRecorder || phase.isBusy || pasteNeedsAccessibility)
+        if isCancellationPending
+            || settings.recorderStyle != .hidden
+                && (settings.alwaysShowRecorder || phase.isBusy || pasteNeedsAccessibility)
         {
             recorder.show(
-                content: AnyView(RecorderView(model: self)), style: settings.recorderStyle,
+                content: AnyView(RecorderView(model: self)),
+                style: settings.recorderStyle == .hidden ? .mini : settings.recorderStyle,
                 placement: settings.recorderPlacement)
         } else {
             recorder.hide()

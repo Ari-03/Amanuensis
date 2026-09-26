@@ -79,9 +79,9 @@ The command prints the public key, which belongs in `BuildSupport/Info.plist` un
 2. Start with **Voice to text**, which uses Apple Speech without cleanup. Choose **Prepare speech recognition** on Home or **Prepare** beside Apple Speech in Models if English assets are missing. macOS may download them.
 3. Open **Models** to download or import another supported speech model, then select it in Modes. Install **S1-mini by Superwhisper** before using the initial Message, Mail, Notes, or Meeting modes. Message uses casual cleanup, Mail uses polished cleanup, and Notes and Meeting use lists. Custom starts without cleanup. Meeting also captures system audio and keeps its output in History without auto-pasting.
 4. Allow microphone access when macOS asks. Use **Enable text insertion** on Home to grant Accessibility access for insertion into other apps.
-5. Focus a text field in another app and press **⌥⌘Space** to start. Press it again to finish. Escape cancels. The shortcut can be edited on Home or in Settings.
+5. Focus a text field in another app and press **⌥⌘Space** to start. Press it again to finish. Escape asks for confirmation; press Escape again within five seconds to discard the transcription. Recording continues while the prompt is open. Choose **Keep going** or wait for the prompt to close to dismiss it. Cancel buttons use the same confirmation. The shortcut can be edited on Home or in Settings.
 
-Completed transcripts appear in **History**, with Original and Result views. If insertion cannot safely complete, copy the result from History. Cleanup failure preserves the original transcript and does not automatically insert it.
+Completed transcripts appear in **History**, with Original and Result views. With automatic paste enabled, the transcript is also copied to your clipboard, replacing its previous contents. If the destination cannot be verified or the editor does not accept the paste, press **⌘V** yourself. The transcript stays on the clipboard after a paste attempt until you copy something else. Cleanup failure preserves the original transcript in History and does not automatically insert it.
 
 The recorder rests as a small bar and expands while recording or processing. Hover while idle to choose a mode or start recording with the microphone button. During recording, the bars show microphone frequencies from low on the left to high on the right. Louder sounds raise the bars, and silence returns them to dots. Processing labels display in full. **Mini** is a floating pill. Drag it, including across displays, to reveal 17 screen positions, then release to snap to the highlighted position. These positions are also available in **Settings → Appearance → Screen position**, which appears only for Mini. Its placement is saved. Top and bottom positions sit eight points inside the available screen edge and expand inward, clear of the menu bar and Dock.
 
@@ -91,11 +91,11 @@ Starting a recording moves the controls to the display containing the mouse poin
 
 Shortcuts can also use two or more modifier keys without a letter or space, such as **⌥⌘**. Press and release the combination to toggle recording. Modifier-only push-to-talk starts after a brief hold and finishes when a modifier is released. Typing another key cancels a modifier gesture. These shortcuts need Accessibility access to work in other apps; ordinary key shortcuts do not.
 
-Automatic paste requires **System Settings → Privacy & Security → Accessibility → Amanuensis**. If permission is missing, the pill shows an orange warning with actions to open Accessibility settings or copy the last transcript. After granting access, focus your text field and start a new recording.
+Automatic paste requires **System Settings → Privacy & Security → Accessibility → Amanuensis**. If permission is missing, the transcript is still copied to the clipboard, and the pill shows an orange warning with actions to open Accessibility settings or copy the last transcript. After granting access, focus your text field and start a new recording.
 
 Grant access to the copy of Amanuensis you are running. Development builds use ad-hoc signing, so an older build's Accessibility entry may not authorize a freshly rebuilt copy. The app checks both Accessibility trust and permission to send the paste keystroke. Compatible editors can support replacing selected text even when replacing their entire value is unavailable.
 
-Normal quit and system sleep preserve unfinished audio and text for recovery. Explicit Cancel discards the active recording.
+Normal quit and system sleep preserve unfinished audio and text for recovery. Confirming cancellation discards the active recording. The confirmation appears even when the recorder is set to Hidden.
 
 **Require local processing** starts enabled. To use OpenAI or Groq transcription, or OpenAI or Claude cleanup, configure the provider in Models, select it in a mode, and turn off that restriction in Settings. Credentials are stored in macOS Keychain. Testing a provider queries model metadata; it does not upload audio or transcript text.
 
