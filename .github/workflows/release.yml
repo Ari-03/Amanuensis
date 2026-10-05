@@ -4,10 +4,10 @@ name: Release
 # The tag's base version must match MARKETING_VERSION in the Xcode project.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "!v*-nightly.*"]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -20,48 +20,46 @@ jobs:
     name: Checks
     runs-on: macos-26
     timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Verify release tag and main ancestry
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(Scripts/release-version.sh "$TAG")"
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          commit="$(git rev-parse 'HEAD^{commit}')"
+          test "$(git rev-parse "$TAG^{commit}")" = "$commit"
+          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+            echo "Release tags must point to a commit already merged into main." >&2
+            exit 1
+          fi
+          printf 'version=%s\ncommit=%s\n' "$version" "$commit" >> "$GITHUB_OUTPUT"
       - name: Check formatting and run tests
         run: Scripts/check.sh
 
-  release:
-    name: Publish release
+  dmg:
+    name: Build release DMG
     needs: checks
     runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ needs.checks.outputs.commit }}
           persist-credentials: false
-      - name: Resolve version from tag
-        id: version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          version="$(Scripts/release-version.sh "$TAG")"
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-          if [[ "$version" == *-* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Require the update signing key
-        env:
-          AMANUENSIS_UPDATE_PRIVATE_KEY: ${{ secrets.AMANUENSIS_UPDATE_PRIVATE_KEY }}
-        run: |
-          if [[ -z "$AMANUENSIS_UPDATE_PRIVATE_KEY" ]]; then
-            echo "Add the AMANUENSIS_UPDATE_PRIVATE_KEY repository secret before releasing." >&2
-            echo "Generate it with: xcrun swift Scripts/update-key.swift generate <file>" >&2
-            exit 1
-          fi
       - uses: ./.github/actions/xcode-setup
       - name: Build and verify DMG
         id: package
         env:
-          AMANUENSIS_VERSION: ${{ steps.version.outputs.version }}
+          AMANUENSIS_VERSION: ${{ needs.checks.outputs.version }}
           AMANUENSIS_BUILD_NUMBER: ${{ github.run_number }}
         run: Scripts/package-dmg.sh
       - name: Check in-app updater against the DMG
@@ -70,21 +68,41 @@ jobs:
         env:
           AMANUENSIS_UPDATE_PRIVATE_KEY: ${{ secrets.AMANUENSIS_UPDATE_PRIVATE_KEY }}
           DMG: ${{ steps.package.outputs.dmg-path }}
-        run: |
-          xcrun swift Scripts/update-key.swift sign "$DMG" > "$DMG.sig"
-          public_key="$(/usr/libexec/PlistBuddy -c 'Print :AmanuensisUpdatePublicKey' \
-            artifacts/Amanuensis.app/Contents/Info.plist)"
-          xcrun swift Scripts/update-key.swift verify "$DMG" "$DMG.sig" "$public_key"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-            artifacts/Amanuensis.app/Contents/Info.plist)" = "${{ steps.version.outputs.version }}"
-      - name: Create GitHub release
+          VERSION: ${{ needs.checks.outputs.version }}
+        run: Scripts/sign-update.sh artifacts/Amanuensis.app "$DMG" "$VERSION"
+      - name: Upload signed release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-release
+          path: |
+            ${{ steps.package.outputs.dmg-path }}
+            ${{ steps.package.outputs.dmg-path }}.sig
+          compression-level: 0
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish release
+    needs: [checks, dmg]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.checks.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-release
+          path: artifacts
+      - name: Publish verified release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-          VERSION: ${{ steps.version.outputs.version }}
-          PRERELEASE: ${{ steps.version.outputs.prerelease }}
-          DMG: ${{ steps.package.outputs.dmg-path }}
-        run: |
-          flags=(--verify-tag --generate-notes --title "Amanuensis $VERSION")
-          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
-          gh release create "$TAG" "${flags[@]}" "$DMG" "$DMG.sig"
+          VERSION: ${{ needs.checks.outputs.version }}
+          COMMIT_SHA: ${{ needs.checks.outputs.commit }}
+        run: Scripts/publish-release.sh "$TAG" "$COMMIT_SHA" "artifacts/Amanuensis-$VERSION-arm64.dmg"

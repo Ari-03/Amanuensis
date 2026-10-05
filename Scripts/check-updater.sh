@@ -1,7 +1,8 @@
 #!/bin/bash
 # Exercises the in-app updater end to end without GitHub: serves a signed DMG from a local web
-# server, then checks channel filtering, signature rejection, download verification, and the bundle
-# swap against a throwaway copy of the app. Needs a built app and its DMG.
+# server, then checks pagination, channel preferences, signature and bundle-version rejection,
+# download verification, and the bundle swap against a throwaway copy of the app. Needs uv,
+# a built app, and its DMG.
 #
 #   Scripts/check-updater.sh [app-bundle] [dmg]
 #
@@ -56,11 +57,12 @@ AMANUENSIS_UPDATE_PRIVATE_KEY_FILE="$work/private-key" xcrun swift Scripts/updat
 xcrun swift Scripts/update-key.swift verify "$dmg" "$work/good.sig" "$public_key" >/dev/null
 tr 'A-Za-z' 'N-ZA-Mn-za-m' <"$work/good.sig" >"$work/bad.sig"
 cp "$work/bad.sig" "$work/serve/$dmg_name.sig"
+cp "$work/good.sig" "$work/serve/verified.sig"
 size="$(stat -f %z "$dmg")"
 
 # A cold interpreter on a CI runner can take many seconds to start, so wait generously and stop
 # early if the server exits.
-python3 -u -m http.server 0 --bind 127.0.0.1 --directory "$work/serve" >"$work/server.log" 2>&1 &
+uv run --no-project python -u Tests/App/updater-feed.py "$work/serve" >"$work/server.log" 2>&1 &
 server_pid=$!
 port=""
 for _ in $(seq 1 600); do
@@ -70,7 +72,7 @@ for _ in $(seq 1 600); do
     sleep 0.1
 done
 if [[ -z "$port" ]]; then
-    echo "The local web server did not start ($(python3 --version 2>&1))" >&2
+    echo "The local updater fixture server did not start" >&2
     cat "$work/server.log" >&2
     exit 1
 fi

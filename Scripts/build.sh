@@ -2,8 +2,8 @@
 set -euo pipefail
 app_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$app_root"
-# Release builds set AMANUENSIS_VERSION (for example 0.2.0-preview.1) and AMANUENSIS_BUILD_NUMBER
-# from the git tag; local builds keep the versions in the Xcode project.
+# CI sets AMANUENSIS_VERSION from the release tag or nightly version and uses the workflow run
+# number for AMANUENSIS_BUILD_NUMBER; local builds keep the versions in the Xcode project.
 version_settings=()
 if [[ -n "${AMANUENSIS_VERSION:-}" ]]; then version_settings+=("MARKETING_VERSION=$AMANUENSIS_VERSION"); fi
 if [[ -n "${AMANUENSIS_BUILD_NUMBER:-}" ]]; then
