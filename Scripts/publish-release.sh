@@ -120,10 +120,17 @@ if [[ "$release" == null || "$(jq -r '.draft' <<<"$release")" == true ]]; then
     title="Amanuensis ${tag#v}"
     [[ "$nightly" != true ]] || title="$title ($(date -u +%F))"
     if [[ "$release" == null ]]; then
-        gh release create "$tag" --verify-tag --target "$commit" --draft --latest=false \
-            "--prerelease=$prerelease" --title "$title" --notes-file "$work/notes"
-        list_releases
-        release_id="$(jq -er --arg tag "$tag" '.[] | select(.tag_name == $tag and .draft == true) | .id' "$work/releases.json")"
+        # The release list can lag behind creation. Keep the ID from the create response
+        # instead of immediately searching that list for the draft we just created.
+        jq -n --arg tag "$tag" --arg commit "$commit" --arg title "$title" \
+            --rawfile body "$work/notes" --argjson prerelease "$prerelease" \
+            '{tag_name:$tag, target_commitish:$commit, name:$title, body:$body,
+              draft:true, prerelease:$prerelease, make_latest:"false"}' >"$work/create-release.json"
+        release="$(gh api --method POST "repos/$GH_REPO/releases" --input "$work/create-release.json")"
+        release_id="$(jq -er --arg tag "$tag" --argjson prerelease "$prerelease" \
+            'select(.tag_name == $tag and .draft == true and .prerelease == $prerelease)
+              | .id | select(type == "number" and . > 0)' <<<"$release")" \
+            || fail "GitHub did not return the ID of the newly created draft"
     else
         gh release edit "$tag" --draft=true "--prerelease=$prerelease" --title "$title" --notes-file "$work/notes"
     fi

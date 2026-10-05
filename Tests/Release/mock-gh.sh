@@ -50,11 +50,25 @@ if [[ "$1" == api ]]; then
     done
     endpoint="${endpoint#repos/test/repo/}"
     case "$endpoint" in
+        releases)
+            fail_once create
+            [[ "$(option --method)" == POST ]]
+            payload="$(cat "$(option --input)")"
+            jq -e '.draft == true and .make_latest == "false"
+                and (.prerelease | type == "boolean")' <<<"$payload" >/dev/null
+            tag="$(jq -r '.tag_name' <<<"$payload")"
+            jq -e --arg tag "$tag" '[.releases[] | select(.tag_name == $tag)] | length == 0' "$state" >/dev/null
+            write_state --argjson payload "$payload" \
+                '.releases += [$payload + {id:.next_id,assets:[]}] | .next_id += 1'
+            jq '.releases[-1]' "$state"
+            ;;
         'releases?per_page=100')
             fail_once list
             has --paginate && has --slurp
             # Small pages force tests through the same --paginate --slurp shape as GitHub.
-            jq '[.releases[0:2], .releases[2:]]' "$state"
+            jq '(.omit_drafts_from_list // false) as $omit
+                | [.releases[] | select($omit == false or .draft == false)]
+                | [.[0:2], .[2:]]' "$state"
             ;;
         git/matching-refs/tags/*)
             prefix="refs/tags/${endpoint#git/matching-refs/tags/}"
@@ -110,16 +124,6 @@ if [[ "$1" == api ]]; then
 elif [[ "$1" == release ]]; then
     tag="$3"
     case "$2" in
-        create)
-            fail_once create
-            has --draft && has --verify-tag && has --latest=false
-            jq -e --arg tag "$tag" '[.releases[] | select(.tag_name == $tag)] | length == 0' "$state" >/dev/null
-            prerelease=false
-            has --prerelease=true && prerelease=true
-            write_state --arg tag "$tag" --arg body "$(cat "$(option --notes-file)")" \
-                --arg target "$(option --target)" --argjson prerelease "$prerelease" \
-                '.releases += [{id:.next_id,tag_name:$tag,target_commitish:$target,body:$body,draft:true,prerelease:$prerelease,assets:[]}] | .next_id += 1'
-            ;;
         upload)
             jq -e --arg tag "$tag" '.releases[] | select(.tag_name == $tag) | .draft == true' "$state" >/dev/null
             has --clobber
