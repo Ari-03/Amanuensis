@@ -219,7 +219,7 @@ struct ShortcutChecks {
         precondition(holds.isEmpty, "Failed monitor replacement must cancel a pending hold")
 
         modifiers.flags([.control, .option])
-        try await Task.sleep(for: .milliseconds(240))
+        try await waitForHold { holds == [true] }
         precondition(holds == [true])
         NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
         modifiers.flags([])
@@ -335,14 +335,14 @@ struct ShortcutChecks {
         modifiers.flags([])
         precondition(holds.isEmpty, "Typing a normal key chord must cancel a pending hold")
         modifiers.flags([.control, .option])
-        try await Task.sleep(for: .milliseconds(240))
+        try await waitForHold { holds == [true] }
         precondition(holds == [true])
         modifiers.flags(.control)
         precondition(holds == [true, false], "Push-to-talk must stop on the first modifier release")
         modifiers.flags([])
 
         modifiers.flags([.control, .option])
-        try await Task.sleep(for: .milliseconds(240))
+        try await waitForHold { holds == [true, false, true] }
         precondition(holds == [true, false, true])
         manager.setRecordingActive(true)
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
@@ -373,7 +373,7 @@ struct ShortcutChecks {
         modifiers.tap([.command, .option])
         precondition(toggles == 7, "Monitoring must reconnect after returning from System Settings")
         modifiers.flags([.control, .option])
-        try await Task.sleep(for: .milliseconds(240))
+        try await waitForHold { holds == [true, false, true, true] }
         NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
         modifiers.flags([])
         precondition(
@@ -402,5 +402,19 @@ struct ShortcutChecks {
         precondition(!apply())
         precondition(
             keys.active.values.contains(keyChord), "Monitor startup failure must retain old key chords")
+    }
+
+    /// Wait for the callback rather than assuming when the hold task gets scheduled on a busy runner.
+    @MainActor
+    private static func waitForHold(
+        file: StaticString = #file, line: UInt = #line, _ condition: () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !condition() {
+            precondition(
+                ContinuousClock.now < deadline, "Timed out waiting for push-to-talk to start",
+                file: file, line: line)
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 }
