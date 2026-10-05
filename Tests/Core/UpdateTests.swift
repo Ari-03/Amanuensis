@@ -51,6 +51,39 @@ struct UpdateTests {
         #expect(UpdateRelease.newest(in: releases, channel: .stable, after: olderPreview) == nil)
     }
 
+    @Test func previewUpdatesFromExistingInstallsThroughNightliesAndStable() throws {
+        let versions = [
+            "0.1.0", "0.2.0-nightly.123", "0.2.0-nightly.124", "0.2.0", "0.2.1-nightly.125",
+        ]
+        let releases = try versions.map { version in
+            let parsed = try #require(AppVersion(version))
+            return UpdateRelease(
+                version: parsed, tag: "v\(version)", isPrerelease: parsed.isPrerelease, notesURL: nil,
+                archiveURL: URL(string: "https://example.com/\(version).dmg")!,
+                archiveName: "Amanuensis-\(version)-arm64.dmg", archiveByteCount: 1,
+                signatureURL: URL(string: "https://example.com/\(version).dmg.sig")!)
+        }
+        for nextIndex in 1..<releases.count {
+            let installed = releases[nextIndex - 1].version
+            // Deliberately reverse feed order. Publication time must not determine version order.
+            let available = Array(releases[...nextIndex].reversed())
+            #expect(
+                UpdateRelease.newest(in: available, channel: .preview, after: installed)
+                    == releases[nextIndex])
+        }
+        let nightly = releases[2].version
+        #expect(
+            UpdateRelease.newest(in: Array(releases[...2]), channel: .stable, after: nightly) == nil,
+            "switching a nightly to Stable waits instead of downgrading")
+        #expect(
+            UpdateRelease.newest(in: releases, channel: .stable, after: nightly) == releases[3],
+            "Stable offers the full release and ignores the following night's build")
+        #expect(
+            UpdateRelease.newest(in: Array(releases[...2]), channel: .stable, after: releases[0].version)
+                == nil,
+            "existing stable installs must opt into Preview for the first nightly")
+    }
+
     @Test func findsTheNextPageInLinkHeaders() {
         let header =
             "<https://api.github.com/repositories/1/releases?per_page=100&page=2>; rel=\"next\", "

@@ -229,7 +229,7 @@ private struct UpdateInstaller: Sendable {
         try? FileManager.default.removeItem(at: downloads)
     }
 
-    /// Reads every page of the release list, so a stable release is found behind any number of previews.
+    /// Reads up to ten pages of 100 releases to find stable releases behind recent previews.
     func fetchReleases() async throws -> [UpdateRelease] {
         var components = URLComponents(url: feedURL, resolvingAgainstBaseURL: false)
         let existing = components?.queryItems ?? []

@@ -251,7 +251,7 @@ private struct UpdateSettingsCard: View {
                 Text(
                     updater.channel == .stable
                         ? "Stable receives finished releases."
-                        : "Preview also receives early builds, and every stable release."
+                        : "Preview receives automatic builds from main and every stable release."
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }

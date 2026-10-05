@@ -23,6 +23,7 @@ Start with the [consolidated implementation plan](../implementation-plan.md) for
 | How do we handle paste permissions and releases? | [Insertion and distribution](insertion-and-distribution-plan.md) |
 | How do we preserve recordings and install models? | [Storage and model management](storage-and-model-management.md) |
 | What must pass before a release? | [Validation and release](validation-and-release-plan.md) |
+| How should main protection, nightly downloads, and stable releases work? | [GitHub releases plan](github-releases-plan.md), [GitHub policy sources](github-release-policy-sources.md), checked October 4, 2026 |
 | What names and domains are worth considering? | [Names and domains](names-and-domains.md) |
 | What did independent plan review find? | [Plan review](plan-review.md) |
 

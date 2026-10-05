@@ -11,7 +11,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-${{ github.event.pull_request.number || github.ref }}
+  # Every main run gets a release, even when merges arrive faster than builds finish.
+  group: macos-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -26,6 +27,12 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Require a version newer than the published stable
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: Scripts/release-version.sh guard
       - name: Check formatting and run tests
         run: Scripts/check.sh
 
@@ -34,17 +41,42 @@ jobs:
     needs: checks
     runs-on: macos-26
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Resolve build version
+        id: version
+        env:
+          IS_NIGHTLY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if [[ "$IS_NIGHTLY" == true ]]; then
+            version="$(Scripts/release-version.sh nightly "$RUN_NUMBER")"
+          else
+            version="$(Scripts/release-version.sh base)"
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/xcode-setup
       - name: Build and verify DMG
         id: package
+        env:
+          AMANUENSIS_VERSION: ${{ steps.version.outputs.version }}
+          AMANUENSIS_BUILD_NUMBER: ${{ github.run_number }}
         run: Scripts/package-dmg.sh
       - name: Check in-app updater against the DMG
         run: Scripts/check-updater.sh artifacts/Amanuensis.app "${{ steps.package.outputs.dmg-path }}"
+      - name: Sign nightly for the in-app updater
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          AMANUENSIS_UPDATE_PRIVATE_KEY: ${{ secrets.AMANUENSIS_UPDATE_PRIVATE_KEY }}
+          DMG: ${{ steps.package.outputs.dmg-path }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: Scripts/sign-update.sh artifacts/Amanuensis.app "$DMG" "$VERSION"
       - name: Upload DMG
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           path: ${{ steps.package.outputs.dmg-path }}
@@ -52,3 +84,39 @@ jobs:
           overwrite: true
           if-no-files-found: error
           retention-days: 30
+      - name: Upload signed nightly
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-nightly
+          path: |
+            ${{ steps.package.outputs.dmg-path }}
+            ${{ steps.package.outputs.dmg-path }}.sig
+          compression-level: 0
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish nightly
+    needs: dmg
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-nightly
+          path: artifacts
+      - name: Publish verified nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.dmg.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: Scripts/publish-release.sh "v$VERSION" "$COMMIT_SHA" "artifacts/Amanuensis-$VERSION-arm64.dmg"
