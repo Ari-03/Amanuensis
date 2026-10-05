@@ -40,7 +40,10 @@ add_tag() {
     set_state --arg tag "$1" --arg commit "$commit" '.refs["refs/tags/" + $tag] = {type:"commit",sha:$commit}'
 }
 publish() {
-    if ! "$repo_root/Scripts/publish-release.sh" "$tag" "$commit" "$dmg" >"$work/output" 2>&1; then
+    if "$repo_root/Scripts/publish-release.sh" "$tag" "$commit" "$dmg" >"$work/output" 2>&1; then
+        return
+    else
+        printf 'FAIL: publication of %s exited %s\n' "$tag" "$?" >&2
         cat "$work/output" >&2
         exit 1
     fi
@@ -54,8 +57,10 @@ reject() {
 
 reset_case
 build_assets v0.2.0-nightly.10
+# The first live run created a draft that the following list response did not contain.
+set_state '.omit_drafts_from_list = true'
 publish
-assert_state '.releases | length == 1 and .[0].draft == false and .[0].prerelease == true and (.[0].assets | length == 2)' 'complete nightly is published'
+assert_state '.releases | length == 1 and .[0].draft == false and .[0].prerelease == true and (.[0].assets | length == 2)' 'complete nightly is published even when the list omits the new draft'
 assert_state '.refs["refs/tags/v0.2.0-nightly.10"].sha == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" and .latest == null' 'nightly uses exact SHA and does not become Latest'
 # Retried builds can differ, but the already published download must never be replaced.
 printf 'A later rebuild\n' >>"$dmg"
