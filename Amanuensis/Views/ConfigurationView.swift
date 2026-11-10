@@ -156,7 +156,7 @@ struct ConfigurationView: View {
             }
             Text(
                 "Modes record in this language unless they choose their own."
-                    + (speech?.family == .apple
+                    + (speech?.engine == .apple
                         ? " Detection isn't offered: \(model.currentMode.name) uses Apple Speech, which can't detect the language."
                         : "")
             )

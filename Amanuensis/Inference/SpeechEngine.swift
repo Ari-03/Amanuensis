@@ -23,7 +23,7 @@ extension SpeechEngine {
     func unload() async {}
 }
 
-/// Local MLX models from the library: Whisper, Parakeet and Cohere Transcribe.
+/// Local MLX models from the library, in any family `LocalSpeechFamily` declares.
 @MainActor final class LocalModelSpeech: SpeechEngine {
     private let engine = LocalSpeechEngine()
     private let library: ModelLibrary
@@ -32,7 +32,7 @@ extension SpeechEngine {
 
     func prepare(_ model: ModelDescriptor) async throws {
         guard let directory = library.localURL(for: model.id) else { return }
-        try await engine.prepare(modelDirectory: directory, family: model.family.rawValue)
+        try await engine.prepare(modelDirectory: directory, family: model.engine.rawValue)
     }
 
     func transcribe(
@@ -42,7 +42,7 @@ extension SpeechEngine {
             throw RecordingFailure.modelNotInstalled(model.name)
         }
         return try await engine.transcribe(
-            audioURL: audioURL, modelDirectory: directory, family: model.family.rawValue,
+            audioURL: audioURL, modelDirectory: directory, family: model.engine.rawValue,
             language: language.languageCode)
     }
 

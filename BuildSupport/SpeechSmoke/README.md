@@ -30,7 +30,7 @@ sandbox-exec -p '(version 1) (allow default) (deny network*)' \
   whisper /tmp/amanuensis-smoke-whisper /tmp/amanuensis-smoke-input.aiff
 ```
 
-Use `parakeet` or `cohere` with a corresponding complete local folder for the other adapters. An optional fourth argument sets the language code, such as `fr`, or `auto` for detection; it defaults to `en`. Run models sequentially on the 16 GiB development Mac. The sandbox command is a development check, not the app's deployment architecture.
+Use any other family name in `LocalSpeechFamily.all`, such as `parakeet`, `cohere`, `moonshine`, `qwen3asr` or `nemotron`, with a corresponding complete local folder. An optional fourth argument sets the language code, such as `fr`, or `auto` for detection; it defaults to `en`. Run models sequentially on the 16 GiB development Mac. The sandbox command is a development check, not the app's deployment architecture.
 
 ## Pinned smoke artifacts
 

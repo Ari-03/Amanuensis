@@ -170,7 +170,9 @@ final class AppModel {
                 supported: Set(library.models.filter { $0.purpose == .speech }.flatMap { $0.languages ?? [] })
             )
         }
-        cloud = CloudProviders(allowCloud: { [weak self] in self?.settings.requireLocalProcessing == false })
+        cloud = CloudProviders(
+            allowCloud: { [weak self] in self?.settings.requireLocalProcessing == false },
+            compatibleBaseURL: { [weak self] in self?.settings.compatibleBaseURL })
         audio.onInterruption = { [weak self] reason in self?.recordingInterrupted(reason) }
         meetingAudio.onInterruption = { [weak self] reason in self?.recordingInterrupted(reason) }
         recorder.onPlacementChanged = { [weak self] in self?.settings.recorderPlacement = $0 }
@@ -510,7 +512,7 @@ final class AppModel {
         if cleanup.location == .cloud {
             return try await cloud.clean(text: text, model: cleanup, mode: mode)
         }
-        guard cleanup.family == .s1mini else {
+        guard cleanup.engine == .s1mini else {
             throw AppFailure("This cleanup engine is not supported by this build.")
         }
         guard let path = library.localURL(for: cleanup.id) else {
@@ -542,22 +544,24 @@ final class AppModel {
     /// Apple Speech assets, and the Keychain for the API models this recording uses. A Keychain error
     /// is thrown as itself rather than reported as a missing key.
     private func validate(_ entry: RecordingEntry) async throws {
-        if entry.speechSnapshot?.family == .apple { try await appleSpeech.checkReadiness() }
+        if entry.speechSnapshot?.engine == .apple { try await appleSpeech.checkReadiness() }
         library.refreshInstalledModels()
         var facts = readiness
         facts.cleanupHelperAvailable = S1MiniRunner.isAvailable
         if !settings.requireLocalProcessing {
+            // A compatible server's key is optional; its address is in settings, already in `facts`.
             for model in [entry.speechSnapshot, entry.cleanupSnapshot].compactMap({ $0 })
-            where model.location == .cloud {
-                if try CredentialStore.get(for: model.family) == nil {
-                    facts.connectedProviders.remove(model.family)
+            where model.location == .cloud && model.engine != .openAICompatible {
+                if try CredentialStore.get(for: model.engine) == nil {
+                    facts.connectedProviders.remove(model.engine)
                 } else {
-                    facts.connectedProviders.insert(model.family)
+                    facts.connectedProviders.insert(model.engine)
                 }
             }
         }
         if let failure = facts.blocker(
             speech: entry.speechSnapshot, cleanup: entry.cleanupSnapshot,
+            cleanupModelID: entry.mode.cleanupModelID,
             language: entry.transcriptionLanguage, identifySpeakers: entry.mode.identifySpeakers)
         {
             throw failure
@@ -583,7 +587,7 @@ final class AppModel {
     /// decides, or for Settings (nil), it lists every language any speech model here handles.
     func languageChoices(for speech: ModelDescriptor?) -> [String] {
         let apple = appleSpeech.locales.map { Array($0.keys) }
-        if let speech, speech.family == .apple, let apple { return SpeechLanguage.sortedByName(apple) }
+        if let speech, speech.engine == .apple, let apple { return SpeechLanguage.sortedByName(apple) }
         if let declared = speech?.languages, !declared.isEmpty {
             return SpeechLanguage.sortedByName(declared)
         }
@@ -616,7 +620,7 @@ final class AppModel {
         return modes.reduce(into: [:]) { blockers, mode in
             blockers[mode.id] = readiness.blocker(
                 speech: effectiveModel(mode.speechModelID),
-                cleanup: mode.cleanupModelID.flatMap(effectiveModel),
+                cleanup: mode.cleanupModelID.flatMap(effectiveModel), cleanupModelID: mode.cleanupModelID,
                 language: language(for: mode), identifySpeakers: mode.identifySpeakers)
         }
     }
@@ -628,8 +632,8 @@ final class AppModel {
         SetupChecklist(
             microphone: microphoneAccess,
             speechBlocker: readiness.blocker(
-                speech: currentSpeechModel, cleanup: nil, language: language(for: currentMode),
-                identifySpeakers: false),
+                speech: currentSpeechModel, cleanup: nil, cleanupModelID: nil,
+                language: language(for: currentMode), identifySpeakers: false),
             accessibilityGranted: accessibilityGranted,
             textInsertionSkipped: settings.skippedTextInsertionSetup == true)
     }
@@ -731,9 +735,12 @@ final class AppModel {
             return
         }
         var entry = original.retryAttempt()
-        entry.speechSnapshot = original.speechSnapshot ?? effectiveModel(original.mode.speechModelID)
+        entry.speechSnapshot =
+            original.speechSnapshot?.resolved(against: library.models)
+            ?? effectiveModel(original.mode.speechModelID)
         entry.cleanupSnapshot =
-            original.cleanupSnapshot ?? original.mode.cleanupModelID.flatMap(effectiveModel)
+            original.cleanupSnapshot?.resolved(against: library.models)
+            ?? original.mode.cleanupModelID.flatMap(effectiveModel)
         let id = entry.id
         let attemptURL = store.recordingsURL.appendingPathComponent("\(id.uuidString).wav")
         activeID = entry.id
@@ -858,8 +865,9 @@ final class AppModel {
     /// The mode's current choice is included even when it is not ready so the picker never goes blank.
     func availableModels(for purpose: ModelPurpose, including currentID: String?) -> [ModelDescriptor] {
         let readiness = readiness
-        return library.models.filter { descriptor in
-            guard descriptor.purpose == purpose, descriptor.family != .ollama else { return false }
+        // Resolved first: an API row's model ID, which availability needs, may come from settings.
+        return library.models.map { $0.applying(settings.apiModelOverrides) }.filter { descriptor in
+            guard descriptor.purpose == purpose else { return false }
             return descriptor.id == currentID || readiness.isAvailable(descriptor)
         }
     }
@@ -1071,12 +1079,44 @@ final class AppModel {
         defer { refreshConnectedProviders() }
         try CredentialStore.remove(for: provider)
     }
-    private func refreshConnectedProviders() {
-        connectedProviders = Set(
-            [ModelFamily.openAI, .groq, .anthropic].filter { (try? CredentialStore.get(for: $0)) != nil })
+    /// Saves the OpenAI-compatible server's address, already normalized by `APIBaseURL`, and its key.
+    /// A new address drops the saved key unless a key is entered with it, so a key only ever goes to
+    /// the server it was saved for. Address and key change together on the main actor, between requests.
+    func saveCompatibleServer(_ address: URL, key: String) throws {
+        defer { refreshConnectedProviders() }
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !key.isEmpty {
+            try CredentialStore.set(key, for: .openAICompatible)
+        } else if address.absoluteString != settings.compatibleBaseURL {
+            try CredentialStore.remove(for: .openAICompatible)
+        }
+        settings.compatibleBaseURL = address.absoluteString
     }
-    func validateAPI(provider: ModelFamily, modelID: String) async throws -> String {
-        try await cloud.validate(provider: provider, modelID: modelID)
+
+    /// Forgets the compatible server's address and key. Its model IDs stay for the next server.
+    func removeCompatibleServer() throws {
+        defer { refreshConnectedProviders() }
+        try CredentialStore.remove(for: .openAICompatible)
+        settings.compatibleBaseURL = nil
+    }
+
+    /// Keyed providers count as connected with a key; a compatible server with a valid address.
+    private func refreshConnectedProviders() {
+        var connected = Set(
+            [ModelFamily.openAI, .groq, .anthropic].filter { (try? CredentialStore.get(for: $0)) != nil })
+        if case .success = APIBaseURL.parse(settings.compatibleBaseURL ?? "") {
+            connected.insert(.openAICompatible)
+        }
+        connectedProviders = connected
+    }
+    /// `server` and `key` are the configuration sheet's unsaved entries; `CloudProviders.makeRequest`
+    /// decides which key goes where.
+    func validateAPI(provider: ModelFamily, modelID: String, server: URL?, key: String) async throws -> String
+    {
+        try await cloud.validate(provider: provider, modelID: modelID, server: server, key: key)
+    }
+    func listAPIModels(provider: ModelFamily, server: URL?, key: String) async throws -> [String] {
+        try await cloud.listModels(provider: provider, server: server, key: key)
     }
 
     /// Sleep and normal quit preserve unfinished work; only explicit Cancel discards it.
@@ -1155,13 +1195,7 @@ final class AppModel {
     }
 
     private func effectiveModel(_ id: String) -> ModelDescriptor? {
-        guard var model = library.models.first(where: { $0.id == id }) else { return nil }
-        if let override = settings.apiModelOverrides[id],
-            !override.trimmingCharacters(in: .whitespaces).isEmpty
-        {
-            model.apiModelID = override.trimmingCharacters(in: .whitespaces)
-        }
-        return model
+        library.models.first(where: { $0.id == id })?.applying(settings.apiModelOverrides)
     }
 
     private func configurationChanged(previous: AppSettings) {

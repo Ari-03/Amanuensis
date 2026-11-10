@@ -6,7 +6,7 @@ import Testing
 /// Checks `Amanuensis/Models/ModelCatalog.json`, the file the app bundles, against the rules the app
 /// relies on. The app decodes it the same way at launch.
 struct ModelCatalogTests {
-    private static let catalogURL = URL(fileURLWithPath: #filePath)
+    static let catalogURL = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Amanuensis/Models/ModelCatalog.json")
 
@@ -32,8 +32,8 @@ struct ModelCatalogTests {
     }
 
     @Test func downloadsArePinnedAndSized() {
-        // Every model that runs on this Mac from managed files is downloaded; Ollama brings its own.
-        let downloadable = models.filter { $0.location == .local && $0.family != .ollama }
+        // Every model that runs on this Mac from managed files is downloaded.
+        let downloadable = models.filter { $0.location == .local }
         #expect(!downloadable.isEmpty)
         for model in downloadable {
             #expect(model.repository != nil, "\(model.id) needs a repository")
@@ -80,10 +80,30 @@ struct ModelCatalogTests {
         }
     }
 
+    /// Mode pickers list catalog rows resolved with the saved model IDs; the compatible rows have no
+    /// default, so only a resolved row can be available.
+    @Test func aConfiguredCompatibleRowIsAvailableOnlyOnceResolved() throws {
+        var readiness = RecordingReadiness(
+            requireLocalProcessing: false, installedModelIDs: [], connectedProviders: [.openAICompatible],
+            appleSpeechReadyLanguages: [], appleSpeechLanguages: nil, cleanupHelperAvailable: true)
+        let row = try #require(models.first { $0.id == "compatible-cleanup" })
+        #expect(row.apiModelID == nil)
+        let resolved = row.applying(["compatible-cleanup": " openai/gpt-4.1-mini "])
+        #expect(resolved.apiModelID == "openai/gpt-4.1-mini")
+        #expect(readiness.isAvailable(resolved))
+        #expect(!readiness.isAvailable(row))
+        #expect(readiness.blocker(for: row, language: .english) == .providerNotSetUp(provider: row.provider))
+        // An empty choice keeps the catalog default, which these rows lack.
+        #expect(!readiness.isAvailable(row.applying(["compatible-cleanup": "  "])))
+        readiness.connectedProviders = []
+        #expect(
+            readiness.blocker(for: resolved, language: .english) == .providerNotSetUp(provider: row.provider))
+    }
+
     @Test func detectionIsClaimedOnlyWhereItWorks() {
         // The pinned MLX Whisper omits its language token for detection but has no detection pass, which
         // produced dots and stray letters for French and English clips. Apple Speech cannot detect.
-        for model in models where model.family == .whisper || model.family == .apple {
+        for model in models where model.engine == .whisper || model.engine == .apple {
             #expect(model.detectsLanguage == false, "\(model.id)")
         }
         #expect(models.contains { $0.purpose == .speech && $0.detectsLanguage == true })
@@ -184,8 +204,123 @@ struct SavedFormatCompatibilityTests {
         #expect(
             readiness.blocker(
                 speech: retry.speechSnapshot, cleanup: retry.cleanupSnapshot,
-                language: retry.transcriptionLanguage,
+                cleanupModelID: retry.mode.cleanupModelID, language: retry.transcriptionLanguage,
                 identifySpeakers: false) == nil)
+    }
+}
+
+/// Families this build adds, and the Ollama row it removes, in both directions. Earlier releases decode
+/// `family` as a closed enum and fail their whole History load on an unknown value; the 44d2cc9 JSON
+/// below was produced by that commit's `Domain.swift`, the way its LocalStore wrote it.
+struct FamilyCompatibilityTests {
+    static let configuration44 = #"""
+        {"microphones":[],"modes":[{"appBundleIDs":[],"autoPaste":true,"capitalize":true,"cleanu\#
+        pModelID":"ollama-cleanup","customPrompt":"","id":"11111111-2222-3333-4444-555555555555"\#
+        ,"identifySpeakers":false,"name":"Notes","playback":"Keep playing","preset":"Notes","rec\#
+        ordSystemAudio":false,"speechModelID":"whisper-tiny","tone":"semi-formal","useLists":tru\#
+        e}],"settings":{"alwaysShowRecorder":true,"apiModelOverrides":{},"appearance":"system","\#
+        audioRetentionDays":7,"automaticModeSelection":true,"dictationLanguage":"en","errorLoggi\#
+        ng":false,"hasCompletedSetup":false,"launchAtLogin":false,"modeShortcut":{"display":"⌥⇧⌘\#
+        K","keyCode":40,"modifiers":2816},"playSoundEffects":false,"recorderStyle":"mini","requi\#
+        reLocalProcessing":true,"selectedModeID":"11111111-2222-3333-4444-555555555555","textRet\#
+        entionDays":0,"toggleShortcut":{"display":"⌥⌘Space","keyCode":49,"modifiers":2304}},"voc\#
+        abulary":[]}
+        """#
+
+    static let recording44 = #"""
+        {"cleanupSnapshot":{"family":"ollama","id":"ollama-cleanup","languages":[],"license":"De\#
+        pends on the selected model","location":"local","name":"Ollama","provider":"Local server\#
+        ","purpose":"cleanup","sizeLabel":"","summary":"Connect to an installed Ollama model o\#
+        n this Mac."},"countedInStatistics":false,"createdAt":784000000,"duration":0,"finalText"\#
+        :"","id":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE","language":"en","mode":{"appBundleIDs":[\#
+        ],"autoPaste":true,"capitalize":true,"cleanupModelID":"ollama-cleanup","customPrompt":""\#
+        ,"id":"11111111-2222-3333-4444-555555555555","identifySpeakers":false,"name":"Notes","pl\#
+        ayback":"Keep playing","preset":"Notes","recordSystemAudio":false,"speechModelID":"whisp\#
+        er-tiny","tone":"semi-formal","useLists":true},"rawText":"","speechSnapshot":{"byteCount\#
+        ":155454211,"detectsLanguage":false,"family":"whisper","id":"whisper-tiny","languages":[\#
+        "af","am","ar","as","az","ba","be","bg","bn","bo","br","bs","ca","cs","cy","da","de","el\#
+        ","en","es","et","eu","fa","fi","fo","fr","gl","gu","ha","haw","he","hi","hr","ht","hu",\#
+        "hy","id","is","it","ja","jv","ka","kk","km","kn","ko","la","lb","ln","lo","lt","lv","mg\#
+        ","mi","mk","ml","mn","mr","ms","mt","my","ne","nl","nn","no","oc","pa","pl","ps","pt","\#
+        ro","ru","sa","sd","si","sk","sl","sn","so","sq","sr","su","sv","sw","ta","te","tg","th"\#
+        ,"tk","tl","tr","tt","uk","ur","uz","vi","yi","yo","zh"],"license":"MIT","location":"loc\#
+        al","name":"Whisper tiny","provider":"OpenAI","purpose":"speech","repository":"openai\/w\#
+        hisper-tiny","revision":"169d4a4341b33bc18d8881c4b69c2e104e1cc0af","sizeLabel":"155.5 MB\#
+        ","summary":"Official safetensors and tokenizer. Runs locally using MLX."},"status":"fai\#
+        led"}
+        """#
+    /// Every catalog row, as a snapshot would save it, uses only families earlier releases can decode,
+    /// and decodes back to its real family. Every stored field is written, so none is dropped silently.
+    @Test func snapshotsOfEveryRowSaveAFamilyEarlierReleasesReadAndComeBackIntact() throws {
+        let catalog = try ModelDescriptor.catalog(from: Data(contentsOf: ModelCatalogTests.catalogURL))
+        let raw = try #require(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: ModelCatalogTests.catalogURL))
+                as? [[String: Any]])
+        for (row, file) in zip(catalog, raw) {
+            let data = try JSONEncoder().encode(row)
+            let saved = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let family = try #require(saved["family"] as? String)
+            #expect(ModelFamily.readableByEarlierReleases.contains(family), "\(row.id) saves \(family)")
+            #expect(row.engine.rawValue == file["family"] as? String, "\(row.id)")
+            #expect((saved["runtimeFamily"] as? String) == (family == "ollama" ? row.engine.rawValue : nil))
+            #expect(try JSONDecoder().decode(ModelDescriptor.self, from: data) == row)
+        }
+        #expect(catalog.contains { $0.family.rawValue == "ollama" && $0.engine.rawValue == "moonshine" })
+        var full = try #require(catalog.first { $0.id == "s1-mini" })
+        full.apiModelID = "x"
+        full.languages = ["en"]
+        full.detectsLanguage = false
+        full.runtimeFamily = .s1mini
+        let keys = try #require(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(full)) as? [String: Any]
+        ).keys
+        for child in Mirror(reflecting: full).children {
+            #expect(keys.contains(child.label ?? ""), "\(child.label ?? "") is not saved")
+        }
+    }
+
+    @Test func aModeAndHistoryRowNamingTheRetiredOllamaRowLoadAndNeedAModel() throws {
+        let saved = try JSONDecoder().decode(SavedConfiguration.self, from: Data(Self.configuration44.utf8))
+        let mode = try #require(saved.modes.first)
+        #expect(mode.cleanupModelID == "ollama-cleanup")
+        let catalog = try ModelDescriptor.catalog(from: Data(contentsOf: ModelCatalogTests.catalogURL))
+        #expect(!catalog.contains { $0.id == "ollama-cleanup" })
+        let readiness = RecordingReadiness(
+            requireLocalProcessing: true, installedModelIDs: ["whisper-tiny", "ollama-cleanup"],
+            connectedProviders: [], appleSpeechReadyLanguages: [], appleSpeechLanguages: nil,
+            cleanupHelperAvailable: true)
+        // The mode, as the markers and recording validation resolve it against this catalog.
+        let speech = catalog.first { $0.id == mode.speechModelID }
+        let cleanup = catalog.first { $0.id == mode.cleanupModelID }
+        #expect(
+            readiness.blocker(
+                speech: speech, cleanup: cleanup, cleanupModelID: mode.cleanupModelID, language: .english,
+                identifySpeakers: false) == .cleanupModelMissing)
+        // The History row keeps its Ollama snapshot, which a retry cannot run, so it is dropped too.
+        let entry = try JSONDecoder().decode(RecordingEntry.self, from: Data(Self.recording44.utf8))
+        #expect(entry.cleanupSnapshot?.engine.rawValue == "ollama")
+        #expect(entry.cleanupSnapshot?.resolved(against: catalog) == nil)
+        let retry = entry.retryAttempt()
+        #expect(
+            readiness.blocker(
+                speech: retry.speechSnapshot?.resolved(against: catalog),
+                cleanup: retry.cleanupSnapshot?.resolved(against: catalog),
+                cleanupModelID: retry.mode.cleanupModelID, language: retry.transcriptionLanguage,
+                identifySpeakers: false) == .cleanupModelMissing)
+    }
+
+    /// An earlier release that saves a row back keeps `family: "ollama"` and drops `runtimeFamily`.
+    /// A retry takes the family from the catalog row with the same ID.
+    @Test func aRowSavedBackByAnEarlierReleaseRetriesWithItsCatalogFamily() throws {
+        let catalog = try ModelDescriptor.catalog(from: Data(contentsOf: ModelCatalogTests.catalogURL))
+        var snapshot = try #require(catalog.first { $0.id == "moonshine-tiny" })
+        snapshot.runtimeFamily = nil
+        #expect(snapshot.engine.rawValue == "ollama")
+        #expect(snapshot.resolved(against: catalog)?.engine.rawValue == "moonshine")
+        // API snapshots of renamed or removed rows still run from the snapshot.
+        var renamed = try #require(catalog.first { $0.id == "groq-transcribe" })
+        renamed.id = "groq-whisper"
+        #expect(renamed.resolved(against: catalog) == renamed)
     }
 }
 

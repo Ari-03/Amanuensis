@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import LocalSpeech
 import Observation
 
 @MainActor @Observable
@@ -115,7 +116,7 @@ final class ModelLibrary {
     /// Imports are managed copies. Moving or deleting the source later does not break the app.
     func importModel(_ model: ModelDescriptor, from source: URL) async throws {
         try requireAvailable(model)
-        guard model.location == .local, model.family != .ollama else {
+        guard model.location == .local else {
             throw ModelLibraryError.invalid("This model does not support file imports.")
         }
         let stage = rootURL.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
@@ -133,7 +134,7 @@ final class ModelLibrary {
             try ModelFiles.writeProvenance(model, directory: stage, imported: true)
             // Imported directories are validated for format, not asserted to equal an upstream revision.
             try finishInstallation(
-                model, stage: stage, revision: model.family == .s1mini ? model.revision : nil)
+                model, stage: stage, revision: model.engine == .s1mini ? model.revision : nil)
         }
         try await track(operation, modelID: model.id)
     }
@@ -298,12 +299,10 @@ private enum ModelFiles {
         let selected = files.filter { file in
             let name = file.rfilename
             guard !name.contains("/"), !name.hasPrefix(".") else { return false }
-            if model.family == .s1mini {
+            if model.engine == .s1mini {
                 return [model.fileName, "LICENSE", "NOTICE", "README.md"].contains(name)
             }
-            if name.contains(".fp32") { return false }
-            return name.hasSuffix(".json") || name.hasSuffix(".safetensors") || name.hasSuffix(".txt")
-                || name.hasSuffix(".model") || name.hasSuffix(".vocab")
+            return LocalSpeechFamily.isModelFile(name)
                 || ["LICENSE", "LICENSE.md", "LICENSE.txt", "NOTICE", "README.md"].contains(name)
         }
         guard !selected.isEmpty else {
@@ -319,7 +318,7 @@ private enum ModelFiles {
             throw ModelLibraryError.invalid("Import the actual model files, rather than a symbolic link.")
         }
         try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        if model.family == .s1mini, info.isDirectory != true {
+        if model.engine == .s1mini, info.isDirectory != true {
             guard let fileName = model.fileName else {
                 throw ModelLibraryError.invalid("The S1-mini filename is missing.")
             }
@@ -375,7 +374,7 @@ private enum ModelFiles {
                 throw ModelLibraryError.invalid("The model folder is missing a complete \(name).")
             }
         }
-        if model.family == .s1mini {
+        if model.engine == .s1mini {
             guard let name = model.fileName else {
                 throw ModelLibraryError.invalid("Missing S1-mini artifact name.")
             }
@@ -389,50 +388,13 @@ private enum ModelFiles {
             if verifyHash { try validateFile(file, expectedSize: 484_219_808, sha256: model.sha256) }
             return
         }
-        try require("config.json")
-        var configData = try Data(contentsOf: directory.appendingPathComponent("config.json"))
-        if model.family == .parakeet, var text = String(data: configData, encoding: .utf8) {
-            // Match the pinned NeMo loader's treatment of non-standard floating-point values.
-            for value in ["-Infinity", "Infinity", "NaN"] {
-                text = text.replacingOccurrences(of: value, with: "null")
-            }
-            configData = Data(text.utf8)
+        // Everything else runs on a LocalSpeech family, which knows its files and configuration.
+        let family: LocalSpeechFamily
+        do { family = try LocalSpeechFamily.named(model.engine.rawValue) } catch {
+            throw ModelLibraryError.invalid("This model has no managed local artifact.")
         }
-        guard let config = try JSONSerialization.jsonObject(with: configData) as? [String: Any] else {
-            throw ModelLibraryError.invalid("The model configuration is not a JSON object.")
-        }
-        switch model.family {
-        case .whisper:
-            guard config["model_type"] as? String == "whisper" || config["n_mels"] != nil else {
-                throw ModelLibraryError.invalid("This folder does not contain a Whisper configuration.")
-            }
-            try require("tokenizer.json")
-            try require("tokenizer_config.json")
-        case .parakeet:
-            guard config["encoder"] != nil, config["decoder"] != nil else {
-                throw ModelLibraryError.invalid("This folder does not contain a Parakeet configuration.")
-            }
-            // Parakeet's decoder reads its token table directly from the configuration.
-            // The accompanying SentencePiece file is useful provenance, but is not needed offline.
-            let joint = config["joint"] as? [String: Any]
-            let decoder = config["decoder"] as? [String: Any]
-            let vocabulary =
-                joint?["vocabulary"] as? [String]
-                ?? decoder?["vocabulary"] as? [String]
-                ?? config["labels"] as? [String]
-            guard let vocabulary, !vocabulary.isEmpty else {
-                throw ModelLibraryError.invalid(
-                    "Parakeet's configuration is missing its embedded vocabulary.")
-            }
-        case .cohere:
-            guard (config["model_type"] as? String)?.contains("cohere") == true else {
-                throw ModelLibraryError.invalid(
-                    "This folder does not contain a Cohere Transcribe configuration.")
-            }
-            try require("tokenizer.model")
-            try require("tokenizer_config.json")
-        default: throw ModelLibraryError.invalid("This model has no managed local artifact.")
-        }
+        for file in family.requiredFiles { try require(file) }
+        try family.checkConfiguration(Data(contentsOf: directory.appendingPathComponent("config.json")))
         let weights = try manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "safetensors" }
         guard !weights.isEmpty else {

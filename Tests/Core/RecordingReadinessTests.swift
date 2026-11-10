@@ -15,10 +15,12 @@ struct RecordingReadinessTests {
         family: .s1mini, summary: "")
     private let openAICleanup = ModelDescriptor(
         id: "openai-cleanup", name: "OpenAI Cleanup", provider: "OpenAI", purpose: .cleanup,
-        location: .cloud, family: .openAI, summary: "")
-    private let ollama = ModelDescriptor(
-        id: "ollama-cleanup", name: "Ollama", provider: "Local server", purpose: .cleanup, location: .local,
-        family: .ollama, summary: "")
+        location: .cloud, family: .openAI, summary: "", apiModelID: "gpt-4.1-mini")
+    /// As the catalog has it: no model ID until the user picks one.
+    private let compatibleSpeech = ModelDescriptor(
+        id: "compatible-transcribe", name: "OpenAI-compatible Transcription", provider: "OpenAI-compatible",
+        purpose: .speech, location: .cloud, family: .openAICompatible, summary: "", languages: [],
+        detectsLanguage: true)
 
     /// A fresh install: nothing downloaded, no keys, Apple Speech assets missing, local-only on.
     private let fresh = RecordingReadiness(
@@ -27,28 +29,38 @@ struct RecordingReadinessTests {
 
     @Test func freshInstallModesNeedAppleSpeechThenS1Mini() {
         #expect(
-            fresh.blocker(speech: apple, cleanup: nil, language: .english, identifySpeakers: false)
+            fresh.blocker(
+                speech: apple, cleanup: nil, cleanupModelID: nil, language: .english, identifySpeakers: false)
                 == .appleSpeechNotReady(language: "en"))
         var prepared = fresh
         prepared.appleSpeechReadyLanguages = ["en"]
         #expect(
-            prepared.blocker(speech: apple, cleanup: nil, language: .english, identifySpeakers: false) == nil)
+            prepared.blocker(
+                speech: apple, cleanup: nil, cleanupModelID: nil, language: .english, identifySpeakers: false)
+                == nil)
         let mail = prepared.blocker(
-            speech: apple, cleanup: s1mini, language: .english, identifySpeakers: false)
+            speech: apple, cleanup: s1mini, cleanupModelID: s1mini.id, language: .english,
+            identifySpeakers: false)
         #expect(mail == .modelNotInstalled("S1-mini"))
         #expect(mail?.shortReason == "Needs S1-mini")
         prepared.installedModelIDs = ["s1-mini"]
         #expect(
-            prepared.blocker(speech: apple, cleanup: s1mini, language: .english, identifySpeakers: false)
+            prepared.blocker(
+                speech: apple, cleanup: s1mini, cleanupModelID: s1mini.id, language: .english,
+                identifySpeakers: false)
                 == nil)
     }
 
     @Test func speechIsReportedBeforeCleanup() {
         #expect(
-            fresh.blocker(speech: parakeet, cleanup: s1mini, language: .english, identifySpeakers: false)
+            fresh.blocker(
+                speech: parakeet, cleanup: s1mini, cleanupModelID: s1mini.id, language: .english,
+                identifySpeakers: false)
                 == .modelNotInstalled("Parakeet TDT 0.6B V2"))
         #expect(
-            fresh.blocker(speech: nil, cleanup: s1mini, language: .english, identifySpeakers: false)
+            fresh.blocker(
+                speech: nil, cleanup: s1mini, cleanupModelID: s1mini.id, language: .english,
+                identifySpeakers: false)
                 == .speechModelMissing)
     }
 
@@ -57,34 +69,46 @@ struct RecordingReadinessTests {
         readiness.installedModelIDs = ["parakeet-v2"]
         #expect(
             readiness.blocker(
-                speech: parakeet, cleanup: openAICleanup, language: .english, identifySpeakers: false)
+                speech: parakeet, cleanup: openAICleanup, cleanupModelID: openAICleanup.id,
+                language: .english, identifySpeakers: false)
                 == .blockedByLocalOnly(modelName: "OpenAI Cleanup"))
         readiness.requireLocalProcessing = false
         #expect(
             readiness.blocker(
-                speech: parakeet, cleanup: openAICleanup, language: .english, identifySpeakers: false)
+                speech: parakeet, cleanup: openAICleanup, cleanupModelID: openAICleanup.id,
+                language: .english, identifySpeakers: false)
                 == .apiKeyMissing(provider: "OpenAI"))
         readiness.connectedProviders = [.openAI]
         #expect(
             readiness.blocker(
-                speech: parakeet, cleanup: openAICleanup, language: .english, identifySpeakers: false) == nil)
+                speech: parakeet, cleanup: openAICleanup, cleanupModelID: openAICleanup.id,
+                language: .english, identifySpeakers: false) == nil)
     }
 
     @Test func unsupportedEnginesAndSettingsBlockEvenWhenInstalled() {
         var readiness = fresh
         readiness.installedModelIDs = ["parakeet-v2", "s1-mini", "ollama-cleanup"]
+        // A mode saved with the retired Ollama row names a cleanup model the catalog no longer has.
+        let retired = readiness.blocker(
+            speech: parakeet, cleanup: nil, cleanupModelID: "ollama-cleanup", language: .english,
+            identifySpeakers: false)
+        #expect(retired == .cleanupModelMissing)
+        #expect(retired?.shortReason == "No cleanup model")
         #expect(
-            readiness.blocker(speech: parakeet, cleanup: ollama, language: .english, identifySpeakers: false)
-                == .unsupportedCleanup("Ollama"))
-        #expect(
-            readiness.blocker(speech: parakeet, cleanup: nil, language: .english, identifySpeakers: true)
+            readiness.blocker(
+                speech: parakeet, cleanup: nil, cleanupModelID: nil, language: .english,
+                identifySpeakers: true)
                 == .speakerIdentificationUnavailable)
         readiness.cleanupHelperAvailable = false
         #expect(
-            readiness.blocker(speech: parakeet, cleanup: s1mini, language: .english, identifySpeakers: false)
+            readiness.blocker(
+                speech: parakeet, cleanup: s1mini, cleanupModelID: s1mini.id, language: .english,
+                identifySpeakers: false)
                 == .cleanupHelperMissing)
         #expect(
-            readiness.blocker(speech: parakeet, cleanup: nil, language: .english, identifySpeakers: false)
+            readiness.blocker(
+                speech: parakeet, cleanup: nil, cleanupModelID: nil, language: .english,
+                identifySpeakers: false)
                 == nil)
     }
 
@@ -96,13 +120,18 @@ struct RecordingReadinessTests {
         let french = SpeechLanguage.code("fr")
         // Installing would not help, so the language is reported first.
         #expect(
-            fresh.blocker(speech: cohere, cleanup: nil, language: .code("sw"), identifySpeakers: false)
+            fresh.blocker(
+                speech: cohere, cleanup: nil, cleanupModelID: nil, language: .code("sw"),
+                identifySpeakers: false)
                 == .unsupportedLanguage(modelName: "Cohere Transcribe", language: .code("sw")))
         #expect(
-            fresh.blocker(speech: cohere, cleanup: nil, language: french, identifySpeakers: false)
+            fresh.blocker(
+                speech: cohere, cleanup: nil, cleanupModelID: nil, language: french, identifySpeakers: false)
                 == .modelNotInstalled("Cohere Transcribe"))
         #expect(
-            fresh.blocker(speech: cohere, cleanup: nil, language: .automatic, identifySpeakers: false)
+            fresh.blocker(
+                speech: cohere, cleanup: nil, cleanupModelID: nil, language: .automatic,
+                identifySpeakers: false)
                 == .unsupportedLanguage(modelName: "Cohere Transcribe", language: .automatic))
         var detecting = cohere
         detecting.detectsLanguage = true
@@ -113,21 +142,31 @@ struct RecordingReadinessTests {
         var readiness = fresh
         readiness.appleSpeechReadyLanguages = ["en"]
         #expect(
-            readiness.blocker(speech: apple, cleanup: nil, language: .english, identifySpeakers: false) == nil
+            readiness.blocker(
+                speech: apple, cleanup: nil, cleanupModelID: nil, language: .english, identifySpeakers: false)
+                == nil
         )
         #expect(
-            readiness.blocker(speech: apple, cleanup: nil, language: .code("fr"), identifySpeakers: false)
+            readiness.blocker(
+                speech: apple, cleanup: nil, cleanupModelID: nil, language: .code("fr"),
+                identifySpeakers: false)
                 == .appleSpeechNotReady(language: "fr"))
         #expect(
-            readiness.blocker(speech: apple, cleanup: nil, language: .code("sw"), identifySpeakers: false)
+            readiness.blocker(
+                speech: apple, cleanup: nil, cleanupModelID: nil, language: .code("sw"),
+                identifySpeakers: false)
                 == .unsupportedLanguage(modelName: "Apple Speech", language: .code("sw")))
         #expect(
-            readiness.blocker(speech: apple, cleanup: nil, language: .automatic, identifySpeakers: false)
+            readiness.blocker(
+                speech: apple, cleanup: nil, cleanupModelID: nil, language: .automatic,
+                identifySpeakers: false)
                 == .unsupportedLanguage(modelName: "Apple Speech", language: .automatic))
         // Before macOS answers at launch, no language is held against Apple Speech, only its assets.
         readiness.appleSpeechLanguages = nil
         #expect(
-            readiness.blocker(speech: apple, cleanup: nil, language: .code("sw"), identifySpeakers: false)
+            readiness.blocker(
+                speech: apple, cleanup: nil, cleanupModelID: nil, language: .code("sw"),
+                identifySpeakers: false)
                 == .appleSpeechNotReady(language: "sw"))
     }
 
@@ -141,7 +180,8 @@ struct RecordingReadinessTests {
         #expect(!english.declares(.code("fr")))
         #expect(
             readiness.blocker(
-                speech: multilingual, cleanup: english, language: .code("fr"), identifySpeakers: false)
+                speech: multilingual, cleanup: english, cleanupModelID: english.id, language: .code("fr"),
+                identifySpeakers: false)
                 == nil)
         var api = openAICleanup
         api.purpose = .speech
@@ -160,6 +200,34 @@ struct RecordingReadinessTests {
         readiness.connectedProviders = [.openAI]
         #expect(readiness.isAvailable(parakeet))
         #expect(readiness.isAvailable(openAICleanup))
+    }
+
+    /// The server may be on this Mac, but nothing proves inference stays there, so it is an API.
+    @Test func compatibleServersAreAPIsThatNeedAnAddressAndAModel() {
+        var readiness = fresh
+        readiness.connectedProviders = [.openAICompatible]
+        var configured = compatibleSpeech
+        configured.apiModelID = "whisper-1"
+        #expect(
+            readiness.blocker(
+                speech: configured, cleanup: nil, cleanupModelID: nil, language: .english,
+                identifySpeakers: false) == .blockedByLocalOnly(modelName: "OpenAI-compatible Transcription"))
+        readiness.requireLocalProcessing = false
+        #expect(
+            readiness.blocker(
+                speech: configured, cleanup: nil, cleanupModelID: nil, language: .automatic,
+                identifySpeakers: false) == nil)
+        // An address without a model ID for this purpose is not set up, and neither is no address.
+        #expect(
+            readiness.blocker(
+                speech: compatibleSpeech, cleanup: nil, cleanupModelID: nil, language: .english,
+                identifySpeakers: false) == .providerNotSetUp(provider: "OpenAI-compatible"))
+        readiness.connectedProviders = []
+        let missing = readiness.blocker(
+            speech: configured, cleanup: nil, cleanupModelID: nil, language: .english, identifySpeakers: false
+        )
+        #expect(missing == .providerNotSetUp(provider: "OpenAI-compatible"))
+        #expect(missing?.shortReason == "Needs server setup")
     }
 }
 

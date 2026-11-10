@@ -6,9 +6,8 @@ struct SpeechSmoke {
     static func main() async throws {
         let arguments = CommandLine.arguments
         guard (4...5).contains(arguments.count) else {
-            print(
-                "Usage: SpeechSmoke <whisper|parakeet|cohere> <model-directory> <audio-file> [language|auto]"
-            )
+            let families = LocalSpeechFamily.all.map(\.name).joined(separator: "|")
+            print("Usage: SpeechSmoke <\(families)> <model-directory> <audio-file> [language|auto]")
             throw SmokeError.invalidArguments
         }
         // English by default, as the app used before languages. "auto" asks the model to detect it.

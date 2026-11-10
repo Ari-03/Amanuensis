@@ -139,7 +139,7 @@ struct ModesView: View {
                             .buttonStyle(.link).font(.caption)
                     }
                     if mode.preset == .custom {
-                        if ModelCatalog.models.first(where: { $0.id == mode.cleanupModelID })?.family
+                        if ModelCatalog.models.first(where: { $0.id == mode.cleanupModelID })?.engine
                             == .s1mini
                         {
                             Text(
@@ -258,6 +258,18 @@ struct ModesView: View {
                 ForEach(choices) { item in
                     Text(item.name + (item.location == .cloud ? " · API" : "")).tag(Optional(item.id))
                 }
+                // A model the catalog no longer has, such as the retired Ollama row, keeps a visible choice.
+                if let id = selection.wrappedValue, current == nil {
+                    Text("No longer available").tag(Optional(id))
+                }
+            }
+            if selection.wrappedValue != nil, current == nil {
+                let missing: RecordingFailure =
+                    purpose == .speech ? .speechModelMissing : .cleanupModelMissing
+                Label(
+                    missing.errorDescription ?? missing.shortReason, systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption).foregroundStyle(.orange)
             }
             // A language the model cannot handle is explained under the language picker instead.
             if let current,
@@ -336,7 +348,7 @@ struct ModesView: View {
                         .controlSize(.small)
                     }
                 }
-            } else if speech?.family == .apple {
+            } else if speech?.engine == .apple {
                 Text("Apple Speech can't detect the language, so it records in the language above.")
                     .font(.caption).foregroundStyle(.secondary)
             }

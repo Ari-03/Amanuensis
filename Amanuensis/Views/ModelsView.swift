@@ -38,7 +38,6 @@ struct ModelsView: View {
 
     private var filteredModels: [ModelDescriptor] {
         model.library.models.filter { descriptor in
-            guard descriptor.family != .ollama else { return false }
             let matchesFilter =
                 switch filter {
                 case .all: true
@@ -60,13 +59,13 @@ struct ModelsView: View {
         var rows: [Row] = []
         var seen: Set<ModelFamily> = []
         for descriptor in filteredModels {
-            guard Self.collections[descriptor.family] != nil else {
+            guard Self.collections[descriptor.engine] != nil else {
                 rows.append(.single(descriptor))
                 continue
             }
-            guard seen.insert(descriptor.family).inserted else { continue }
+            guard seen.insert(descriptor.engine).inserted else { continue }
             rows.append(
-                .collection(descriptor.family, filteredModels.filter { $0.family == descriptor.family }))
+                .collection(descriptor.engine, filteredModels.filter { $0.engine == descriptor.engine }))
         }
         return rows
     }
@@ -272,7 +271,8 @@ struct ModelsView: View {
     private func modelActions(_ descriptor: ModelDescriptor) -> some View {
         if descriptor.location == .cloud {
             HStack(spacing: 8) {
-                if model.connectedProviders.contains(descriptor.family) {
+                // A compatible server also needs a model ID for this purpose before it can be used.
+                if model.connectedProviders.contains(descriptor.engine) && apiModelID(descriptor) != nil {
                     Label("Connected", systemImage: "checkmark.circle.fill")
                         .font(.caption).foregroundStyle(.green)
                     Button("Configure") { selectedAPI = descriptor }
@@ -299,9 +299,6 @@ struct ModelsView: View {
                             + SpeechLanguage.sortedByName(model.appleSpeech.readyLanguages)
                             .map(SpeechLanguage.name(of:)).formatted(.list(type: .and)))
             }
-        } else if descriptor.family == .ollama {
-            Text("Local server")
-                .font(.caption).foregroundStyle(.secondary)
         } else if model.library.progress[descriptor.id] != nil {
             Button("Cancel") { model.library.cancelDownload(descriptor.id) }
         } else if model.library.localURL(for: descriptor.id) != nil {
@@ -347,10 +344,10 @@ struct ModelsView: View {
         let panel = NSOpenPanel()
         panel.title = "Import \(descriptor.name)"
         panel.message =
-            descriptor.family == .s1mini
+            descriptor.engine == .s1mini
             ? "Choose the official S1-mini Q4_K_M GGUF file. Amanuensis keeps its own copy."
             : "Choose a complete supported model folder, including weights and tokenizer. Amanuensis keeps its own copy."
-        panel.canChooseFiles = descriptor.family == .s1mini
+        panel.canChooseFiles = descriptor.engine == .s1mini
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Import"
@@ -363,134 +360,6 @@ struct ModelsView: View {
                 if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
                     operationError = error.localizedDescription
                 }
-            }
-        }
-    }
-}
-
-/// Connects one provider entry: the API key for its provider and the model ID it should call.
-private struct APIConfigurationSheet: View {
-    @Bindable var model: AppModel
-    let descriptor: ModelDescriptor
-    @Environment(\.dismiss) private var dismiss
-    @State private var apiKey = ""
-    @State private var modelID = ""
-    @State private var isTesting = false
-    @State private var message: String?
-    @State private var testSucceeded = false
-
-    private var connected: Bool { model.connectedProviders.contains(descriptor.family) }
-    private var defaultModelID: String { descriptor.apiModelID ?? descriptor.id }
-    private var trimmedModelID: String { modelID.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var canSubmit: Bool { !isTesting && !trimmedModelID.isEmpty && (connected || !apiKey.isEmpty) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 12) {
-                Image(systemName: "key.fill").font(.title2).foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(descriptor.name).font(.title2.weight(.semibold))
-                    Text(descriptor.summary).font(.callout).foregroundStyle(.secondary)
-                }
-            }
-
-            Form {
-                SecureField(
-                    "\(descriptor.provider) API key", text: $apiKey,
-                    prompt: Text(connected ? "Leave blank to keep the saved key" : "Paste your API key")
-                )
-                .textContentType(.password)
-                LabeledContent("Model") {
-                    HStack(spacing: 8) {
-                        TextField("Model ID", text: $modelID).autocorrectionDisabled()
-                            .multilineTextAlignment(.trailing).labelsHidden()
-                        if trimmedModelID != defaultModelID {
-                            Button("Use default") { modelID = defaultModelID }.buttonStyle(.link)
-                                .help("Use \(defaultModelID)")
-                        }
-                    }
-                }
-            }
-            .formStyle(.grouped)
-            .frame(height: 130)
-            .disabled(isTesting)
-
-            Text(
-                "Keys are stored in macOS Keychain and shared by every \(descriptor.provider) model. Checking saves an entered key and verifies the model is available. It does not test transcription, cleanup, or billing access."
-            )
-            .font(.caption).foregroundStyle(.secondary)
-            if let message {
-                Label(message, systemImage: testSucceeded ? "checkmark.circle" : "exclamationmark.circle")
-                    .font(.callout)
-                    .foregroundStyle(testSucceeded ? Color.green : Color.orange)
-                    .textSelection(.enabled)
-            }
-
-            HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                if connected {
-                    Button("Remove key", role: .destructive) { removeKey() }.disabled(isTesting)
-                }
-                Spacer()
-                if isTesting { ProgressView().controlSize(.small) }
-                Button("Check model") { testConnection() }.disabled(!canSubmit)
-                Button("Save") { saveAndClose() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSubmit)
-            }
-        }
-        .padding(28)
-        .frame(width: 550)
-        .interactiveDismissDisabled(isTesting)
-        .onAppear {
-            modelID = model.settings.apiModelOverrides[descriptor.id] ?? defaultModelID
-        }
-    }
-
-    private func saveKey() throws {
-        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !key.isEmpty { try model.saveAPIKey(key, provider: descriptor.family) }
-    }
-
-    private func saveAndClose() {
-        do {
-            try saveKey()
-            model.settings.apiModelOverrides[descriptor.id] = trimmedModelID
-            model.saveConfiguration()
-            apiKey = ""
-            dismiss()
-        } catch {
-            testSucceeded = false
-            message = error.localizedDescription
-        }
-    }
-
-    private func removeKey() {
-        do {
-            try model.removeAPIKey(provider: descriptor.family)
-            apiKey = ""
-            testSucceeded = true
-            message = "The \(descriptor.provider) key was removed from your Keychain."
-        } catch {
-            testSucceeded = false
-            message = error.localizedDescription
-        }
-    }
-
-    private func testConnection() {
-        isTesting = true
-        message = nil
-        Task {
-            defer { isTesting = false }
-            do {
-                try saveKey()
-                message = try await model.validateAPI(provider: descriptor.family, modelID: trimmedModelID)
-                testSucceeded = true
-                apiKey = ""
-            } catch {
-                testSucceeded = false
-                message = error.localizedDescription
             }
         }
     }

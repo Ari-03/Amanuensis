@@ -379,7 +379,11 @@ struct AppSettings: Codable, Equatable, Sendable {
     var hasCompletedSetup = false
     /// Set by Skip on the setup checklist's text insertion step. Optional so earlier saves still decode.
     var skippedTextInsertionSetup: Bool? = nil
+    /// Model IDs the user chose for API rows, by catalog row ID.
     var apiModelOverrides: [String: String] = [:]
+    /// The OpenAI-compatible server's base URL as saved, normalized by `APIBaseURL` when it was entered
+    /// and parsed through it again on every use. Its key is in the Keychain.
+    var compatibleBaseURL: String? = nil
     /// The language modes use unless they set their own. Nil only in configuration saved before
     /// languages existed; AppModel replaces it with `SpeechLanguage.initial` at launch.
     var dictationLanguage: SpeechLanguage? = nil
@@ -389,8 +393,26 @@ struct AppSettings: Codable, Equatable, Sendable {
 
 enum ModelPurpose: String, Codable, CaseIterable, Sendable { case speech, cleanup }
 enum ModelLocation: String, Codable, Sendable { case local, system, cloud }
-enum ModelFamily: String, Codable, Sendable {
-    case apple, whisper, parakeet, cohere, s1mini, openAI, groq, anthropic, ollama
+/// What runs a model: Apple Speech, the S1-mini helper, a cloud provider, or a local speech family that
+/// LocalSpeech declares, such as "whisper". An open set, so the app names only the families it treats
+/// specially, and a family added to LocalSpeech and the catalog needs nothing here.
+struct ModelFamily: RawRepresentable, Hashable, Codable, Sendable {
+    let rawValue: String
+
+    static let apple = ModelFamily(rawValue: "apple")
+    static let s1mini = ModelFamily(rawValue: "s1mini")
+    static let openAI = ModelFamily(rawValue: "openAI")
+    static let groq = ModelFamily(rawValue: "groq")
+    static let anthropic = ModelFamily(rawValue: "anthropic")
+    /// Any server that speaks the OpenAI HTTP dialect at a base URL the user enters.
+    static let openAICompatible = ModelFamily(rawValue: "openAICompatible")
+    static let whisper = ModelFamily(rawValue: "whisper")
+    static let parakeet = ModelFamily(rawValue: "parakeet")
+
+    /// Every family releases up to 44d2cc9 can decode; see `ModelDescriptor.runtimeFamily`.
+    static let readableByEarlierReleases: Set<String> = [
+        "apple", "whisper", "parakeet", "cohere", "s1mini", "openAI", "groq", "anthropic", "ollama",
+    ]
 }
 
 /// One catalog row, decoded from `ModelCatalog.json`. Recordings also keep a copy as their model
@@ -401,7 +423,14 @@ struct ModelDescriptor: Identifiable, Codable, Equatable, Sendable {
     var provider: String
     var purpose: ModelPurpose
     var location: ModelLocation
+    /// The family as saved. Read `engine`, never this: for a family releases up to 44d2cc9 cannot
+    /// decode, it holds the stand-in `ollama`.
     var family: ModelFamily
+    /// The real family when `family` holds the stand-in. Those releases decode `family` as a closed
+    /// enum and fail their whole History load on one unknown value; `ollama` is a value they know and
+    /// refuse to run. Delete both fields' split, and `catalog(from:)`'s, once a release that cannot
+    /// open this format no longer needs to open databases this build writes.
+    var runtimeFamily: ModelFamily? = nil
     var summary: String
     /// The bytes a download fetches, from the publisher's metadata for the pinned revision.
     var byteCount: Int64? = nil
@@ -417,6 +446,8 @@ struct ModelDescriptor: Identifiable, Codable, Equatable, Sendable {
     /// Whether the model can work out the spoken language on its own.
     var detectsLanguage: Bool? = nil
     var isLocal: Bool { location != .cloud }
+    /// What runs this model.
+    var engine: ModelFamily { runtimeFamily ?? family }
 
     /// "2.47 GB", the download size shown beside a model, or empty. `catalog(from:)` derives it from
     /// `byteCount`; the catalog file never sets it. It is still saved with snapshots because releases
@@ -428,6 +459,11 @@ struct ModelDescriptor: Identifiable, Codable, Equatable, Sendable {
         try JSONDecoder().decode([ModelDescriptor].self, from: data).map { row in
             var row = row
             row.sizeLabel = row.byteCount.map(formatBytes) ?? ""
+            // The file names the real family; snapshots copied from this row must carry the stand-in.
+            if !ModelFamily.readableByEarlierReleases.contains(row.family.rawValue) {
+                row.runtimeFamily = row.family
+                row.family = ModelFamily(rawValue: "ollama")
+            }
             return row
         }
     }
@@ -435,6 +471,28 @@ struct ModelDescriptor: Identifiable, Codable, Equatable, Sendable {
     /// The one byte formatter for model sizes and download progress. Decimal units, like Finder.
     static func formatBytes(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    /// A History snapshot as a retry runs it. A model the catalog still has takes the catalog's family,
+    /// which repairs a row an earlier release saved back without `runtimeFamily`. A local model runs
+    /// only from a catalog row, so one the catalog no longer lists, such as the retired Ollama row,
+    /// is missing (nil). API and system models otherwise run from the snapshot itself.
+    func resolved(against catalog: [ModelDescriptor]) -> ModelDescriptor? {
+        guard let row = catalog.first(where: { $0.id == id }) else { return location == .local ? nil : self }
+        var snapshot = self
+        snapshot.family = row.family
+        snapshot.runtimeFamily = row.runtimeFamily
+        return snapshot
+    }
+
+    /// The row as modes use it: an API model ID the user chose replaces the catalog's default.
+    /// Compatible rows have no default, so they have a model ID only from here.
+    func applying(_ apiModelOverrides: [String: String]) -> ModelDescriptor {
+        guard let override = apiModelOverrides[id]?.trimmingCharacters(in: .whitespaces), !override.isEmpty
+        else { return self }
+        var model = self
+        model.apiModelID = override
+        return model
     }
 
     /// Whether the model's own language list covers this language. Apple Speech's real list comes from

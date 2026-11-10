@@ -49,19 +49,21 @@ public actor LocalSpeechEngine {
     }
 
     /// `language` is a BCP-47 language code such as "fr", or nil when the model should detect it.
-    /// Only Parakeet V3 detects: Parakeet ignores the language, V2 being English only. The pinned Whisper
-    /// omits its language token for nil but has no detection pass, which produced garbage on short
-    /// clips, so callers must pass a language for Whisper. Cohere needs one of its fourteen languages;
-    /// upstream silently substitutes English for nil or any other code. Callers check this first.
+    /// Each `LocalSpeechFamily` says whether it can detect and how its runtime takes the language. A
+    /// family that cannot detect throws `languageRequired` for nil. Callers check that the checkpoint
+    /// handles the language first: some runtimes silently substitute English for one they lack.
     public func transcribe(audioURL: URL, modelDirectory: URL, family: String, language: String?)
         async throws -> String
     {
-        // Whisper's tokenizer names Javanese with the retired code "jw".
-        let requested =
-            (try? ModelFamily(validating: family)) == .whisper && language == "jv" ? "jw" : language
+        let speechFamily = try LocalSpeechFamily.named(family)
+        guard language != nil || speechFamily.detectsLanguage else {
+            throw LocalSpeechError.languageRequired(speechFamily.displayName)
+        }
+        let requested = speechFamily.languageArgument(language)
         return try await withModel(modelDirectory: modelDirectory, family: family) { model, cancellation in
             try transcribeWindows(
-                audioURL: audioURL, model: model, language: requested, cancellation: cancellation)
+                audioURL: audioURL, model: model, language: requested, maxTokens: speechFamily.maxTokens,
+                cancellation: cancellation)
         }
     }
 
@@ -84,7 +86,7 @@ public actor LocalSpeechEngine {
         operation: (any STTGenerationModel, CancellationFlag) throws -> T
     ) async throws -> T {
         try Task.checkCancellation()
-        let modelFamily = try ModelFamily(validating: family)
+        let modelFamily = try LocalSpeechFamily.named(family)
         guard
             Self.runtimeBusy.withLock({ busy in
                 if busy { return false }
@@ -124,12 +126,7 @@ public actor LocalSpeechEngine {
                 resident = nil
                 let files = try LocalModelFiles(source: modelDirectory, family: modelFamily)
                 do {
-                    let model: any STTGenerationModel
-                    switch modelFamily {
-                    case .whisper: model = try await WhisperModel.fromDirectory(files.directory)
-                    case .parakeet: model = try ParakeetModel.fromDirectory(files.directory)
-                    case .cohere: model = try CohereTranscribeModel.fromDirectory(files.directory)
-                    }
+                    let model = try await modelFamily.load(files.directory)
                     try cancellation.check()
                     resident = ResidentModel(identity: identity, files: files, model: model)
                 } catch {
@@ -197,7 +194,8 @@ public actor LocalSpeechEngine {
     }
 
     private func transcribeWindows(
-        audioURL: URL, model: any STTGenerationModel, language: String?, cancellation: CancellationFlag
+        audioURL: URL, model: any STTGenerationModel, language: String?, maxTokens: Int?,
+        cancellation: CancellationFlag
     ) throws -> String {
         guard audioURL.isFileURL else { throw LocalSpeechError.invalidAudio }
         let file = try AVAudioFile(forReading: audioURL, commonFormat: .pcmFormatFloat32, interleaved: false)
@@ -211,7 +209,7 @@ public actor LocalSpeechEngine {
             throw LocalSpeechError.invalidAudio
         }
         let parameters = STTGenerateParameters(
-            maxTokens: min(model.defaultGenerationParameters.maxTokens, 1024),
+            maxTokens: maxTokens ?? min(model.defaultGenerationParameters.maxTokens, 1024),
             temperature: 0, language: language, chunkDuration: 30, minChunkDuration: 0.1
         )
         var parts: [String] = []

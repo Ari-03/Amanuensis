@@ -73,7 +73,7 @@ struct SetupChecklistView: View {
                     .disabled(model.phase.isBusy)
                 }
                 if let recommended = model.recommendedSpeech { recommendedRow(recommended) }
-            } else if speech?.family == .apple, case .unsupportedLanguage(_, let language) = blocker {
+            } else if speech?.engine == .apple, case .unsupportedLanguage(_, let language) = blocker {
                 // Apple Speech lacks this language; a local model that has it is the way forward.
                 detail(
                     "Apple Speech can't transcribe \(language.name) on this Mac. Download a local model that can."

@@ -38,7 +38,8 @@ struct RecorderOutcomeTests {
             (.failed(nil), "Couldn't finish", .showInHistory),
             // Mode settings the pill cannot fix point to History.
             (.failed(.cleanupHelperMissing), "Cleanup helper missing", .showInHistory),
-            (.failed(.unsupportedCleanup("Ollama")), "Ollama unsupported", .showInHistory),
+            (.failed(.cleanupModelMissing), "No cleanup model", .openModes),
+            (.failed(.providerNotSetUp(provider: "OpenAI-compatible")), "Needs server setup", .openModels),
             (.failed(.speakerIdentificationUnavailable), "Speakers unsupported", .showInHistory),
             (.failed(.speechModelMissing), "No speech model", .showInHistory),
         ]

@@ -12,14 +12,18 @@ enum RecordingFailure: LocalizedError, Equatable, Sendable {
     case appleSpeechNotReady(language: String)
     case unsupportedLanguage(modelName: String, language: SpeechLanguage)
     case speechModelMissing
+    /// The mode names a cleanup model this build's catalog no longer has, such as the retired Ollama row.
+    case cleanupModelMissing
+    /// An OpenAI-compatible server without a base URL, or a row without a model ID.
+    case providerNotSetUp(provider: String)
     case cleanupHelperMissing
-    case unsupportedCleanup(String)
     case speakerIdentificationUnavailable
 
     var errorDescription: String? {
         switch self {
         case .modelNotInstalled(let name): "Install \(name) from Models before recording."
         case .apiKeyMissing(let provider): "Add your \(provider) API key in Models first."
+        case .providerNotSetUp(let provider): "Set up your \(provider) server and model in Models first."
         case .blockedByLocalOnly(let name):
             "\(name) uses an API. Choose a local model or turn off Require local processing."
         case .noMicrophone: "No included microphone is connected and available."
@@ -30,9 +34,9 @@ enum RecordingFailure: LocalizedError, Equatable, Sendable {
         case .unsupportedLanguage(let name, let language):
             "\(name) can't transcribe \(language.name). Choose another language or speech model for this mode."
         case .speechModelMissing: "The selected speech model is missing."
+        case .cleanupModelMissing:
+            "This mode's cleanup model is no longer available. Choose another one, or none, for this mode."
         case .cleanupHelperMissing: "S1-mini's helper is missing. Rebuild with Scripts/build.sh."
-        case .unsupportedCleanup(let name):
-            "\(name) is not connected in this build. Choose S1-mini for local cleanup."
         case .speakerIdentificationUnavailable:
             "Speaker identification is not yet available. Turn it off to transcribe this recording."
         }
@@ -43,14 +47,15 @@ enum RecordingFailure: LocalizedError, Equatable, Sendable {
         switch self {
         case .modelNotInstalled(let name): "Needs \(name)"
         case .apiKeyMissing(let provider): "Needs \(provider) key"
+        case .providerNotSetUp: "Needs server setup"
         case .blockedByLocalOnly: "Blocked by local-only"
         case .noMicrophone: "No microphone"
         case .appleSpeechNotReady: "Needs Apple Speech"
         case .unsupportedLanguage(let name, .automatic): "\(name) can't detect language"
         case .unsupportedLanguage(let name, let language): "\(name) can't do \(language.name)"
         case .speechModelMissing: "No speech model"
+        case .cleanupModelMissing: "No cleanup model"
         case .cleanupHelperMissing: "Cleanup helper missing"
-        case .unsupportedCleanup(let name): "\(name) unsupported"
         case .speakerIdentificationUnavailable: "Speakers unsupported"
         }
     }
@@ -129,13 +134,11 @@ struct RecorderOutcome: Equatable, Sendable {
     /// which keeps the full message.
     private static func action(for failure: RecordingFailure) -> Action {
         switch failure {
-        case .modelNotInstalled, .apiKeyMissing, .appleSpeechNotReady: .openModels
-        case .unsupportedLanguage: .openModes
+        case .modelNotInstalled, .apiKeyMissing, .providerNotSetUp, .appleSpeechNotReady: .openModels
+        case .unsupportedLanguage, .cleanupModelMissing: .openModes
         case .blockedByLocalOnly: .openSettings
         case .noMicrophone: .openSound
-        case .speechModelMissing, .cleanupHelperMissing, .unsupportedCleanup,
-            .speakerIdentificationUnavailable:
-            .showInHistory
+        case .speechModelMissing, .cleanupHelperMissing, .speakerIdentificationUnavailable: .showInHistory
         }
     }
 

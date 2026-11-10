@@ -14,7 +14,7 @@ let transcript = try await engine.transcribe(
     family: "whisper",
     language: "fr"
 )
-// Also accepts "parakeet" and "cohere".
+// Any name in LocalSpeechFamily.all: "parakeet", "cohere", "moonshine", "qwen3asr", "nemotron".
 engine.cancel()
 await engine.unload() // Await before removing model files or shutting down.
 ```
@@ -23,19 +23,13 @@ The engine uses a dedicated serial executor and retains one model between calls.
 
 A shared runtime lease prevents concurrent inference across engine instances; a request that finds an active lease throws `LocalSpeechError.busy`. Callers must await preparation before transcription. Every call revalidates source metadata and checks directory, file identity, size, and timestamps before reusing weights. A changed model replaces the resident instance. Unused MLX allocations are cleared after requests; retained weights remain alive. There is no cloud fallback, model acquisition, entitlement check, or account dependency in this adapter.
 
-Model folders must contain readable nonempty `.safetensors` weights and these metadata files:
-
-| Family | Required files |
-| --- | --- |
-| Whisper | `config.json`, `tokenizer.json`, `tokenizer_config.json` |
-| Parakeet | `config.json`, including the conversion's vocabulary |
-| Cohere | `config.json`, `tokenizer.model`, `tokenizer_config.json` |
+Everything that differs between families is one entry in `LocalSpeechFamily.all`: its loader, required files, how its `config.json` is recognized, whether it can detect the language, and how its runtime takes the language. The app's model library asks the same entry which files a download keeps and whether an installed folder is complete. Adding a family is an entry there plus catalog rows. Model folders must contain readable nonempty `.safetensors` weights and the entry's `requiredFiles`, for example `config.json`, `tokenizer.json` and `tokenizer_config.json` for Whisper, or `config.json` with its embedded vocabulary for Parakeet.
 
 The model catalog must obtain compatible artifacts separately. Original Whisper `.pt` files, whisper.cpp `.bin` files, and Core ML directories are not these formats. Compatibility checks inside each runtime may reject malformed or incompatible configurations/weights.
 
 Whisper's upstream loader downloads tokenizers when `tokenizer.json` is absent. The adapter rejects incomplete folders before loading, then copies metadata to a private temporary snapshot and links the weights. Removing the source tokenizer during inference therefore cannot activate that download branch. The snapshot lives with the resident model and is removed on eviction. The app prevents removal during capture/inference and awaits `unload()` before deleting model files, including while the model is idle.
 
-Audio is read in windows of at most 30 seconds, mixed to mono, and resampled to 16 kHz. Generation requests carry the caller's language code, or nil for detection, which only Parakeet V3 performs; see `transcribe(audioURL:modelDirectory:family:language:)`. The adapter joins window results with spaces; boundary accuracy still needs real model/audio testing. It does not expose word timestamps or diarization.
+Audio is read in windows of at most 30 seconds, mixed to mono, and resampled to 16 kHz. Generation requests carry the caller's language in the family's form, or nil for detection, which only families with `detectsLanguage` accept; see `transcribe(audioURL:modelDirectory:family:language:)`. The adapter joins window results with spaces; boundary accuracy still needs real model/audio testing. It does not expose word timestamps or diarization.
 
 Calling `cancel()` or cancelling the calling Swift task marks the job cancelled. The adapter checks before loading and between windows, and never returns text after cancellation is observed. An upstream synchronous model load or GPU decode already underway cannot be forcibly stopped. Cancellation therefore does not promise an immediate memory release or a fixed wall-clock deadline. The app should stop showing the cancelled recording immediately and avoid starting another local inference until the previous job exits.
 
