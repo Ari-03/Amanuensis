@@ -319,10 +319,8 @@ final class S1MiniRunner {
         let manager = FileManager.default
         let root = try
             (override
-            ?? manager.url(
-                for: .applicationSupportDirectory, in: .userDomainMask,
-                appropriateFor: nil, create: true
-            ).appendingPathComponent("Amanuensis/S1MiniJobs", isDirectory: true)).standardizedFileURL
+            ?? AppDataDirectory.url().appendingPathComponent("S1MiniJobs", isDirectory: true))
+            .standardizedFileURL
         guard !preparedRoots.contains(root) else { return root }
         if manager.fileExists(atPath: root.path) {
             let values = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])

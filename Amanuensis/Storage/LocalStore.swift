@@ -20,12 +20,7 @@ final class LocalStore {
 
     init(rootURL: URL? = nil) throws {
         let fileManager = FileManager.default
-        let directory =
-            try rootURL
-            ?? fileManager.url(
-                for: .applicationSupportDirectory, in: .userDomainMask,
-                appropriateFor: nil, create: true
-            ).appendingPathComponent("Amanuensis", isDirectory: true)
+        let directory = try rootURL ?? AppDataDirectory.url()
         self.rootURL = directory
         recordingsURL = directory.appendingPathComponent("Recordings", isDirectory: true)
         modelsURL = directory.appendingPathComponent("Models", isDirectory: true)

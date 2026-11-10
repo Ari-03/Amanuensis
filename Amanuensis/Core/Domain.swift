@@ -1,6 +1,27 @@
 import CoreGraphics
 import Foundation
 
+/// The folder that holds the database, recordings, models, and helper jobs.
+/// `AMANUENSIS_DATA_DIRECTORY` (an absolute path) replaces it so checks and proof runs never open real data.
+enum AppDataDirectory {
+    static let environmentKey = "AMANUENSIS_DATA_DIRECTORY"
+
+    static func url(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> URL {
+        if let path = environment[environmentKey], !path.isEmpty {
+            // A relative override must fail rather than fall back to the real folder.
+            guard path.hasPrefix("/") else { throw OverrideError() }
+            return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        }
+        return try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        ).appendingPathComponent("Amanuensis", isDirectory: true)
+    }
+
+    struct OverrideError: LocalizedError {
+        var errorDescription: String? { "\(AppDataDirectory.environmentKey) must be an absolute path." }
+    }
+}
+
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
     case home = "Home"
     case modes = "Modes"
@@ -364,6 +385,8 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
     var vocabularySnapshot: [VocabularyEntry]? = nil
     /// The first captured recording in a retry chain, used to count its speech only once.
     var parentRecordingID: UUID? = nil
+    /// True when the user pressed Skip during cleanup. Optional so rows saved before it existed still decode.
+    var cleanupSkipped: Bool? = nil
     var preview: String {
         if !finalText.isEmpty { return finalText }
         if !rawText.isEmpty { return rawText }
@@ -378,6 +401,7 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
         attempt.audioFileName = "\(attempt.id.uuidString).wav"
         attempt.rawText = ""
         attempt.cleanedText = nil
+        attempt.cleanupSkipped = nil
         attempt.finalText = ""
         attempt.error = nil
         attempt.destinationApp = nil

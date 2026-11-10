@@ -38,11 +38,7 @@ struct AmanuensisApp: App {
         }
     }
 
-    private func showSettings() {
-        model.selectedSection = .configuration
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
-    }
+    private func showSettings() { model.showMainWindow(.configuration) }
 }
 
 private struct MenuBarContent: View {
@@ -64,6 +60,9 @@ private struct MenuBarContent: View {
                 model.requestCancelRecording()
             }.disabled(model.phase == .delivering)
         }
+        Button("Copy last transcript") {
+            if let text = model.lastTranscript { model.copyText(text) }
+        }.disabled(model.lastTranscript == nil)
         Divider()
         ForEach(model.modes) { mode in
             Button {

@@ -81,7 +81,7 @@ final class AudioCapture {
             preferences.isEmpty
             ? devices.filter(\.isConnected).map(\.id)
             : preferences.filter(\.isEnabled).map(\.id)
-        guard !inputIDs.isEmpty else { throw AudioCaptureError.noMicrophone }
+        guard !inputIDs.isEmpty else { throw RecordingFailure.noMicrophone }
         duration = 0
         level = 0
         spectrum = AudioSpectrum.silence
@@ -156,14 +156,13 @@ final class AudioCapture {
 }
 
 private nonisolated enum AudioCaptureError: LocalizedError {
-    case alreadyRecording, microphonePermission, noMicrophone, unsupportedFileType
+    case alreadyRecording, microphonePermission, unsupportedFileType
     case cannotRecord, notRecording, emptyRecording
 
     var errorDescription: String? {
         switch self {
         case .alreadyRecording: "A recording is already in progress."
         case .microphonePermission: "Allow microphone access in System Settings to record your voice."
-        case .noMicrophone: "No included microphone is connected and available."
         case .unsupportedFileType: "Recordings must use a WAV, CAF, or M4A file."
         case .cannotRecord: "The microphone could not start recording. Try another input."
         case .notRecording: "There is no recording to finish."
@@ -234,7 +233,7 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
                         selectedDevice = device
                         break
                     }
-                    guard let selectedDevice else { throw AudioCaptureError.noMicrophone }
+                    guard let selectedDevice else { throw RecordingFailure.noMicrophone }
                     let newOutput = AVCaptureAudioFileOutput()
                     guard newSession.canAddOutput(newOutput) else { throw AudioCaptureError.cannotRecord }
                     newSession.addOutput(newOutput)

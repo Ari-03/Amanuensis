@@ -3,7 +3,6 @@ import SwiftUI
 struct HistoryView: View {
     @Bindable var model: AppModel
     @State private var query = ""
-    @State private var selectedID: UUID?
     @State private var showOriginal = false
     @State private var pendingDeletion: RecordingEntry?
     @State private var pendingRetry: RecordingEntry?
@@ -17,7 +16,7 @@ struct HistoryView: View {
     }
 
     private var selected: RecordingEntry? {
-        recordings.first { $0.id == selectedID } ?? recordings.first
+        recordings.first { $0.id == model.selectedRecordingID } ?? recordings.first
     }
 
     var body: some View {
@@ -79,7 +78,7 @@ struct HistoryView: View {
             Button("Delete", role: .destructive) {
                 if let entry = pendingDeletion {
                     model.deleteRecording(entry.id)
-                    if selectedID == entry.id { selectedID = nil }
+                    if model.selectedRecordingID == entry.id { model.selectedRecordingID = nil }
                 }
                 pendingDeletion = nil
             }
@@ -116,7 +115,7 @@ struct HistoryView: View {
                     .padding(.vertical, 6)
                 ForEach(recordings) { entry in
                     Button {
-                        selectedID = entry.id
+                        model.selectedRecordingID = entry.id
                     } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
@@ -213,6 +212,10 @@ struct HistoryView: View {
             if let error = entry.error {
                 Label(error, systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.orange)
+            }
+            if entry.cleanupSkipped == true {
+                Label("Cleanup was skipped.", systemImage: "forward")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let message = entry.deliveryMessage {
                 Text(message).font(.caption).foregroundStyle(.secondary)

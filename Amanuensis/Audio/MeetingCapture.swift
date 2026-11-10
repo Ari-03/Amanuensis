@@ -54,7 +54,7 @@ final class MeetingCapture {
             preferences.isEmpty
             ? devices.map(\.uniqueID) : preferences.filter(\.isEnabled).map(\.id)
         guard let device = identifiers.compactMap({ id in devices.first { $0.uniqueID == id } }).first else {
-            throw MeetingCaptureError.noMicrophone
+            throw RecordingFailure.noMicrophone
         }
         // This call asks macOS for Screen & System Audio Recording permission when needed.
         let content: SCShareableContent
@@ -203,14 +203,13 @@ final class MeetingCapture {
 }
 
 private nonisolated enum MeetingCaptureError: LocalizedError {
-    case alreadyRecording, microphonePermission, noMicrophone, noDisplay, notRecording
+    case alreadyRecording, microphonePermission, noDisplay, notRecording
     case systemAudioPermission(String)
     case noMicrophoneSamples, unsupportedAudio, emptyRecording
     var errorDescription: String? {
         switch self {
         case .alreadyRecording: "A meeting recording is already in progress."
         case .microphonePermission: "Allow microphone access in System Settings to record your voice."
-        case .noMicrophone: "No included microphone is connected."
         case .noDisplay: "macOS could not find a display for system audio capture."
         case .notRecording: "There is no meeting recording to finish."
         case .systemAudioPermission(let detail):

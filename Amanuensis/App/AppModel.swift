@@ -18,15 +18,25 @@ final class AppModel {
     var phase: DictationPhase = .idle {
         didSet {
             if phase != oldValue { dismissCancellation() }
+            // Any new work replaces the previous job's outcome.
+            if phase.isBusy { recorderOutcome = nil }
             shortcuts.setRecordingActive(phase.isBusy)
             updateRecorder()
         }
     }
     var statusMessage = "Your voice, on your Mac."
     var errorMessage: String?
-    var pasteNeedsAccessibility = false {
-        didSet { if pasteNeedsAccessibility != oldValue { updateRecorder() } }
+    /// How the last job ended, shown by the recorder pill until it expires or the user handles it.
+    private(set) var recorderOutcome: RecorderOutcome? {
+        didSet {
+            guard recorderOutcome != oldValue else { return }
+            if recorderOutcome?.action != .pasteOriginal { originalOffer = nil }
+            scheduleOutcomeExpiry()
+            updateRecorder()
+        }
     }
+    /// The History entry to select, so the recorder can open a specific recording.
+    var selectedRecordingID: UUID?
     private(set) var accessibilityGranted = TextDelivery.isAccessibilityTrusted
     var isMovingRecorder = false
     var isEditingShortcut = false
@@ -62,6 +72,16 @@ final class AppModel {
     @ObservationIgnored private var changingConfiguration = false
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
     @ObservationIgnored private var cancellationExpiry: Task<Void, Never>?
+    @ObservationIgnored private var outcomeExpiry: Task<Void, Never>?
+    @ObservationIgnored private var recorderHovering = false
+    /// Set by Skip during the cleanup await. Skip and the returning cleanup both run on the main actor,
+    /// and Skip is accepted only while the phase is cleaning, which `process()` leaves without
+    /// suspending once the await returns. So exactly one of them delivers.
+    @ObservationIgnored private var cleanupSkipped = false
+    /// A cleanup failure keeps its rule-applied raw text and the destination captured when recording
+    /// began, until the user pastes it, dismisses the offer, or starts other work.
+    @ObservationIgnored private var originalOffer:
+        (id: UUID, text: String, app: String?, destination: InsertionTarget?)?
 
     var currentMode: DictationMode {
         if phase.isBusy, let activeEntry { return activeEntry.mode }
@@ -78,6 +98,13 @@ final class AppModel {
 
     var recordingSpectrum: [Double] {
         activeEntry?.mode.recordSystemAudio == true ? meetingAudio.spectrum : audio.spectrum
+    }
+
+    /// The newest History text, final if there is one, for the menu bar's Copy last transcript.
+    /// History is loaded newest first.
+    var lastTranscript: String? {
+        history.first { !$0.finalText.isEmpty || !$0.rawText.isEmpty }
+            .map { $0.finalText.isEmpty ? $0.rawText : $0.finalText }
     }
 
     var microphoneName: String {
@@ -169,6 +196,8 @@ final class AppModel {
         else {
             return
         }
+        // An attempted start ends the previous job's outcome, even when the start is refused below.
+        recorderOutcome = nil
         guard !updater.isInstalling else {
             report(AppFailure("Amanuensis is installing an update and will restart in a moment."))
             return
@@ -179,7 +208,6 @@ final class AppModel {
         }
         recorder.followDisplay(containing: NSEvent.mouseLocation)
         refreshAccessibility()
-        pasteNeedsAccessibility = false
         let frontmost = NSWorkspace.shared.frontmostApplication
         let chosen: DictationMode
         if let override {
@@ -376,7 +404,7 @@ final class AppModel {
             raw = try await appleSpeech.transcribe(url: audioURL)
         } else {
             guard let directory = library.localURL(for: speech.id) else {
-                throw AppFailure("Install \(speech.name) first.")
+                throw RecordingFailure.modelNotInstalled(speech.name)
             }
             raw = try await localSpeech.transcribe(
                 audioURL: audioURL, modelDirectory: directory, family: speech.family.rawValue)
@@ -388,7 +416,7 @@ final class AppModel {
         refreshHistory()
         if entry.rawText.isEmpty {
             entry.status = .noSpeech
-            try complete(entry, message: "No speech detected. Nothing was inserted.")
+            try complete(entry, message: "No speech detected. Nothing was inserted.", outcome: .noSpeech)
             return
         }
 
@@ -398,30 +426,32 @@ final class AppModel {
             statusMessage = "Cleaning up with \(cleanup.name)…"
             entry.status = .cleaning
             try store?.upsertRecording(entry)
-            do {
-                if cleanup.location == .cloud {
-                    selectedText = try await cloud.clean(
-                        text: entry.rawText, model: cleanup, mode: entry.mode)
-                } else if cleanup.family == .s1mini {
-                    guard let path = library.localURL(for: cleanup.id) else {
-                        throw AppFailure("Install S1-mini first.")
-                    }
-                    selectedText = try await normalizer.clean(
-                        text: entry.rawText, modelURL: path, mode: entry.mode)
-                } else {
-                    throw AppFailure("This cleanup engine is not supported by this build.")
-                }
-                try ensureActive(id)
-                entry.cleanedText = selectedText
+            cleanupSkipped = false
+            let result: Result<String, any Error>
+            do { result = .success(try await clean(entry.rawText, with: cleanup, mode: entry.mode)) } catch {
+                result = .failure(error)
+            }
+            // Skip wins even if the model finished; its cancellation error is ignored.
+            let skipped = cleanupSkipped
+            cleanupSkipped = false
+            try ensureActive(id)
+            switch (skipped, result) {
+            case (true, _):
+                entry.cleanupSkipped = true
+            case (false, .success(let cleaned)):
+                selectedText = cleaned
+                entry.cleanedText = cleaned
                 activeEntry = entry
-            } catch {
-                try ensureActive(id)
+            case (false, .failure(let error)):
                 entry.error = "Cleanup failed: \(error.localizedDescription)"
                 entry.finalText = TextRules.apply(
                     entry.rawText, vocabulary: entry.vocabularySnapshot ?? [],
                     capitalize: entry.mode.capitalize)
                 entry.status = .failed
-                try complete(entry, message: "Cleanup failed. Your original transcript is saved in History.")
+                originalOffer = (id, entry.finalText, entry.destinationApp, destination)
+                try complete(
+                    entry, message: "Cleanup failed. Your original transcript is saved in History.",
+                    outcome: .cleanupFailed)
                 return
             }
         }
@@ -433,21 +463,58 @@ final class AppModel {
         try store?.upsertRecording(entry)
         if entry.finalText.isEmpty {
             try complete(
-                entry, message: "Nothing to insert. The original transcript is available in History.")
+                entry, message: "Nothing to insert. The original transcript is available in History.",
+                outcome: .nothingToInsert)
             return
         }
+        let outcome: RecorderOutcome.Cause
         if shouldDeliver && entry.mode.autoPaste {
             phase = .delivering
             statusMessage = "Inserting your text…"
-            let outcome = await delivery.deliver(text: entry.finalText, to: destination)
+            let delivered = await delivery.deliver(text: entry.finalText, to: destination)
             try ensureActive(id)
             refreshAccessibility()
-            pasteNeedsAccessibility = outcome == .accessibilityRequired
-            entry.deliveryMessage = outcome.message
+            entry.deliveryMessage = delivered.message
+            outcome = cause(of: delivered, app: entry.destinationApp)
         } else {
             entry.deliveryMessage = "Your transcript is ready to copy."
+            outcome = .savedToHistory
         }
-        try complete(entry, message: entry.deliveryMessage ?? "Your transcript is ready.")
+        try complete(entry, message: entry.deliveryMessage ?? "Your transcript is ready.", outcome: outcome)
+    }
+
+    private func clean(_ text: String, with cleanup: ModelDescriptor, mode: DictationMode) async throws
+        -> String
+    {
+        if cleanup.location == .cloud {
+            return try await cloud.clean(text: text, model: cleanup, mode: mode)
+        }
+        guard cleanup.family == .s1mini else {
+            throw AppFailure("This cleanup engine is not supported by this build.")
+        }
+        guard let path = library.localURL(for: cleanup.id) else {
+            throw AppFailure("Install S1-mini first.")
+        }
+        return try await normalizer.clean(text: text, modelURL: path, mode: mode)
+    }
+
+    private func cause(of delivered: DeliveryOutcome, app: String?) -> RecorderOutcome.Cause {
+        switch delivered {
+        case .commandPosted: .inserted(app: app)
+        case .copied: .copied
+        case .accessibilityRequired: .needsAccessibility
+        // Held text may not be on the clipboard, so point to History instead.
+        case .held: .failed(nil)
+        }
+    }
+
+    /// Ends cleanup early and finishes as if the mode had no cleanup model.
+    func skipCleanup() {
+        guard phase == .cleaning, activeID != nil, !cleanupSkipped else { return }
+        cleanupSkipped = true
+        statusMessage = "Skipping cleanup…"
+        normalizer.cancel()
+        cloud.cancel()
     }
 
     private func validate(_ entry: RecordingEntry) async throws {
@@ -456,18 +523,17 @@ final class AppModel {
         }
         for model in [speech, entry.cleanupSnapshot].compactMap({ $0 }) {
             if settings.requireLocalProcessing && !model.isLocal {
-                throw AppFailure(
-                    "\(model.name) uses an API. Choose a local model or turn off Require local processing.")
+                throw RecordingFailure.blockedByLocalOnly(modelName: model.name)
             }
             if model.location == .local && library.localURL(for: model.id) == nil {
-                throw AppFailure("Install \(model.name) from Models before recording.")
+                throw RecordingFailure.modelNotInstalled(model.name)
             }
             if model.location == .cloud, try CredentialStore.get(for: model.family) == nil {
-                throw AppFailure("Add your \(model.provider) API key in Models first.")
+                throw RecordingFailure.apiKeyMissing(provider: model.provider)
             }
         }
         if speech.family == .apple, try await !appleSpeech.checkReadiness() {
-            throw AppFailure("Apple Speech needs its English model. Open Models and choose Prepare.")
+            throw RecordingFailure.appleSpeechNotReady
         }
         if entry.cleanupSnapshot?.family == .s1mini && !S1MiniRunner.isAvailable {
             throw AppFailure("S1-mini's helper is missing. Rebuild with Scripts/build.sh.")
@@ -481,7 +547,7 @@ final class AppModel {
         }
     }
 
-    private func complete(_ entry: RecordingEntry, message: String) throws {
+    private func complete(_ entry: RecordingEntry, message: String, outcome: RecorderOutcome.Cause) throws {
         try store?.upsertRecording(entry)
         try store?.countIfNeeded(recording: entry)
         activeID = nil
@@ -489,6 +555,9 @@ final class AppModel {
         destination = nil
         library.inUseModelIDs = []
         shortcuts.setRecordingActive(false)
+        // Showing the outcome while the phase is still busy lets the pill change in place instead of
+        // hiding, when controls are not kept visible, and reappearing at idle size.
+        showOutcome(outcome, for: entry.id)
         phase = .complete
         statusMessage = message
         refreshHistory()
@@ -509,6 +578,7 @@ final class AppModel {
         destination = nil
         library.inUseModelIDs = []
         shortcuts.setRecordingActive(false)
+        showOutcome(.failed(error as? RecordingFailure), for: entry.id)
         phase = .failed
         statusMessage = entry.error ?? "Recording could not finish."
         errorMessage = entry.error
@@ -551,7 +621,8 @@ final class AppModel {
                 try ensureActive(entry.id)
                 entry.status = .interrupted
                 entry.error = reason
-                try complete(entry, message: "\(reason) Captured audio is saved in History.")
+                try complete(
+                    entry, message: "\(reason) Captured audio is saved in History.", outcome: .interrupted)
                 phase = .interrupted
             } catch {
                 guard activeID == entry.id else { return }
@@ -736,6 +807,8 @@ final class AppModel {
         }
         do {
             try store?.deleteRecording(id: id)
+            // A deleted recording's outcome must not offer its text; this also drops a Paste original offer.
+            if recorderOutcome?.recordingID == id { recorderOutcome = nil }
             refreshHistory()
         } catch { report(error) }
     }
@@ -748,7 +821,90 @@ final class AppModel {
     }
     func refreshAccessibility() {
         accessibilityGranted = TextDelivery.isAccessibilityTrusted
-        if accessibilityGranted { pasteNeedsAccessibility = false }
+        if accessibilityGranted && recorderOutcome?.action == .allowPaste { recorderOutcome = nil }
+    }
+
+    private func showOutcome(_ cause: RecorderOutcome.Cause, for id: UUID) {
+        let outcome = RecorderOutcome(cause, recordingID: id)
+        recorderOutcome = outcome
+        if outcome.kind == .failure || outcome.kind == .warning {
+            AccessibilityNotification.Announcement(outcome.label).post()
+        }
+    }
+
+    func dismissOutcome() { recorderOutcome = nil }
+
+    /// Runs the pill's action button and ends its outcome. Paste original ends it only once delivery
+    /// starts; if another job is running, the offer stays.
+    func performOutcomeAction() {
+        guard let outcome = recorderOutcome, let action = outcome.action else { return }
+        switch action {
+        case .allowPaste: requestAccessibility()
+        case .pasteOriginal: pasteOriginal()
+        case .openModels: showMainWindow(.models)
+        case .openSettings: showMainWindow(.configuration)
+        case .openSound: showMainWindow(.sound)
+        case .showInHistory:
+            selectedRecordingID = outcome.recordingID
+            showMainWindow(.history)
+        }
+        if action != .pasteOriginal { recorderOutcome = nil }
+    }
+
+    func showMainWindow(_ section: AppSection) {
+        selectedSection = section
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Delivers a failed cleanup's original text to the destination captured when recording began.
+    /// Delivery rechecks focus and falls back to the clipboard, then History records what happened.
+    private func pasteOriginal() {
+        guard let offer = originalOffer, !phase.isBusy, activeID == nil, cancellingID == nil else { return }
+        phase = .delivering
+        statusMessage = "Inserting your original transcript…"
+        work = Task { [weak self] in
+            guard let self else { return }
+            let delivered = await delivery.deliver(text: offer.text, to: offer.destination)
+            refreshAccessibility()
+            if var entry = history.first(where: { $0.id == offer.id }) {
+                entry.deliveryMessage = delivered.message
+                do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
+                refreshHistory()
+            }
+            showOutcome(cause(of: delivered, app: offer.app), for: offer.id)
+            phase = .complete
+            statusMessage = delivered.message
+        }
+    }
+
+    func setRecorderHovering(_ hovering: Bool) {
+        recorderHovering = hovering
+        guard !hovering else { return }
+        recorderOutcome?.pointerLeft(at: ProcessInfo.processInfo.systemUptime)
+        // The expiry check stops while the pointer is on the pill, so restart it even if the deadline held.
+        scheduleOutcomeExpiry()
+    }
+
+    /// Closes a success or notice at its deadline. If the pointer is on the pill then, leaving it
+    /// moves the deadline, which schedules a new check.
+    private func scheduleOutcomeExpiry() {
+        outcomeExpiry?.cancel()
+        guard let deadline = recorderOutcome?.deadline else { return }
+        outcomeExpiry = Task { [weak self] in
+            while true {
+                guard let self, let outcome = recorderOutcome, !recorderHovering else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                if outcome.isExpired(at: now) {
+                    recorderOutcome = nil
+                    return
+                }
+                // The suspending clock matches systemUptime, which also pauses while the Mac sleeps.
+                do { try await Task.sleep(for: .seconds(deadline - now), clock: .suspending) } catch {
+                    return
+                }
+            }
+        }
     }
 
     func requestAccessibility() {
@@ -845,6 +1001,7 @@ final class AppModel {
         destination = nil
         cancellingID = nil
         library.inUseModelIDs = []
+        showOutcome(.interrupted, for: entry.id)
         phase = .interrupted
         statusMessage = "Unfinished work is saved in History."
         refreshHistory()
@@ -953,16 +1110,17 @@ final class AppModel {
 
     private func updateRecorder() {
         guard startupComplete else { return }
-        if isCancellationPending
-            || settings.recorderStyle != .hidden
-                && (settings.alwaysShowRecorder || phase.isBusy || pasteNeedsAccessibility)
+        if let style = RecorderLayout.presentedStyle(
+            saved: settings.recorderStyle, alwaysShow: settings.alwaysShowRecorder, busy: phase.isBusy,
+            cancellationPending: isCancellationPending, outcome: recorderOutcome)
         {
             recorder.show(
-                content: AnyView(RecorderView(model: self)),
-                style: isCancellationPending ? .mini : settings.recorderStyle,
+                content: AnyView(RecorderView(model: self)), style: style,
                 placement: settings.recorderPlacement)
         } else {
             recorder.hide()
+            // A hidden panel reports no hover exit, so a stale hover must not hold the next outcome open.
+            recorderHovering = false
         }
     }
 
