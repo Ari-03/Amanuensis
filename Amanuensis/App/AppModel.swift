@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import LocalSpeech
 import Observation
 import ServiceManagement
 import SwiftUI
@@ -37,6 +36,8 @@ final class AppModel {
     }
     /// The History entry to select, so the recorder can open a specific recording.
     var selectedRecordingID: UUID?
+    /// The mode for the Modes screen to select, so the recorder can open the mode that failed.
+    var modeToEdit: UUID?
     private(set) var accessibilityGranted = TextDelivery.isAccessibilityTrusted
     private(set) var microphoneAccess = AudioCapture.access
     /// True while the setup checklist's own download runs, which moves Apple Speech modes when it ends.
@@ -56,7 +57,7 @@ final class AppModel {
     let updater = AppUpdater()
 
     @ObservationIgnored private let store: LocalStore?
-    @ObservationIgnored private let localSpeech = LocalSpeechEngine()
+    @ObservationIgnored private let localSpeech: LocalModelSpeech
     @ObservationIgnored private let normalizer = S1MiniRunner()
     @ObservationIgnored private let delivery = TextDelivery()
     @ObservationIgnored private let shortcuts = GlobalShortcuts()
@@ -93,7 +94,6 @@ final class AppModel {
         return modes.first(where: { $0.id == settings.selectedModeID }) ?? modes.first
             ?? DictationMode(name: "Voice to text", preset: .dictation)
     }
-    var appleSpeechReady: Bool { appleSpeech.isPrepared }
     var recordingDuration: Double {
         activeEntry?.mode.recordSystemAudio == true ? meetingAudio.duration : audio.duration
     }
@@ -144,6 +144,7 @@ final class AppModel {
                     name: .amanuensisStorageError, object: error.localizedDescription)
             }
         }
+        localSpeech = LocalModelSpeech(library: library)
         if let opened {
             let saved = opened.loadConfiguration()
             settings = saved.settings
@@ -159,9 +160,15 @@ final class AppModel {
             history = opened.loadRecordings()
             statistics = opened.statistics()
         }
-        // refreshMicrophones() below saves the configuration, including this.
+        // refreshMicrophones() below saves the configuration, including these.
         if !settings.hasCompletedSetup && SetupChecklist.isImplied(by: statistics, history: history) {
             settings.hasCompletedSetup = true
+        }
+        if settings.dictationLanguage == nil {
+            settings.dictationLanguage = .initial(
+                freshInstall: opened?.hasSavedConfiguration == false,
+                supported: Set(library.models.filter { $0.purpose == .speech }.flatMap { $0.languages ?? [] })
+            )
         }
         cloud = CloudProviders(allowCloud: { [weak self] in self?.settings.requireLocalProcessing == false })
         audio.onInterruption = { [weak self] reason in self?.recordingInterrupted(reason) }
@@ -178,7 +185,7 @@ final class AppModel {
         if !CommandLine.arguments.contains("--speech-smoke") { updater.startAutomaticChecks() }
         Task { [weak self] in
             guard let self else { return }
-            _ = try? await appleSpeech.checkReadiness()
+            try? await appleSpeech.checkReadiness()
             updateRecorder()
         }
         retentionTask = Task { [weak self] in
@@ -235,6 +242,7 @@ final class AppModel {
         entry.speechSnapshot = effectiveModel(chosen.speechModelID)
         entry.cleanupSnapshot = chosen.cleanupModelID.flatMap(effectiveModel)
         entry.vocabularySnapshot = vocabulary
+        entry.language = language(for: chosen)
         activeID = id
         activeEntry = entry
         destination = delivery.captureDestination()
@@ -339,11 +347,12 @@ final class AppModel {
         let previousPreparation = speechPreparation
         previousPreparation?.cancel()
         speechPreparation = nil
+        let speech = activeEntry?.speechSnapshot.map(speechEngine(for:))
         audio.cancel()
         meetingAudio.cancel()
-        appleSpeech.cancel()
-        localSpeech.cancel()
+        speech?.cancel()
         normalizer.cancel()
+        // Also stops API cleanup.
         cloud.cancel()
         restorePlayback()
         do { try store?.deleteRecording(id: id) } catch { errorMessage = error.localizedDescription }
@@ -358,21 +367,34 @@ final class AppModel {
             await meetingAudio.cancelAndWait()
             await previousWork?.value
             await previousPreparation?.value
-            await localSpeech.unload()
+            await speech?.unload()
             await normalizer.unload()
             finishCancelledJob(id)
         }
     }
 
     private func prepareSpeechWhileRecording(_ entry: RecordingEntry) {
-        guard let speech = entry.speechSnapshot, speech.location == .local,
-            [.whisper, .parakeet, .cohere].contains(speech.family),
-            let directory = library.localURL(for: speech.id)
-        else { return }
-        speechPreparation = Task { [localSpeech] in
+        guard let speech = entry.speechSnapshot else { return }
+        let engine = speechEngine(for: speech)
+        speechPreparation = Task {
             // Preparation is optional. The transcription call will report/retry a load error.
-            try? await localSpeech.prepare(modelDirectory: directory, family: speech.family.rawValue)
+            try? await engine.prepare(speech)
         }
+    }
+
+    /// The one place that decides which engine runs a speech model.
+    private func speechEngine(for model: ModelDescriptor) -> any SpeechEngine {
+        switch model.location {
+        case .system: appleSpeech
+        case .local: localSpeech
+        case .cloud: cloud
+        }
+    }
+
+    /// Releases every engine's model files, for removal, sleep and quit.
+    private func unloadModels() async {
+        for engine: any SpeechEngine in [appleSpeech, localSpeech, cloud] { await engine.unload() }
+        await normalizer.unload()
     }
 
     private func stopSpeechPreparation() async {
@@ -390,8 +412,7 @@ final class AppModel {
         modelReleaseCount += 1
         defer { modelReleaseCount -= 1 }
         await stopSpeechPreparation()
-        await localSpeech.unload()
-        await normalizer.unload()
+        await unloadModels()
         try library.remove(descriptor)
     }
 
@@ -406,20 +427,9 @@ final class AppModel {
         }
         statusMessage = "Transcribing with \(speech.name)…"
         phase = .transcribing
-        let raw: String
-        if speech.location == .cloud {
-            raw = try await cloud.transcribe(
-                audioURL: audioURL, model: speech,
-                vocabulary: entry.vocabularySnapshot ?? [])
-        } else if speech.family == .apple {
-            raw = try await appleSpeech.transcribe(url: audioURL)
-        } else {
-            guard let directory = library.localURL(for: speech.id) else {
-                throw RecordingFailure.modelNotInstalled(speech.name)
-            }
-            raw = try await localSpeech.transcribe(
-                audioURL: audioURL, modelDirectory: directory, family: speech.family.rawValue)
-        }
+        let raw = try await speechEngine(for: speech).transcribe(
+            audioURL: audioURL, model: speech, language: entry.transcriptionLanguage,
+            vocabulary: entry.vocabularySnapshot ?? [])
         try ensureActive(id)
         entry.rawText = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         activeEntry = entry
@@ -548,7 +558,7 @@ final class AppModel {
         }
         if let failure = facts.blocker(
             speech: entry.speechSnapshot, cleanup: entry.cleanupSnapshot,
-            identifySpeakers: entry.mode.identifySpeakers)
+            language: entry.transcriptionLanguage, identifySpeakers: entry.mode.identifySpeakers)
         {
             throw failure
         }
@@ -559,7 +569,45 @@ final class AppModel {
         RecordingReadiness(
             requireLocalProcessing: settings.requireLocalProcessing,
             installedModelIDs: library.installedModelIDs, connectedProviders: connectedProviders,
-            appleSpeechReady: appleSpeech.isPrepared, cleanupHelperAvailable: cleanupHelperAvailable)
+            appleSpeechReadyLanguages: appleSpeech.readyLanguages,
+            appleSpeechLanguages: appleSpeech.locales.map { Set($0.keys) },
+            cleanupHelperAvailable: cleanupHelperAvailable)
+    }
+
+    /// The language a mode records in: its own override, else the Settings language.
+    func language(for mode: DictationMode) -> SpeechLanguage {
+        mode.language ?? settings.language
+    }
+
+    /// Language codes a picker offers for a speech model, sorted by name. Where the provider or macOS
+    /// decides, or for Settings (nil), it lists every language any speech model here handles.
+    func languageChoices(for speech: ModelDescriptor?) -> [String] {
+        let apple = appleSpeech.locales.map { Array($0.keys) }
+        if let speech, speech.family == .apple, let apple { return SpeechLanguage.sortedByName(apple) }
+        if let declared = speech?.languages, !declared.isEmpty {
+            return SpeechLanguage.sortedByName(declared)
+        }
+        return SpeechLanguage.sortedByName(Set(library.models.flatMap { $0.languages ?? [] } + (apple ?? [])))
+    }
+
+    /// Apple Speech languages worth preparing: those modes record in, current mode first, then the
+    /// Settings language. Only languages macOS supports here and whose assets are missing. Models
+    /// offers these rather than only the current mode's language, because another mode's marker
+    /// ("Needs Apple Speech") sends the user to Models to prepare that mode's language.
+    var appleSpeechLanguagesToPrepare: [String] {
+        guard let apple = effectiveModel("apple-speech") else { return [] }
+        let readiness = readiness
+        let wanted =
+            ([currentMode] + modes).filter { $0.speechModelID == apple.id }.map(language(for:))
+            + [settings.language]
+        var codes: [String] = []
+        for language in wanted {
+            guard case .appleSpeechNotReady(let code)? = readiness.blocker(for: apple, language: language),
+                !codes.contains(code)
+            else { continue }
+            codes.append(code)
+        }
+        return codes
     }
 
     /// Why each mode cannot record yet. Modes that can record are absent. Views read it once per render.
@@ -569,7 +617,7 @@ final class AppModel {
             blockers[mode.id] = readiness.blocker(
                 speech: effectiveModel(mode.speechModelID),
                 cleanup: mode.cleanupModelID.flatMap(effectiveModel),
-                identifySpeakers: mode.identifySpeakers)
+                language: language(for: mode), identifySpeakers: mode.identifySpeakers)
         }
     }
 
@@ -580,7 +628,8 @@ final class AppModel {
         SetupChecklist(
             microphone: microphoneAccess,
             speechBlocker: readiness.blocker(
-                speech: currentSpeechModel, cleanup: nil, identifySpeakers: false),
+                speech: currentSpeechModel, cleanup: nil, language: language(for: currentMode),
+                identifySpeakers: false),
             accessibilityGranted: accessibilityGranted,
             textInsertionSkipped: settings.skippedTextInsertionSetup == true)
     }
@@ -604,7 +653,7 @@ final class AppModel {
 
     private func fail(_ original: RecordingEntry, error: Error) async {
         await stopSpeechPreparation()
-        await localSpeech.unload()
+        if let speech = original.speechSnapshot { await speechEngine(for: speech).unload() }
         guard activeID == original.id else { return }
         var entry = original
         entry.status = .failed
@@ -655,7 +704,7 @@ final class AppModel {
                 try ensureActive(entry.id)
                 entry.duration = captured.duration
                 await stopSpeechPreparation()
-                await localSpeech.unload()
+                if let speech = entry.speechSnapshot { await speechEngine(for: speech).unload() }
                 try ensureActive(entry.id)
                 entry.status = .interrupted
                 entry.error = reason
@@ -751,10 +800,11 @@ final class AppModel {
         } catch { return false }
     }
 
-    /// The setup checklist's local route: download the recommended model if needed, then move every
-    /// mode still on Apple Speech to it. Cancel or failure leaves the modes alone.
+    /// The setup checklist's local route: download the model recommended for the current mode's language
+    /// if needed, then move every mode still on Apple Speech whose language it handles. Cancel or failure
+    /// leaves the modes alone.
     func downloadAndUseRecommendedSpeech() async {
-        let recommended = ModelCatalog.recommendedSpeech
+        guard let recommended = recommendedSpeech else { return }
         // Recheck the disk first, so modes never move to a model whose files were removed outside the app.
         library.refreshInstalledModels()
         if !library.installedModelIDs.contains(recommended.id) {
@@ -763,17 +813,28 @@ final class AppModel {
             defer { isDownloadingRecommendedSpeech = false }
             guard await download(recommended) else { return }
         }
-        for index in modes.indices where modes[index].speechModelID == "apple-speech" {
+        for index in modes.indices
+        where modes[index].speechModelID == "apple-speech"
+            && recommended.declares(language(for: modes[index]))
+        {
             modes[index].speechModelID = recommended.id
         }
         saveConfiguration()
     }
 
-    func prepareAppleSpeech() async {
+    /// The local model the setup checklist offers for the current mode's language, if any handles it.
+    var recommendedSpeech: ModelDescriptor? {
+        ModelCatalog.recommendedSpeech(for: language(for: currentMode))
+    }
+
+    func prepareAppleSpeech(language code: String) async {
+        let name = SpeechLanguage.name(of: code)
+        // macOS limits how many languages an app keeps; ones nothing records in may be released.
+        let inUse = Set((modes.map(language(for:)) + [settings.language]).compactMap(\.languageCode))
         do {
-            statusMessage = "Preparing Apple's English speech model…"
-            try await appleSpeech.prepare()
-            statusMessage = "Apple Speech is ready on this Mac."
+            statusMessage = "Preparing Apple Speech for \(name)…"
+            try await appleSpeech.prepare(language: code, keeping: inUse)
+            statusMessage = "Apple Speech is ready for \(name) on this Mac."
         } catch { report(error) }
     }
 
@@ -893,7 +954,7 @@ final class AppModel {
     func refreshPermissions() {
         refreshAccessibility()
         microphoneAccess = AudioCapture.access
-        Task { _ = try? await appleSpeech.checkReadiness() }
+        Task { try? await appleSpeech.checkReadiness() }
     }
 
     func refreshAccessibility() {
@@ -919,6 +980,11 @@ final class AppModel {
         case .allowPaste: requestAccessibility()
         case .pasteOriginal: pasteOriginal()
         case .openModels: showMainWindow(.models)
+        case .openModes:
+            // The recording keeps a copy of its mode; open that mode unless it was deleted since.
+            let failed = history.first { $0.id == outcome.recordingID }?.mode.id
+            modeToEdit = modes.first { $0.id == failed }?.id
+            showMainWindow(.modes)
         case .openSettings: showMainWindow(.configuration)
         case .openSound: showMainWindow(.sound)
         case .showInHistory:
@@ -1031,14 +1097,12 @@ final class AppModel {
         let previousWork = work
         if phase == .delivering {
             await previousWork?.value
-            await localSpeech.unload()
-            await normalizer.unload()
+            await unloadModels()
             return
         }
         guard var entry = activeEntry, let id = activeID else {
             await stopSpeechPreparation()
-            await localSpeech.unload()
-            await normalizer.unload()
+            await unloadModels()
             return
         }
         let wasRecording = phase == .recording
@@ -1047,9 +1111,9 @@ final class AppModel {
         phase = .preparing
         statusMessage = "Saving unfinished work…"
         previousWork?.cancel()
-        appleSpeech.cancel()
-        localSpeech.cancel()
+        entry.speechSnapshot.map(speechEngine(for:))?.cancel()
         normalizer.cancel()
+        // Also stops API cleanup.
         cloud.cancel()
         restorePlayback()
         if wasRecording {
@@ -1068,8 +1132,7 @@ final class AppModel {
         }
         await stopSpeechPreparation()
         await previousWork?.value
-        await localSpeech.unload()
-        await normalizer.unload()
+        await unloadModels()
         entry.status = .interrupted
         if entry.error == nil { entry.error = "Interrupted before completion. Retry from History." }
         if let store, store.audioURL(for: entry) == nil { entry.audioFileName = nil }

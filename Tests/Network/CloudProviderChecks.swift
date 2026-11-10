@@ -127,7 +127,7 @@ struct CloudProviderChecks {
             precondition(request.httpMethod == "POST")
             precondition(request.url?.absoluteString == "https://api.openai.com/v1/audio/transcriptions")
             let body = String(decoding: requestBody(request), as: UTF8.self)
-            precondition(body.contains("name=\"languages[]\""))
+            precondition(body.contains("name=\"languages[]\"\r\n\r\nfr\r\n"))
             precondition(body.contains("name=\"keywords[]\""))
             precondition(!body.contains("name=\"language\""))
             precondition(!body.contains("invalid<keyword"))
@@ -136,11 +136,37 @@ struct CloudProviderChecks {
             return .json(200, #"{"text":" Hello there. "}"#)
         }
         let transcript = try await provider.transcribe(
-            audioURL: audioURL, model: model,
+            audioURL: audioURL, model: model, language: .code("fr"),
             vocabulary: [.init(word: "Amanuensis"), .init(word: "invalid<keyword")]
         )
         precondition(transcript == "Hello there.")
         checks += 1
+
+        // Detection omits the language, which both APIs then detect. Older models take a single language.
+        for apiModelID in ["gpt-transcribe", "whisper-1"] {
+            model.apiModelID = apiModelID
+            fixture.reset { request in
+                let body = String(decoding: requestBody(request), as: UTF8.self)
+                precondition(!body.contains("name=\"languages[]\"") && !body.contains("name=\"language\""))
+                return .json(200, #"{"text":"Bonjour."}"#)
+            }
+            _ = try await provider.transcribe(
+                audioURL: audioURL, model: model, language: .automatic, vocabulary: [])
+            checks += 1
+        }
+        model.family = .groq
+        model.apiModelID = "whisper-large-v3-turbo"
+        fixture.reset { request in
+            let body = String(decoding: requestBody(request), as: UTF8.self)
+            precondition(request.url?.absoluteString == "https://api.groq.com/openai/v1/audio/transcriptions")
+            precondition(body.contains("name=\"language\"\r\n\r\nde\r\n"))
+            precondition(!body.contains("name=\"languages[]\""))
+            return .json(200, #"{"text":"Hallo."}"#)
+        }
+        _ = try await provider.transcribe(
+            audioURL: audioURL, model: model, language: .code("de"), vocabulary: [])
+        checks += 1
+        model.family = .openAI
 
         model.purpose = .cleanup
         model.apiModelID = "gpt-test"
@@ -152,6 +178,9 @@ struct CloudProviderChecks {
             precondition(body.model == "gpt-test" && body.input == "um edited")
             precondition(!body.store)
             precondition(!body.instructions.contains("hidden-custom-instruction"))
+            // Cleanup keeps the transcript's language instead of assuming English.
+            precondition(body.instructions.contains("same language as the transcript"))
+            precondition(!body.instructions.contains("English"))
             return .json(
                 200,
                 #"{"status":"completed","output":[{"type":"reasoning"},{"content":[{"type":"output_text","text":"Edited."}]}]}"#
@@ -165,6 +194,11 @@ struct CloudProviderChecks {
         fixture.reset { request in
             let body = try! JSONDecoder().decode(CleanupRequest.self, from: requestBody(request))
             precondition(body.instructions.contains("hidden-custom-instruction"))
+            // A custom prompt, such as one asking for a translation, overrides the reply-language default.
+            precondition(
+                body.instructions.contains(
+                    "take precedence over the rules above, including the reply language"))
+            precondition(!body.instructions.contains("Never translate"))
             return .json(200, #"{"status":"incomplete","output":[]}"#)
         }
         do {

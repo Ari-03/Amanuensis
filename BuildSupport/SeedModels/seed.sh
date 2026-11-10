@@ -10,4 +10,6 @@ xcrun swiftc -parse-as-library -swift-version 6 -warnings-as-errors \
     "$seed_root/Amanuensis/Models/ModelLibrary.swift" \
     "$seed_root/BuildSupport/SeedModels/main.swift" \
     -o "$seed_build/seed-models"
+# ModelCatalog loads its rows from the main bundle, which for a command-line tool is its folder.
+cp "$seed_root/Amanuensis/Models/ModelCatalog.json" "$seed_build/"
 "$seed_build/seed-models" "$@"

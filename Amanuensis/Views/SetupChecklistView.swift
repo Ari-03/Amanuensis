@@ -56,26 +56,42 @@ struct SetupChecklistView: View {
         return SetupStep(number: 2, title: "A speech model", state: blocker == nil ? .done : .waiting) {
             if blocker == nil, let speech {
                 detail("\(speech.name) is ready for \(mode).")
-            } else if speech?.family == .apple {
+            } else if case .appleSpeechNotReady(let code) = blocker {
+                let language = SpeechLanguage.name(of: code)
                 detail(
-                    "\(mode) uses Apple Speech, which macOS prepares on this Mac. Or download a local model.")
+                    "\(mode) uses Apple Speech in \(language), which macOS prepares on this Mac. Or download a local model."
+                )
                 if model.appleSpeech.isPreparing {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("Preparing Apple Speech…").font(.callout).foregroundStyle(.secondary)
                     }
                 } else {
-                    Button("Prepare Apple Speech") { Task { await model.prepareAppleSpeech() } }
-                        .disabled(model.phase.isBusy)
+                    Button("Prepare Apple Speech for \(language)") {
+                        Task { await model.prepareAppleSpeech(language: code) }
+                    }
+                    .disabled(model.phase.isBusy)
                 }
-                recommendedRow
+                if let recommended = model.recommendedSpeech { recommendedRow(recommended) }
+            } else if speech?.family == .apple, case .unsupportedLanguage(_, let language) = blocker {
+                // Apple Speech lacks this language; a local model that has it is the way forward.
+                detail(
+                    "Apple Speech can't transcribe \(language.name) on this Mac. Download a local model that can."
+                )
+                if let recommended = model.recommendedSpeech { recommendedRow(recommended) }
             } else if let speech, case .modelNotInstalled = blocker, speech.repository != nil {
                 detail("\(mode) uses \(speech.name), which is not installed yet.")
                 downloadRow(speech)
             } else {
                 detail(blocker?.errorDescription ?? "Choose a speech model for \(mode).")
             }
-            if blocker != nil {
+            if case .unsupportedLanguage = blocker {
+                Button("Change the language or model in Modes") {
+                    model.modeToEdit = model.currentMode.id
+                    model.selectedSection = .modes
+                }
+                .buttonStyle(.link).font(.callout)
+            } else if blocker != nil {
                 Button("Choose another model in Models") { model.selectedSection = .models }
                     .buttonStyle(.link).font(.callout)
             }
@@ -84,12 +100,14 @@ struct SetupChecklistView: View {
         }
     }
 
-    /// The local route: one recommended model that replaces Apple Speech in every mode still using it.
-    @ViewBuilder private var recommendedRow: some View {
-        let recommended = ModelCatalog.recommendedSpeech
+    /// The local route: one model recommended for the mode's language that replaces Apple Speech in
+    /// every mode still using it whose language it handles.
+    @ViewBuilder private func recommendedRow(_ recommended: ModelDescriptor) -> some View {
         if model.library.installedModelIDs.contains(recommended.id) {
             HStack {
-                detail("\(recommended.name) is installed. Modes that use Apple Speech can switch to it.")
+                detail(
+                    "\(recommended.name) is installed. Modes on Apple Speech in a language it handles can switch to it."
+                )
                 Spacer()
                 Button("Use \(recommended.name)") { Task { await model.downloadAndUseRecommendedSpeech() } }
             }
@@ -100,7 +118,8 @@ struct SetupChecklistView: View {
                 downloadTitle: "Download and use",
                 // A download started elsewhere, such as in Models, does not switch modes when it ends.
                 note: progress == nil || model.isDownloadingRecommendedSpeech
-                    ? "Modes that use Apple Speech switch to it when the download finishes." : nil,
+                    ? "Modes on Apple Speech in a language it handles switch to it when the download finishes."
+                    : nil,
                 onDownload: { Task { await model.downloadAndUseRecommendedSpeech() } },
                 onCancel: { model.library.cancelDownload(recommended.id) })
         }

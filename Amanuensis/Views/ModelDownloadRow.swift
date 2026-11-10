@@ -20,8 +20,8 @@ struct ModelDownloadRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(descriptor.name).fontWeight(.medium)
-                    if !descriptor.sizeLabel.isEmpty {
-                        Text(descriptor.sizeLabel).font(.callout).foregroundStyle(.secondary)
+                    if let size = descriptor.sizeLabel, !size.isEmpty {
+                        Text(size).font(.callout).foregroundStyle(.secondary)
                     }
                 }
                 if let progress {

@@ -55,7 +55,7 @@ struct HomeView: View {
                         .disabled(model.phase.isBusy).accessibilityLabel("Change active mode")
                         // The checklist or the Apple Speech card below already explains these.
                         if !model.phase.isBusy, let blocker = blockers[model.currentMode.id],
-                            blocker != .appleSpeechNotReady,
+                            appleSpeechLanguage(blocker) == nil,
                             !settingUp || blocker != model.setupChecklist.speechBlocker
                         {
                             Label(
@@ -125,13 +125,14 @@ struct HomeView: View {
                         }
                     }
                 }
-                // The checklist covers these two while setup is open. Afterwards they catch revoked access.
-                if !settingUp && !model.appleSpeechReady && model.currentMode.speechModelID == "apple-speech"
-                {
+                // The checklist covers these two while setup is open. Afterwards they catch revoked access
+                // and a mode switched to a language whose assets are missing.
+                if !settingUp, let code = blockers[model.currentMode.id].flatMap(appleSpeechLanguage) {
+                    let name = SpeechLanguage.name(of: code)
                     SettingsCard {
                         Label("Set up Apple speech", systemImage: "arrow.down.circle").font(.headline)
                         Text(
-                            "Prepare English speech recognition on this Mac. macOS may need to download language assets."
+                            "Prepare \(name) speech recognition on this Mac. macOS may need to download language assets."
                         )
                         .foregroundStyle(.secondary)
                         if model.appleSpeech.isPreparing {
@@ -141,8 +142,10 @@ struct HomeView: View {
                                     .secondary)
                             }
                         } else {
-                            Button("Prepare speech recognition") { Task { await model.prepareAppleSpeech() } }
-                                .disabled(model.phase.isBusy)
+                            Button("Prepare \(name) speech recognition") {
+                                Task { await model.prepareAppleSpeech(language: code) }
+                            }
+                            .disabled(model.phase.isBusy)
                         }
                     }
                 }
@@ -173,6 +176,11 @@ struct HomeView: View {
                 }
             }.padding(28).frame(maxWidth: 960).frame(maxWidth: .infinity)
         }
+    }
+
+    /// The language whose Apple Speech assets a blocker asks for, if that is what it is.
+    private func appleSpeechLanguage(_ blocker: RecordingFailure) -> String? {
+        if case .appleSpeechNotReady(let code) = blocker { code } else { nil }
     }
 
     private func metric(_ value: String, unit: String, label: String) -> some View {

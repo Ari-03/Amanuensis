@@ -87,6 +87,58 @@ enum PlaybackBehavior: String, Codable, CaseIterable, Sendable {
     case mute = "Mute"
 }
 
+/// The language a recording is transcribed in, or detection by the speech model. Saved as a BCP-47
+/// language code such as "fr", or "auto" for detection.
+enum SpeechLanguage: Hashable, Sendable, Codable {
+    case automatic
+    case code(String)
+
+    static let english = SpeechLanguage.code("en")
+
+    init(from decoder: any Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        self = value == "auto" ? .automatic : .code(value)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(languageCode ?? "auto")
+    }
+
+    /// The language code, or nil for detection.
+    var languageCode: String? { if case .code(let code) = self { code } else { nil } }
+
+    /// What pickers and messages call this choice, such as "French" or "Detect automatically".
+    var name: String { languageCode.map(Self.name(of:)) ?? "Detect automatically" }
+
+    /// The one source of language names, in the user's own language.
+    static func name(of code: String) -> String {
+        Locale.current.localizedString(forLanguageCode: code) ?? code
+    }
+
+    /// Language codes sorted by their names, as every language picker lists them.
+    static func sortedByName(_ codes: some Sequence<String>) -> [String] {
+        codes.map { ($0, name(of: $0)) }
+            .sorted { $0.1.localizedStandardCompare($1.1) == .orderedAscending }
+            .map(\.0)
+    }
+
+    /// The Settings language a configuration starts with. A fresh install takes the Mac's preferred
+    /// language when the app can transcribe it. Configuration saved before languages existed keeps
+    /// English, which is what it dictated in, so an update never blocks a mode. Never detection, which
+    /// is unreliable on a two-second utterance.
+    static func initial(
+        freshInstall: Bool, supported: Set<String>, preferredLanguages: [String] = Locale.preferredLanguages
+    ) -> SpeechLanguage {
+        guard freshInstall, let first = preferredLanguages.first,
+            let macCode = Locale(identifier: first).language.languageCode?.identifier
+        else { return .english }
+        // macOS names Norwegian Bokmål and Filipino with codes the speech models list differently.
+        let code = ["nb": "no", "fil": "tl"][macCode] ?? macCode
+        return supported.contains(code) ? .code(code) : .english
+    }
+}
+
 struct DictationMode: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
     var name: String
@@ -105,6 +157,9 @@ struct DictationMode: Identifiable, Codable, Equatable, Sendable {
     var playback: PlaybackBehavior = .keepPlaying
     var recordSystemAudio = false
     var identifySpeakers = false
+    /// Overrides the Settings language for this mode. Nil means "same as Settings", and is what
+    /// configuration saved before languages existed decodes to.
+    var language: SpeechLanguage? = nil
 
     var symbol: String { customSymbol ?? preset.symbol }
 
@@ -325,6 +380,11 @@ struct AppSettings: Codable, Equatable, Sendable {
     /// Set by Skip on the setup checklist's text insertion step. Optional so earlier saves still decode.
     var skippedTextInsertionSetup: Bool? = nil
     var apiModelOverrides: [String: String] = [:]
+    /// The language modes use unless they set their own. Nil only in configuration saved before
+    /// languages existed; AppModel replaces it with `SpeechLanguage.initial` at launch.
+    var dictationLanguage: SpeechLanguage? = nil
+    /// The Settings language, for every reader.
+    var language: SpeechLanguage { dictationLanguage ?? .english }
 }
 
 enum ModelPurpose: String, Codable, CaseIterable, Sendable { case speech, cleanup }
@@ -333,6 +393,8 @@ enum ModelFamily: String, Codable, Sendable {
     case apple, whisper, parakeet, cohere, s1mini, openAI, groq, anthropic, ollama
 }
 
+/// One catalog row, decoded from `ModelCatalog.json`. Recordings also keep a copy as their model
+/// snapshot, so fields added later are optional: rows saved by earlier releases lack them.
 struct ModelDescriptor: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var name: String
@@ -341,14 +403,50 @@ struct ModelDescriptor: Identifiable, Codable, Equatable, Sendable {
     var location: ModelLocation
     var family: ModelFamily
     var summary: String
-    var sizeLabel: String = ""
+    /// The bytes a download fetches, from the publisher's metadata for the pinned revision.
+    var byteCount: Int64? = nil
     var repository: String? = nil
     var revision: String? = nil
     var fileName: String? = nil
     var sha256: String? = nil
     var apiModelID: String? = nil
     var license: String = ""
+    /// BCP-47 codes of the languages the model handles. Empty means the provider decides, or for
+    /// Apple Speech, macOS. Nil only in snapshots saved before languages existed, which were English.
+    var languages: [String]? = nil
+    /// Whether the model can work out the spoken language on its own.
+    var detectsLanguage: Bool? = nil
     var isLocal: Bool { location != .cloud }
+
+    /// "2.47 GB", the download size shown beside a model, or empty. `catalog(from:)` derives it from
+    /// `byteCount`; the catalog file never sets it. It is still saved with snapshots because releases
+    /// before `byteCount` require the key and could not open a History row written without it.
+    var sizeLabel: String? = nil
+
+    /// Decodes `ModelCatalog.json`. The app and the catalog tests both load it through here.
+    static func catalog(from data: Data) throws -> [ModelDescriptor] {
+        try JSONDecoder().decode([ModelDescriptor].self, from: data).map { row in
+            var row = row
+            row.sizeLabel = row.byteCount.map(formatBytes) ?? ""
+            return row
+        }
+    }
+
+    /// The one byte formatter for model sizes and download progress. Decimal units, like Finder.
+    static func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    /// Whether the model's own language list covers this language. Apple Speech's real list comes from
+    /// macOS at run time, so `RecordingReadiness.canTranscribe` asks the framework for it instead.
+    func declares(_ language: SpeechLanguage) -> Bool {
+        switch language {
+        case .automatic: return detectsLanguage == true
+        case .code(let code):
+            guard let languages else { return code == "en" }
+            return languages.isEmpty || languages.contains(code)
+        }
+    }
 }
 
 struct ModelInstallation: Identifiable, Codable, Equatable, Sendable {
@@ -376,22 +474,13 @@ struct DownloadProgress: Equatable, Sendable {
     var label: String {
         switch stage {
         case .checking: "Checking download"
-        case .downloading: Self.byteLabel(completed: completedBytes, total: totalBytes)
+        case .downloading:
+            totalBytes > 0
+                ? "\(ModelDescriptor.formatBytes(min(max(0, completedBytes), totalBytes))) of \(ModelDescriptor.formatBytes(totalBytes))"
+                : "Downloading"
         case .validating: "Validating model"
         case .importing: "Importing model"
         }
-    }
-
-    /// "1.19 of 2.47 GB", in the decimal units the catalog's size labels use.
-    static func byteLabel(completed: Int64, total: Int64) -> String {
-        guard total > 0 else { return "Downloading" }
-        let (unit, scale, digits): (String, Double, Int) =
-            total >= 1_000_000_000
-            ? ("GB", 1e9, 2) : total >= 1_000_000 ? ("MB", 1e6, 0) : ("KB", 1e3, 0)
-        func format(_ bytes: Int64) -> String {
-            String(format: "%.\(digits)f", Double(min(max(0, bytes), total)) / scale)
-        }
-        return "\(format(completed)) of \(format(total)) \(unit)"
     }
 }
 
@@ -420,6 +509,10 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
     var parentRecordingID: UUID? = nil
     /// True when the user pressed Skip during cleanup. Optional so rows saved before it existed still decode.
     var cleanupSkipped: Bool? = nil
+    /// The language resolved when recording started, so a retry transcribes the same way.
+    /// Nil in rows saved before languages existed; `transcriptionLanguage` reads those as English.
+    var language: SpeechLanguage? = nil
+    var transcriptionLanguage: SpeechLanguage { language ?? .english }
     var preview: String {
         if !finalText.isEmpty { return finalText }
         if !rawText.isEmpty { return rawText }

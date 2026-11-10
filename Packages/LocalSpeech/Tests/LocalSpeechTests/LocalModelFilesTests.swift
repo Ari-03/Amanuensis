@@ -57,7 +57,7 @@ import Testing
     await #expect(throws: LocalSpeechError.self) {
         try await engine.transcribe(
             audioURL: URL(fileURLWithPath: "/nonexistent.wav"),
-            modelDirectory: URL(fileURLWithPath: "/nonexistent-model"), family: "unknown"
+            modelDirectory: URL(fileURLWithPath: "/nonexistent-model"), family: "unknown", language: "en"
         )
     }
 }

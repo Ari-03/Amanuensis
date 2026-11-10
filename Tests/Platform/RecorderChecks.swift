@@ -323,6 +323,7 @@ struct RecorderChecks {
             (.needsAccessibility, style),
             (.cleanupFailed, .mini),
             (.failed(.modelNotInstalled("Parakeet TDT 0.6B V2")), .mini),
+            (.failed(.unsupportedLanguage(modelName: "Parakeet TDT 0.6B V2", language: .code("fr"))), .mini),
         ]
         model.phase = .complete
         for (cause, expectedStyle) in cases {

@@ -22,56 +22,133 @@ struct RecordingReadinessTests {
 
     /// A fresh install: nothing downloaded, no keys, Apple Speech assets missing, local-only on.
     private let fresh = RecordingReadiness(
-        requireLocalProcessing: true, installedModelIDs: [], connectedProviders: [], appleSpeechReady: false,
-        cleanupHelperAvailable: true)
+        requireLocalProcessing: true, installedModelIDs: [], connectedProviders: [],
+        appleSpeechReadyLanguages: [], appleSpeechLanguages: ["en", "fr"], cleanupHelperAvailable: true)
 
     @Test func freshInstallModesNeedAppleSpeechThenS1Mini() {
-        #expect(fresh.blocker(speech: apple, cleanup: nil, identifySpeakers: false) == .appleSpeechNotReady)
+        #expect(
+            fresh.blocker(speech: apple, cleanup: nil, language: .english, identifySpeakers: false)
+                == .appleSpeechNotReady(language: "en"))
         var prepared = fresh
-        prepared.appleSpeechReady = true
-        #expect(prepared.blocker(speech: apple, cleanup: nil, identifySpeakers: false) == nil)
-        let mail = prepared.blocker(speech: apple, cleanup: s1mini, identifySpeakers: false)
+        prepared.appleSpeechReadyLanguages = ["en"]
+        #expect(
+            prepared.blocker(speech: apple, cleanup: nil, language: .english, identifySpeakers: false) == nil)
+        let mail = prepared.blocker(
+            speech: apple, cleanup: s1mini, language: .english, identifySpeakers: false)
         #expect(mail == .modelNotInstalled("S1-mini"))
         #expect(mail?.shortReason == "Needs S1-mini")
         prepared.installedModelIDs = ["s1-mini"]
-        #expect(prepared.blocker(speech: apple, cleanup: s1mini, identifySpeakers: false) == nil)
+        #expect(
+            prepared.blocker(speech: apple, cleanup: s1mini, language: .english, identifySpeakers: false)
+                == nil)
     }
 
     @Test func speechIsReportedBeforeCleanup() {
         #expect(
-            fresh.blocker(speech: parakeet, cleanup: s1mini, identifySpeakers: false)
+            fresh.blocker(speech: parakeet, cleanup: s1mini, language: .english, identifySpeakers: false)
                 == .modelNotInstalled("Parakeet TDT 0.6B V2"))
-        #expect(fresh.blocker(speech: nil, cleanup: s1mini, identifySpeakers: false) == .speechModelMissing)
+        #expect(
+            fresh.blocker(speech: nil, cleanup: s1mini, language: .english, identifySpeakers: false)
+                == .speechModelMissing)
     }
 
     @Test func localOnlyBlocksAPIModelsBeforeTheirKeyIsChecked() {
         var readiness = fresh
         readiness.installedModelIDs = ["parakeet-v2"]
         #expect(
-            readiness.blocker(speech: parakeet, cleanup: openAICleanup, identifySpeakers: false)
+            readiness.blocker(
+                speech: parakeet, cleanup: openAICleanup, language: .english, identifySpeakers: false)
                 == .blockedByLocalOnly(modelName: "OpenAI Cleanup"))
         readiness.requireLocalProcessing = false
         #expect(
-            readiness.blocker(speech: parakeet, cleanup: openAICleanup, identifySpeakers: false)
+            readiness.blocker(
+                speech: parakeet, cleanup: openAICleanup, language: .english, identifySpeakers: false)
                 == .apiKeyMissing(provider: "OpenAI"))
         readiness.connectedProviders = [.openAI]
-        #expect(readiness.blocker(speech: parakeet, cleanup: openAICleanup, identifySpeakers: false) == nil)
+        #expect(
+            readiness.blocker(
+                speech: parakeet, cleanup: openAICleanup, language: .english, identifySpeakers: false) == nil)
     }
 
     @Test func unsupportedEnginesAndSettingsBlockEvenWhenInstalled() {
         var readiness = fresh
         readiness.installedModelIDs = ["parakeet-v2", "s1-mini", "ollama-cleanup"]
         #expect(
-            readiness.blocker(speech: parakeet, cleanup: ollama, identifySpeakers: false)
+            readiness.blocker(speech: parakeet, cleanup: ollama, language: .english, identifySpeakers: false)
                 == .unsupportedCleanup("Ollama"))
         #expect(
-            readiness.blocker(speech: parakeet, cleanup: nil, identifySpeakers: true)
+            readiness.blocker(speech: parakeet, cleanup: nil, language: .english, identifySpeakers: true)
                 == .speakerIdentificationUnavailable)
         readiness.cleanupHelperAvailable = false
         #expect(
-            readiness.blocker(speech: parakeet, cleanup: s1mini, identifySpeakers: false)
+            readiness.blocker(speech: parakeet, cleanup: s1mini, language: .english, identifySpeakers: false)
                 == .cleanupHelperMissing)
-        #expect(readiness.blocker(speech: parakeet, cleanup: nil, identifySpeakers: false) == nil)
+        #expect(
+            readiness.blocker(speech: parakeet, cleanup: nil, language: .english, identifySpeakers: false)
+                == nil)
+    }
+
+    @Test func languagesTheSpeechModelCannotHandleBlockBeforeInstallation() {
+        var cohere = parakeet
+        cohere.name = "Cohere Transcribe"
+        cohere.languages = ["en", "fr"]
+        cohere.detectsLanguage = false
+        let french = SpeechLanguage.code("fr")
+        // Installing would not help, so the language is reported first.
+        #expect(
+            fresh.blocker(speech: cohere, cleanup: nil, language: .code("sw"), identifySpeakers: false)
+                == .unsupportedLanguage(modelName: "Cohere Transcribe", language: .code("sw")))
+        #expect(
+            fresh.blocker(speech: cohere, cleanup: nil, language: french, identifySpeakers: false)
+                == .modelNotInstalled("Cohere Transcribe"))
+        #expect(
+            fresh.blocker(speech: cohere, cleanup: nil, language: .automatic, identifySpeakers: false)
+                == .unsupportedLanguage(modelName: "Cohere Transcribe", language: .automatic))
+        var detecting = cohere
+        detecting.detectsLanguage = true
+        #expect(fresh.canTranscribe(.automatic, with: detecting))
+    }
+
+    @Test func appleSpeechLanguagesComeFromMacOSAndAssetsArePerLanguage() {
+        var readiness = fresh
+        readiness.appleSpeechReadyLanguages = ["en"]
+        #expect(
+            readiness.blocker(speech: apple, cleanup: nil, language: .english, identifySpeakers: false) == nil
+        )
+        #expect(
+            readiness.blocker(speech: apple, cleanup: nil, language: .code("fr"), identifySpeakers: false)
+                == .appleSpeechNotReady(language: "fr"))
+        #expect(
+            readiness.blocker(speech: apple, cleanup: nil, language: .code("sw"), identifySpeakers: false)
+                == .unsupportedLanguage(modelName: "Apple Speech", language: .code("sw")))
+        #expect(
+            readiness.blocker(speech: apple, cleanup: nil, language: .automatic, identifySpeakers: false)
+                == .unsupportedLanguage(modelName: "Apple Speech", language: .automatic))
+        // Before macOS answers at launch, no language is held against Apple Speech, only its assets.
+        readiness.appleSpeechLanguages = nil
+        #expect(
+            readiness.blocker(speech: apple, cleanup: nil, language: .code("sw"), identifySpeakers: false)
+                == .appleSpeechNotReady(language: "sw"))
+    }
+
+    @Test func cleanupLanguagesOnlyWarnAndProvidersDecideForAPIModels() {
+        var english = s1mini
+        english.languages = ["en"]
+        var readiness = fresh
+        readiness.installedModelIDs = ["parakeet-v2", "s1-mini"]
+        var multilingual = parakeet
+        multilingual.languages = ["en", "fr"]
+        #expect(!english.declares(.code("fr")))
+        #expect(
+            readiness.blocker(
+                speech: multilingual, cleanup: english, language: .code("fr"), identifySpeakers: false)
+                == nil)
+        var api = openAICleanup
+        api.purpose = .speech
+        api.languages = []
+        api.detectsLanguage = true
+        #expect(readiness.canTranscribe(.code("sw"), with: api))
+        #expect(readiness.canTranscribe(.automatic, with: api))
     }
 
     @Test func availabilityFollowsWhereTheModelRuns() {
@@ -102,7 +179,7 @@ struct SetupChecklistTests {
             waiting.microphone = microphone
             #expect(!waiting.isComplete)
         }
-        checklist.speechBlocker = .appleSpeechNotReady
+        checklist.speechBlocker = .appleSpeechNotReady(language: "en")
         #expect(!checklist.isComplete)
     }
 
@@ -124,19 +201,24 @@ struct SetupChecklistTests {
 }
 
 struct DownloadProgressTests {
-    @Test func downloadsCountBytesInTheTotalsUnit() {
+    @Test func downloadsCountBytesWithTheModelSizeFormatter() {
         let progress = DownloadProgress(
             stage: .downloading, completedBytes: 1_190_000_000, totalBytes: 2_470_000_000)
-        #expect(progress.label == "1.19 of 2.47 GB")
+        #expect(progress.label == "1.19 GB of 2.47 GB")
         #expect(abs((progress.fraction ?? 0) - 1.19 / 2.47) < 0.0001)
-        #expect(DownloadProgress.byteLabel(completed: 12_400_000, total: 151_000_000) == "12 of 151 MB")
-        #expect(DownloadProgress.byteLabel(completed: 0, total: 0) == "Downloading")
+        // The total reads exactly like the catalog size shown beside the model.
+        let model = ModelDescriptor(
+            id: "whisper-tiny", name: "Whisper tiny", provider: "OpenAI", purpose: .speech, location: .local,
+            family: .whisper, summary: "", byteCount: 151_061_672)
+        let small = DownloadProgress(stage: .downloading, completedBytes: 12_400_000, totalBytes: 151_061_672)
+        #expect(small.label == "12.4 MB of \(ModelDescriptor.formatBytes(model.byteCount ?? 0))")
+        #expect(DownloadProgress(stage: .downloading).label == "Downloading")
     }
 
     @Test func overshootIsClampedAndUnknownSizesAreIndeterminate() {
         let overshoot = DownloadProgress(stage: .downloading, completedBytes: 2_000, totalBytes: 1_000)
         #expect(overshoot.fraction == 1)
-        #expect(overshoot.label == "1 of 1 KB")
+        #expect(overshoot.label == "1 KB of 1 KB")
         #expect(DownloadProgress(stage: .checking).fraction == nil)
         #expect(DownloadProgress(stage: .importing).fraction == nil)
         #expect(DownloadProgress(stage: .downloading).fraction == nil)

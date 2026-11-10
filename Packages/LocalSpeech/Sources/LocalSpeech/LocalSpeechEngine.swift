@@ -48,9 +48,20 @@ public actor LocalSpeechEngine {
         }
     }
 
-    public func transcribe(audioURL: URL, modelDirectory: URL, family: String) async throws -> String {
-        try await withModel(modelDirectory: modelDirectory, family: family) { model, cancellation in
-            try transcribeWindows(audioURL: audioURL, model: model, cancellation: cancellation)
+    /// `language` is a BCP-47 language code such as "fr", or nil when the model should detect it.
+    /// Only Parakeet V3 detects: Parakeet ignores the language, V2 being English only. The pinned Whisper
+    /// omits its language token for nil but has no detection pass, which produced garbage on short
+    /// clips, so callers must pass a language for Whisper. Cohere needs one of its fourteen languages;
+    /// upstream silently substitutes English for nil or any other code. Callers check this first.
+    public func transcribe(audioURL: URL, modelDirectory: URL, family: String, language: String?)
+        async throws -> String
+    {
+        // Whisper's tokenizer names Javanese with the retired code "jw".
+        let requested =
+            (try? ModelFamily(validating: family)) == .whisper && language == "jv" ? "jw" : language
+        return try await withModel(modelDirectory: modelDirectory, family: family) { model, cancellation in
+            try transcribeWindows(
+                audioURL: audioURL, model: model, language: requested, cancellation: cancellation)
         }
     }
 
@@ -186,7 +197,7 @@ public actor LocalSpeechEngine {
     }
 
     private func transcribeWindows(
-        audioURL: URL, model: any STTGenerationModel, cancellation: CancellationFlag
+        audioURL: URL, model: any STTGenerationModel, language: String?, cancellation: CancellationFlag
     ) throws -> String {
         guard audioURL.isFileURL else { throw LocalSpeechError.invalidAudio }
         let file = try AVAudioFile(forReading: audioURL, commonFormat: .pcmFormatFloat32, interleaved: false)
@@ -201,7 +212,7 @@ public actor LocalSpeechEngine {
         }
         let parameters = STTGenerateParameters(
             maxTokens: min(model.defaultGenerationParameters.maxTokens, 1024),
-            temperature: 0, language: "en", chunkDuration: 30, minChunkDuration: 0.1
+            temperature: 0, language: language, chunkDuration: 30, minChunkDuration: 0.1
         )
         var parts: [String] = []
         while file.framePosition < file.length {

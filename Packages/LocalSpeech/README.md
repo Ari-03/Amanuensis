@@ -11,7 +11,8 @@ try await engine.prepare(modelDirectory: installedModelURL, family: "whisper")
 let transcript = try await engine.transcribe(
     audioURL: recordingURL,
     modelDirectory: installedModelURL,
-    family: "whisper"
+    family: "whisper",
+    language: "fr"
 )
 // Also accepts "parakeet" and "cohere".
 engine.cancel()
@@ -34,7 +35,7 @@ The model catalog must obtain compatible artifacts separately. Original Whisper 
 
 Whisper's upstream loader downloads tokenizers when `tokenizer.json` is absent. The adapter rejects incomplete folders before loading, then copies metadata to a private temporary snapshot and links the weights. Removing the source tokenizer during inference therefore cannot activate that download branch. The snapshot lives with the resident model and is removed on eviction. The app prevents removal during capture/inference and awaits `unload()` before deleting model files, including while the model is idle.
 
-Audio is read in windows of at most 30 seconds, mixed to mono, and resampled to 16 kHz. Generation requests specify English. The adapter joins window results with spaces; boundary accuracy still needs real model/audio testing. It does not expose word timestamps or diarization.
+Audio is read in windows of at most 30 seconds, mixed to mono, and resampled to 16 kHz. Generation requests carry the caller's language code, or nil for detection, which only Parakeet V3 performs; see `transcribe(audioURL:modelDirectory:family:language:)`. The adapter joins window results with spaces; boundary accuracy still needs real model/audio testing. It does not expose word timestamps or diarization.
 
 Calling `cancel()` or cancelling the calling Swift task marks the job cancelled. The adapter checks before loading and between windows, and never returns text after cancellation is observed. An upstream synchronous model load or GPU decode already underway cannot be forcibly stopped. Cancellation therefore does not promise an immediate memory release or a fixed wall-clock deadline. The app should stop showing the cancelled recording immediately and avoid starting another local inference until the previous job exits.
 

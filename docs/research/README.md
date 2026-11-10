@@ -18,6 +18,7 @@ Start with the [consolidated implementation plan](../implementation-plan.md) for
 | Which speech and cleanup API providers are requested? | [OpenAI, Groq, Claude, and optional Ollama](api-providers.md) |
 | What should the app look like? | [Native visual design](native-visual-design.md), [desktop design references](desktop-design-references.md) |
 | How should first launch and the catalog behave? | [Onboarding and library UX](onboarding-and-library-ux.md) |
+| Where do catalog sizes and language lists come from? | [Model catalog sources](model-catalog-sources.md), checked November 10, 2026 |
 | What does each recording state mean? | [Recording interaction plan](recording-interaction-plan.md) |
 | How do the native runtimes fit together? | [Runtime integration](runtime-integration-plan.md), [module architecture](module-architecture.md) |
 | How do we handle paste permissions and releases? | [Insertion and distribution](insertion-and-distribution-plan.md) |

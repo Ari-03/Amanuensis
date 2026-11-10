@@ -30,9 +30,11 @@ struct SpeechLifecycle {
         try await Task.sleep(for: .milliseconds(250))
         try require(
             try snapshots().subtracting(initial) == prepared, "Recording preparation expired before use")
-        let first = try await engine.transcribe(audioURL: audio, modelDirectory: source, family: family)
+        let first = try await engine.transcribe(
+            audioURL: audio, modelDirectory: source, family: family, language: "en")
         try require(!first.isEmpty, "Empty transcript")
-        let second = try await engine.transcribe(audioURL: audio, modelDirectory: source, family: family)
+        let second = try await engine.transcribe(
+            audioURL: audio, modelDirectory: source, family: family, language: "en")
         try require(first == second, "Retained output differs")
         try require(try snapshots().subtracting(initial) == prepared, "Repeated call reloaded model")
         try await Task.sleep(for: .milliseconds(300))
@@ -50,7 +52,8 @@ struct SpeechLifecycle {
         try require(try snapshots().subtracting(initial).count == 1, "Replacement leaked old model snapshot")
         try manager.removeItem(at: config)
         do {
-            _ = try await engine.transcribe(audioURL: audio, modelDirectory: source, family: family)
+            _ = try await engine.transcribe(
+                audioURL: audio, modelDirectory: source, family: family, language: "en")
             throw CheckFailure("Missing metadata used cached model")
         } catch is LocalSpeechError {}
         try require(try snapshots() == initial, "Invalid source retained model")
@@ -71,7 +74,8 @@ struct SpeechLifecycle {
         await engine.unload()
         try require(try snapshots() == initial, "Cancellation/unload leaked snapshot")
         try await engine.prepare(modelDirectory: source, family: family)
-        let recovered = try await engine.transcribe(audioURL: audio, modelDirectory: source, family: family)
+        let recovered = try await engine.transcribe(
+            audioURL: audio, modelDirectory: source, family: family, language: "en")
         try require(recovered == first, "Inference failed after cancellation")
         await engine.unload()
         try require(try snapshots() == initial, "Explicit unload leaked snapshot")

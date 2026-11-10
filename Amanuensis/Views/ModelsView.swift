@@ -240,7 +240,7 @@ struct ModelsView: View {
                     Label(
                         descriptor.isLocal ? "On this Mac" : "API",
                         systemImage: descriptor.isLocal ? "desktopcomputer" : "cloud")
-                    if !descriptor.sizeLabel.isEmpty { Text(descriptor.sizeLabel) }
+                    if let size = descriptor.sizeLabel, !size.isEmpty { Text(size) }
                     if descriptor.location == .cloud, let chosen = apiModelID(descriptor) {
                         Text(chosen).font(.system(.caption, design: .monospaced))
                     }
@@ -281,16 +281,23 @@ struct ModelsView: View {
                 }
             }
         } else if descriptor.location == .system {
-            if model.appleSpeech.isPreparing {
+            // Assets are per language. Offer the languages modes record in that still need them.
+            if let preparing = model.appleSpeech.preparingLanguage {
                 ProgressView().controlSize(.small)
-                    .help("Preparing English speech assets")
-            } else if model.appleSpeechReady {
+                    .help("Preparing \(SpeechLanguage.name(of: preparing)) speech assets")
+            } else if let needed = model.appleSpeechLanguagesToPrepare.first {
+                Button("Prepare \(SpeechLanguage.name(of: needed))") {
+                    Task { await model.prepareAppleSpeech(language: needed) }
+                }
+                .disabled(model.phase.isBusy)
+                .help("Download \(SpeechLanguage.name(of: needed)) speech assets through macOS")
+            } else if !model.appleSpeech.readyLanguages.isEmpty {
                 Label("Ready", systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)
-            } else {
-                Button("Prepare") { Task { await model.prepareAppleSpeech() } }
-                    .disabled(model.phase.isBusy)
-                    .help("Download English speech assets through macOS")
+                    .help(
+                        "Prepared for "
+                            + SpeechLanguage.sortedByName(model.appleSpeech.readyLanguages)
+                            .map(SpeechLanguage.name(of:)).formatted(.list(type: .and)))
             }
         } else if descriptor.family == .ollama {
             Text("Local server")

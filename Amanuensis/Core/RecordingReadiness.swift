@@ -6,7 +6,10 @@ struct RecordingReadiness: Sendable {
     var requireLocalProcessing: Bool
     var installedModelIDs: Set<String>
     var connectedProviders: Set<ModelFamily>
-    var appleSpeechReady: Bool
+    /// Language codes whose Apple Speech assets are installed.
+    var appleSpeechReadyLanguages: Set<String>
+    /// Language codes Apple Speech supports on this Mac. Nil until macOS has answered at launch.
+    var appleSpeechLanguages: Set<String>?
     var cleanupHelperAvailable: Bool
 
     /// Installed for local models, a saved key for API models. System models are always present.
@@ -18,26 +21,46 @@ struct RecordingReadiness: Sendable {
         }
     }
 
-    /// What stops this one model from running, or nil when it can.
-    func blocker(for model: ModelDescriptor) -> RecordingFailure? {
+    /// Whether this speech model can transcribe the language. Apple Speech asks macOS, which cannot
+    /// detect a language; until macOS answers, its languages are not held against a mode.
+    func canTranscribe(_ language: SpeechLanguage, with model: ModelDescriptor) -> Bool {
+        guard model.family == .apple else { return model.declares(language) }
+        guard let code = language.languageCode else { return false }
+        return appleSpeechLanguages?.contains(code) ?? true
+    }
+
+    /// What stops this one model from running in this language, or nil when it can. A language the
+    /// speech model cannot handle comes first, because installing or preparing it would not help.
+    func blocker(for model: ModelDescriptor, language: SpeechLanguage) -> RecordingFailure? {
         if model.family == .ollama { return .unsupportedCleanup(model.name) }
+        if model.purpose == .speech && !canTranscribe(language, with: model) {
+            return .unsupportedLanguage(modelName: model.name, language: language)
+        }
         if requireLocalProcessing && !model.isLocal { return .blockedByLocalOnly(modelName: model.name) }
         if !isAvailable(model) {
             return model.location == .cloud
                 ? .apiKeyMissing(provider: model.provider) : .modelNotInstalled(model.name)
         }
-        if model.family == .apple && !appleSpeechReady { return .appleSpeechNotReady }
+        if model.family == .apple, let code = language.languageCode, !appleSpeechReadyLanguages.contains(code)
+        {
+            return .appleSpeechNotReady(language: code)
+        }
         if model.family == .s1mini && !cleanupHelperAvailable { return .cleanupHelperMissing }
         return nil
     }
 
     /// The first thing a recording with these choices still needs, or nil when it can start.
-    /// A missing speech model means the mode names one the catalog no longer has.
-    func blocker(speech: ModelDescriptor?, cleanup: ModelDescriptor?, identifySpeakers: Bool)
-        -> RecordingFailure?
-    {
+    /// A missing speech model means the mode names one the catalog no longer has. A cleanup model
+    /// that does not know the language only earns a warning in the mode editor, not a blocker.
+    func blocker(
+        speech: ModelDescriptor?, cleanup: ModelDescriptor?, language: SpeechLanguage, identifySpeakers: Bool
+    ) -> RecordingFailure? {
         guard let speech else { return .speechModelMissing }
-        if let failure = blocker(for: speech) ?? cleanup.flatMap(blocker(for:)) { return failure }
+        if let failure = blocker(for: speech, language: language)
+            ?? cleanup.flatMap({ blocker(for: $0, language: language) })
+        {
+            return failure
+        }
         return identifySpeakers ? .speakerIdentificationUnavailable : nil
     }
 }

@@ -27,7 +27,7 @@ struct SpeechBench {
         for iteration in 1...repetitions {
             let started = ContinuousClock.now
             let result = try await engine.transcribe(
-                audioURL: audio, modelDirectory: directory, family: family)
+                audioURL: audio, modelDirectory: directory, family: family, language: "en")
             let elapsed = seconds(since: started)
             try validate(result, expected: &expected)
             try emit(
@@ -46,7 +46,7 @@ struct SpeechBench {
         for iteration in 1...repetitions {
             let started = ContinuousClock.now
             let text = try await production.transcribe(
-                audioURL: audio, modelDirectory: directory, family: family)
+                audioURL: audio, modelDirectory: directory, family: family, language: "en")
             let elapsed = seconds(since: started)
             try validate(text, expected: &expected)
             try emit(

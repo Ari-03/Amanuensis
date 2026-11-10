@@ -25,6 +25,8 @@ struct LocalStoreChecks {
     @MainActor
     static func roundTrip(_ root: URL) throws {
         let store = try LocalStore(rootURL: root)
+        // A store with no saved configuration is how the app recognizes a fresh install.
+        try require(!store.hasSavedConfiguration, "A new store has no saved configuration")
         var configuration = SavedConfiguration()
         configuration.settings.appearance = .dark
         configuration.vocabulary = [VocabularyEntry(word: "Aritra", replacement: "Aritra Das")]
@@ -36,6 +38,7 @@ struct LocalStoreChecks {
             throw Failure("Duplicate installation should roll back the replacement transaction")
         } catch is Failure { throw Failure("Duplicate installation was accepted") } catch {}
         let reloaded = try LocalStore(rootURL: root)
+        try require(reloaded.hasSavedConfiguration, "A saved configuration marks the install as not fresh")
         try require(
             reloaded.loadConfiguration().settings == configuration.settings, "Settings must survive relaunch")
         try require(

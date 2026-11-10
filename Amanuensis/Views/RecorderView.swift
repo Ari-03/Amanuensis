@@ -536,6 +536,7 @@ private struct RecorderModeRow: View {
                     Text(title).lineLimit(1)
                     if let reason {
                         Text(reason).font(.system(size: 11)).foregroundStyle(.orange).lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
                 Spacer(minLength: 8)

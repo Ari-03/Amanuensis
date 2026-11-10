@@ -8,7 +8,9 @@ enum RecordingFailure: LocalizedError, Equatable, Sendable {
     case apiKeyMissing(provider: String)
     case blockedByLocalOnly(modelName: String)
     case noMicrophone
-    case appleSpeechNotReady
+    /// Apple Speech's assets for this language code are not installed.
+    case appleSpeechNotReady(language: String)
+    case unsupportedLanguage(modelName: String, language: SpeechLanguage)
     case speechModelMissing
     case cleanupHelperMissing
     case unsupportedCleanup(String)
@@ -21,7 +23,12 @@ enum RecordingFailure: LocalizedError, Equatable, Sendable {
         case .blockedByLocalOnly(let name):
             "\(name) uses an API. Choose a local model or turn off Require local processing."
         case .noMicrophone: "No included microphone is connected and available."
-        case .appleSpeechNotReady: "Apple Speech needs its English model. Open Models and choose Prepare."
+        case .appleSpeechNotReady(let code):
+            "Apple Speech needs its \(SpeechLanguage.name(of: code)) model. Open Models and choose Prepare."
+        case .unsupportedLanguage(let name, .automatic):
+            "\(name) can't detect the spoken language. Choose a language or another speech model for this mode."
+        case .unsupportedLanguage(let name, let language):
+            "\(name) can't transcribe \(language.name). Choose another language or speech model for this mode."
         case .speechModelMissing: "The selected speech model is missing."
         case .cleanupHelperMissing: "S1-mini's helper is missing. Rebuild with Scripts/build.sh."
         case .unsupportedCleanup(let name):
@@ -39,6 +46,8 @@ enum RecordingFailure: LocalizedError, Equatable, Sendable {
         case .blockedByLocalOnly: "Blocked by local-only"
         case .noMicrophone: "No microphone"
         case .appleSpeechNotReady: "Needs Apple Speech"
+        case .unsupportedLanguage(let name, .automatic): "\(name) can't detect language"
+        case .unsupportedLanguage(let name, let language): "\(name) can't do \(language.name)"
         case .speechModelMissing: "No speech model"
         case .cleanupHelperMissing: "Cleanup helper missing"
         case .unsupportedCleanup(let name): "\(name) unsupported"
@@ -54,13 +63,14 @@ struct RecorderOutcome: Equatable, Sendable {
     enum Kind: Sendable { case success, notice, warning, failure }
 
     enum Action: Sendable {
-        case allowPaste, pasteOriginal, openModels, openSettings, openSound, showInHistory
+        case allowPaste, pasteOriginal, openModels, openModes, openSettings, openSound, showInHistory
 
         var title: String {
             switch self {
             case .allowPaste: "Allow paste"
             case .pasteOriginal: "Paste original"
             case .openModels: "Open Models"
+            case .openModes: "Open Modes"
             case .openSettings: "Open Settings"
             case .openSound: "Open Sound"
             case .showInHistory: "Show in History"
@@ -120,6 +130,7 @@ struct RecorderOutcome: Equatable, Sendable {
     private static func action(for failure: RecordingFailure) -> Action {
         switch failure {
         case .modelNotInstalled, .apiKeyMissing, .appleSpeechNotReady: .openModels
+        case .unsupportedLanguage: .openModes
         case .blockedByLocalOnly: .openSettings
         case .noMicrophone: .openSound
         case .speechModelMissing, .cleanupHelperMissing, .unsupportedCleanup,

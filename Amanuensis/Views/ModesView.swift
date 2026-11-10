@@ -35,6 +35,7 @@ struct ModesView: View {
                             if let blocker = blockers[mode.id] {
                                 Label(blocker.shortReason, systemImage: "exclamationmark.triangle")
                                     .font(.caption).foregroundStyle(.orange).lineLimit(1)
+                                    .truncationMode(.middle)
                             } else {
                                 Text(
                                     ModelCatalog.models.first { $0.id == mode.speechModelID }?.name
@@ -64,6 +65,12 @@ struct ModesView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { if selectedID == nil { selectedID = model.currentMode.id } }
+        // The recorder's Open Modes and the setup checklist ask for a specific mode.
+        .onChange(of: model.modeToEdit, initial: true) { _, id in
+            guard let id else { return }
+            selectedID = id
+            model.modeToEdit = nil
+        }
         .sheet(isPresented: $creating) {
             CreateModeSheet { name, symbol in
                 selectedID = model.createMode(name: name, symbol: symbol)
@@ -120,10 +127,12 @@ struct ModesView: View {
                         "Speech model", purpose: .speech,
                         selection: binding(mode, \.speechModelID).map(
                             to: { Optional($0) }, from: { $0 ?? "apple-speech" }),
-                        allowNone: false)
+                        allowNone: false, mode: mode)
+                    languagePicker(mode)
                     modelPicker(
                         "Cleanup model", purpose: .cleanup, selection: binding(mode, \.cleanupModelID),
-                        allowNone: true)
+                        allowNone: true, mode: mode)
+                    cleanupLanguageWarning(mode)
                     HStack(spacing: 6) {
                         Text("Only ready models are listed.").font(.caption).foregroundStyle(.secondary)
                         Button("Get more in Models") { model.selectedSection = .models }
@@ -238,7 +247,8 @@ struct ModesView: View {
     /// Lists models that are ready to use, plus the current choice if it stopped being ready. Below it,
     /// what the choice still needs, from the same rules recording uses. A missing download is fixed here.
     private func modelPicker(
-        _ title: String, purpose: ModelPurpose, selection: Binding<String?>, allowNone: Bool
+        _ title: String, purpose: ModelPurpose, selection: Binding<String?>, allowNone: Bool,
+        mode: DictationMode
     ) -> some View {
         let choices = model.availableModels(for: purpose, including: selection.wrappedValue)
         let current = choices.first { $0.id == selection.wrappedValue }
@@ -249,17 +259,24 @@ struct ModesView: View {
                     Text(item.name + (item.location == .cloud ? " · API" : "")).tag(Optional(item.id))
                 }
             }
-            if let current, let blocker = model.readiness.blocker(for: current) {
+            // A language the model cannot handle is explained under the language picker instead.
+            if let current,
+                let blocker = model.readiness.blocker(for: current, language: model.language(for: mode))
+            {
                 switch blocker {
+                case .unsupportedLanguage: EmptyView()
                 case .modelNotInstalled where current.repository != nil:
                     ModelDownloadRow(
                         descriptor: current, progress: model.library.progress[current.id],
                         error: model.library.errors[current.id],
                         onDownload: { Task { await model.download(current) } },
                         onCancel: { model.library.cancelDownload(current.id) })
-                case .appleSpeechNotReady:
-                    Label("Apple Speech needs preparing in Models.", systemImage: "arrow.down.circle")
-                        .font(.caption).foregroundStyle(.secondary)
+                case .appleSpeechNotReady(let code):
+                    Label(
+                        "Apple Speech needs preparing for \(SpeechLanguage.name(of: code)) in Models.",
+                        systemImage: "arrow.down.circle"
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
                 default:
                     Label(
                         blocker.errorDescription ?? blocker.shortReason,
@@ -268,6 +285,79 @@ struct ModesView: View {
                     .font(.caption).foregroundStyle(.orange)
                 }
             }
+        }
+    }
+
+    /// "Same as Settings", detection when the speech model offers it, then the speech model's languages.
+    /// Below it, what the mode's speech model cannot do in that language, from the rules recording uses,
+    /// with the fix: another language here, or a ready speech model that handles it.
+    private func languagePicker(_ mode: DictationMode) -> some View {
+        let speech = model.library.models.first { $0.id == mode.speechModelID }
+        let readiness = model.readiness
+        let language = model.language(for: mode)
+        var codes = model.languageChoices(for: speech)
+        // The saved choice stays listed even when this model lacks it, so the picker never goes blank.
+        if let saved = mode.language?.languageCode, !codes.contains(saved) { codes.insert(saved, at: 0) }
+        let offersDetection = speech.map { readiness.canTranscribe(.automatic, with: $0) } == true
+        let unsupported = speech.map { !readiness.canTranscribe(language, with: $0) } == true
+        // A speech model that could record this mode's language right now.
+        let replacement =
+            unsupported
+            ? model.availableModels(for: .speech, including: nil).first {
+                readiness.blocker(for: $0, language: language) == nil
+            } : nil
+        return VStack(alignment: .leading, spacing: 6) {
+            Picker("Language", selection: binding(mode, \.language)) {
+                Text("Same as Settings (\(model.settings.language.name))")
+                    .tag(SpeechLanguage?.none)
+                if offersDetection || mode.language == .automatic {
+                    Text(SpeechLanguage.automatic.name).tag(Optional(SpeechLanguage.automatic))
+                }
+                Divider()
+                ForEach(codes, id: \.self) { code in
+                    Text(SpeechLanguage.name(of: code)).tag(Optional(SpeechLanguage.code(code)))
+                }
+            }
+            if let speech, unsupported {
+                let failure = RecordingFailure.unsupportedLanguage(modelName: speech.name, language: language)
+                HStack(spacing: 8) {
+                    Label(
+                        failure.errorDescription ?? failure.shortReason,
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    if let replacement {
+                        Spacer(minLength: 4)
+                        Button("Use \(replacement.name)") {
+                            var updated = model.modes.first { $0.id == mode.id } ?? mode
+                            updated.speechModelID = replacement.id
+                            model.updateMode(updated)
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            } else if speech?.family == .apple {
+                Text("Apple Speech can't detect the language, so it records in the language above.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Cleanup that is not made for the mode's language only earns a warning; recording still works.
+    @ViewBuilder private func cleanupLanguageWarning(_ mode: DictationMode) -> some View {
+        let language = model.language(for: mode)
+        // An empty list means the provider decides, so only a restricted model such as S1-mini warns.
+        if let cleanup = model.library.models.first(where: { $0.id == mode.cleanupModelID }),
+            let languages = cleanup.languages, !languages.isEmpty, !cleanup.declares(language)
+        {
+            let supported = languages.map(SpeechLanguage.name(of:))
+                .formatted(.list(type: .and))
+            Label(
+                "\(cleanup.name) is made for \(supported) only, so its cleanup may not suit "
+                    + (language == .automatic ? "other languages." : "\(language.name)."),
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -24,7 +24,16 @@ struct RecorderOutcomeTests {
                 .openSettings
             ),
             (.failed(.noMicrophone), "No microphone", .openSound),
-            (.failed(.appleSpeechNotReady), "Needs Apple Speech", .openModels),
+            (.failed(.appleSpeechNotReady(language: "fr")), "Needs Apple Speech", .openModels),
+            // The mode chose a language its speech model lacks, which only the mode editor can fix.
+            (
+                .failed(.unsupportedLanguage(modelName: "Parakeet TDT 0.6B V2", language: .code("fr"))),
+                "Parakeet TDT 0.6B V2 can't do \(SpeechLanguage.name(of: "fr"))", .openModes
+            ),
+            (
+                .failed(.unsupportedLanguage(modelName: "Cohere Transcribe", language: .automatic)),
+                "Cohere Transcribe can't detect language", .openModes
+            ),
             (.interrupted, "Recording interrupted", .showInHistory),
             (.failed(nil), "Couldn't finish", .showInHistory),
             // Mode settings the pill cannot fix point to History.
