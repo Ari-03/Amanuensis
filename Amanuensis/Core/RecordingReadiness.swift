@@ -38,6 +38,22 @@ struct RecordingReadiness: Sendable {
         if model.purpose == .speech && !canTranscribe(language, with: model) {
             return .unsupportedLanguage(modelName: model.name, language: language)
         }
+        return setupBlocker(for: model, language: language)
+    }
+
+    /// Where pickers and the Models screen file a model: by what it needs before it can run, leaving
+    /// language support aside, so a model that cannot do the language still shows where it stands.
+    func availability(of model: ModelDescriptor, language: SpeechLanguage) -> ModelAvailability {
+        switch setupBlocker(for: model, language: language) {
+        case nil: .ready
+        case .modelNotInstalled: .needsDownload
+        case let reason?: .needsSetup(reason)
+        }
+    }
+
+    /// Everything `blocker(for:language:)` checks except language support: what a download, a key,
+    /// server setup, Require local processing, Apple Speech assets or the cleanup helper would fix.
+    private func setupBlocker(for model: ModelDescriptor, language: SpeechLanguage) -> RecordingFailure? {
         if requireLocalProcessing && !model.isLocal { return .blockedByLocalOnly(modelName: model.name) }
         if !isAvailable(model) {
             guard model.location == .cloud else { return .modelNotInstalled(model.name) }
@@ -71,6 +87,15 @@ struct RecordingReadiness: Sendable {
         }
         return identifySpeakers ? .speakerIdentificationUnavailable : nil
     }
+}
+
+/// What a model needs before a mode can record with it, as pickers and the Models screen group models.
+enum ModelAvailability: Equatable, Sendable {
+    case ready
+    case needsDownload
+    /// An API key, a server, Require local processing turned off, Apple Speech assets or the helper,
+    /// with the reason recording would give.
+    case needsSetup(RecordingFailure)
 }
 
 /// The system microphone permission. Restricted means an organization or Screen Time manages it,

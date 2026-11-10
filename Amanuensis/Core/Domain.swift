@@ -570,6 +570,9 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
     /// The language resolved when recording started, so a retry transcribes the same way.
     /// Nil in rows saved before languages existed; `transcriptionLanguage` reads those as English.
     var language: SpeechLanguage? = nil
+    /// How long the speech model took to transcribe the audio, once it had loaded. Set when
+    /// transcription succeeds; nil in rows saved before it existed. `TranscriptionSpeed` reads it.
+    var transcriptionSeconds: Double? = nil
     var transcriptionLanguage: SpeechLanguage { language ?? .english }
     var preview: String {
         if !finalText.isEmpty { return finalText }
@@ -584,6 +587,7 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
         attempt.createdAt = date
         attempt.audioFileName = "\(attempt.id.uuidString).wav"
         attempt.rawText = ""
+        attempt.transcriptionSeconds = nil
         attempt.cleanedText = nil
         attempt.cleanupSkipped = nil
         attempt.finalText = ""

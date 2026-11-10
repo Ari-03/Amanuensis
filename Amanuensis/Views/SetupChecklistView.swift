@@ -114,7 +114,9 @@ struct SetupChecklistView: View {
         } else {
             let progress = model.library.progress[recommended.id]
             ModelDownloadRow(
-                descriptor: recommended, progress: progress, error: model.library.errors[recommended.id],
+                descriptor: recommended, progress: progress,
+                resumable: model.library.resumable(recommended.id),
+                error: model.library.errors[recommended.id],
                 downloadTitle: "Download and use",
                 // A download started elsewhere, such as in Models, does not switch modes when it ends.
                 note: progress == nil || model.isDownloadingRecommendedSpeech
@@ -128,7 +130,7 @@ struct SetupChecklistView: View {
     private func downloadRow(_ descriptor: ModelDescriptor) -> some View {
         ModelDownloadRow(
             descriptor: descriptor, progress: model.library.progress[descriptor.id],
-            error: model.library.errors[descriptor.id],
+            resumable: model.library.resumable(descriptor.id), error: model.library.errors[descriptor.id],
             onDownload: { Task { await model.download(descriptor) } },
             onCancel: { model.library.cancelDownload(descriptor.id) })
     }

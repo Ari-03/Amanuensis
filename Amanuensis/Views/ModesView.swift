@@ -64,7 +64,18 @@ struct ModesView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { if selectedID == nil { selectedID = model.currentMode.id } }
+        .onAppear {
+            // During a Try it run the current mode is a one-off that is not in the list; select the
+            // user's mode instead.
+            if selectedID == nil {
+                let current = model.currentMode.id
+                selectedID =
+                    model.modes.contains { $0.id == current }
+                    ? current
+                    : model.modes.first { $0.id == model.settings.selectedModeID }?.id
+                        ?? model.modes.first?.id
+            }
+        }
         // The recorder's Open Modes and the setup checklist ask for a specific mode.
         .onChange(of: model.modeToEdit, initial: true) { _, id in
             guard let id else { return }
@@ -133,11 +144,6 @@ struct ModesView: View {
                         "Cleanup model", purpose: .cleanup, selection: binding(mode, \.cleanupModelID),
                         allowNone: true, mode: mode)
                     cleanupLanguageWarning(mode)
-                    HStack(spacing: 6) {
-                        Text("Only ready models are listed.").font(.caption).foregroundStyle(.secondary)
-                        Button("Get more in Models") { model.selectedSection = .models }
-                            .buttonStyle(.link).font(.caption)
-                    }
                     if mode.preset == .custom {
                         if ModelCatalog.models.first(where: { $0.id == mode.cleanupModelID })?.engine
                             == .s1mini
@@ -244,19 +250,42 @@ struct ModesView: View {
         }.frame(minWidth: 380)
     }
 
-    /// Lists models that are ready to use, plus the current choice if it stopped being ready. Below it,
-    /// what the choice still needs, from the same rules recording uses. A missing download is fixed here.
+    /// Lists every catalog model for the purpose in three sections: ready to use, needs a download (with
+    /// its size), and needs an API key or other setup. A speech model that cannot transcribe the mode's
+    /// language is still listed, marked with the reason. Below it, what the choice still needs, from the
+    /// same rules recording uses: a missing download is fixed here, and the rest point to Models.
     private func modelPicker(
         _ title: String, purpose: ModelPurpose, selection: Binding<String?>, allowNone: Bool,
         mode: DictationMode
     ) -> some View {
-        let choices = model.availableModels(for: purpose, including: selection.wrappedValue)
+        let readiness = model.readiness
+        let language = model.language(for: mode)
+        let choices = model.catalogModels(for: purpose)
         let current = choices.first { $0.id == selection.wrappedValue }
+        let filed = choices.map {
+            (model: $0, availability: readiness.availability(of: $0, language: language))
+        }
+        @ViewBuilder func section(_ title: String, _ belongs: (ModelAvailability) -> Bool) -> some View {
+            let items = filed.filter { belongs($0.availability) }
+            if !items.isEmpty {
+                Section(title) {
+                    ForEach(items, id: \.model.id) { item in
+                        Text(
+                            choiceLabel(
+                                item.model, item.availability, readiness: readiness, language: language)
+                        )
+                        .tag(Optional(item.model.id))
+                    }
+                }
+            }
+        }
         return VStack(alignment: .leading, spacing: 6) {
             Picker(title, selection: selection) {
                 if allowNone { Text("None · Keep the transcript").tag(String?.none) }
-                ForEach(choices) { item in
-                    Text(item.name + (item.location == .cloud ? " · API" : "")).tag(Optional(item.id))
+                section("Ready to use") { $0 == .ready }
+                section("Needs download") { $0 == .needsDownload }
+                section("Needs an API key or setup") {
+                    if case .needsSetup = $0 { true } else { false }
                 }
                 // A model the catalog no longer has, such as the retired Ollama row, keeps a visible choice.
                 if let id = selection.wrappedValue, current == nil {
@@ -272,14 +301,13 @@ struct ModesView: View {
                 .font(.caption).foregroundStyle(.orange)
             }
             // A language the model cannot handle is explained under the language picker instead.
-            if let current,
-                let blocker = model.readiness.blocker(for: current, language: model.language(for: mode))
-            {
+            if let current, let blocker = readiness.blocker(for: current, language: language) {
                 switch blocker {
                 case .unsupportedLanguage: EmptyView()
                 case .modelNotInstalled where current.repository != nil:
                     ModelDownloadRow(
                         descriptor: current, progress: model.library.progress[current.id],
+                        resumable: model.library.resumable(current.id),
                         error: model.library.errors[current.id],
                         onDownload: { Task { await model.download(current) } },
                         onCancel: { model.library.cancelDownload(current.id) })
@@ -289,6 +317,16 @@ struct ModesView: View {
                         systemImage: "arrow.down.circle"
                     )
                     .font(.caption).foregroundStyle(.secondary)
+                case .apiKeyMissing, .providerNotSetUp:
+                    HStack(spacing: 8) {
+                        Label(
+                            blocker.errorDescription ?? blocker.shortReason,
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 4)
+                        Button("Open Models") { model.selectedSection = .models }.controlSize(.small)
+                    }
                 default:
                     Label(
                         blocker.errorDescription ?? blocker.shortReason,
@@ -298,6 +336,24 @@ struct ModesView: View {
                 }
             }
         }
+    }
+
+    /// "Whisper tiny · 155 MB", "OpenAI Transcription · Needs OpenAI key", or a ready model's name, with
+    /// "can't do French" when the speech model does not handle the mode's language.
+    private func choiceLabel(
+        _ item: ModelDescriptor, _ availability: ModelAvailability, readiness: RecordingReadiness,
+        language: SpeechLanguage
+    ) -> String {
+        var parts = [item.name]
+        let unfit = item.purpose == .speech && !readiness.canTranscribe(language, with: item)
+        switch availability {
+        case .ready: if item.location == .cloud { parts.append("API") }
+        case .needsDownload: if let size = item.sizeLabel, !size.isEmpty { parts.append(size) }
+        // A language the model cannot handle is the reason that matters; it is added below.
+        case .needsSetup(let reason): if !unfit { parts.append(reason.shortReason) }
+        }
+        if unfit { parts.append(language.unsupportedLabel) }
+        return parts.joined(separator: " · ")
     }
 
     /// "Same as Settings", detection when the speech model offers it, then the speech model's languages.
@@ -315,7 +371,7 @@ struct ModesView: View {
         // A speech model that could record this mode's language right now.
         let replacement =
             unsupported
-            ? model.availableModels(for: .speech, including: nil).first {
+            ? model.catalogModels(for: .speech).first {
                 readiness.blocker(for: $0, language: language) == nil
             } : nil
         return VStack(alignment: .leading, spacing: 6) {
@@ -340,12 +396,8 @@ struct ModesView: View {
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                     if let replacement {
                         Spacer(minLength: 4)
-                        Button("Use \(replacement.name)") {
-                            var updated = model.modes.first { $0.id == mode.id } ?? mode
-                            updated.speechModelID = replacement.id
-                            model.updateMode(updated)
-                        }
-                        .controlSize(.small)
+                        Button("Use \(replacement.name)") { model.use(replacement, in: mode.id) }
+                            .controlSize(.small)
                     }
                 }
             } else if speech?.engine == .apple {

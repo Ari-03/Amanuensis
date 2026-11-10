@@ -31,6 +31,13 @@ struct ModelCatalogTests {
         for old in DictationMode.legacyModelIDs.keys { #expect(!ids.contains(old)) }
     }
 
+    /// The Models screen shows the summary to tell rows apart, so no two rows may share one.
+    @Test func everyRowHasItsOwnSummary() {
+        let summaries = models.map(\.summary)
+        #expect(Set(summaries).count == summaries.count)
+        #expect(!summaries.contains(""))
+    }
+
     @Test func downloadsArePinnedAndSized() {
         // Every model that runs on this Mac from managed files is downloaded.
         let downloadable = models.filter { $0.location == .local }

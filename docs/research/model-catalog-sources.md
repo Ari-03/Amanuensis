@@ -45,6 +45,16 @@ Codes are BCP-47 language subtags.
 - **Apple Speech.** No list in the catalog. The app asks `SpeechTranscriber.supportedLocales` at run time. Assets belong to the app that reserved them: `AssetInventory.maximumReservedLocales` is 5 on the development Mac, and a sixth `assetInstallationRequest` failed with `SFSpeechErrorDomain` code 11, "Too many allocated locales, 5 maximum", until a locale was released with `AssetInventory.release(reservedLocale:)`. On the development Mac (macOS 27.0) that returned 45 locales covering 24 language codes, plus `mul_IN`, which the app leaves out.
 - **API rows.** No list. The provider decides. OpenAI's [speech-to-text guide](https://developers.openai.com/api/docs/guides/speech-to-text) says `gpt-transcribe` takes `languages[]` and older models take `language`. [Groq's API reference](https://console.groq.com/docs/speech-to-text) takes an ISO-639-1 `language`. Both detect the language when none is sent.
 
+## Summaries
+
+Each row's `summary` states what the model is, who made it, and whether it is English-only or multilingual, from the publisher's card at the pinned revision, checked November 10, 2026. Nothing in a summary describes accuracy or speed; the Models screen shows only speed measured on this Mac.
+
+- **Whisper.** Parameter counts (tiny 39M, base 74M, small 244M, medium 769M, large, large-v2 and large-v3 1550M, large-v3-turbo 809M) and the English-only `.en` checkpoints come from the checkpoint table in each OpenAI card. The large-v2 card says it was "trained for 2.5x more epochs" than large; the large-v3 card says 1 million hours of weakly labeled and 4 million hours of pseudo-labeled audio; the large-v3-turbo card says decoding layers were "reduced from 32 to 4". Cantonese in large-v3 is the `yue` token listed above.
+- **Parakeet.** NVIDIA's cards: "600-million-parameter", English with punctuation and capitalization for V2, and V3 "expanding language support from English to 25 European languages".
+- **Moonshine.** The cards' table: tiny 27M and base 61M, English-only.
+- **Qwen3-ASR.** The conversion's card names the base model `Qwen/Qwen3-ASR-0.6B`. "0.6B" is the model's name, not a parameter count: the hub's safetensors metadata for that repository (at `5eb144179a02acc5e5ba31e748d22b0cf3e303b0`) reports 938,008,576 parameters. So the summary names the model and states no count.
+- **Nemotron.** The conversion's card names the base model `nvidia/nemotron-3.5-asr-streaming-0.6b` and calls it "NVIDIA's 600M-parameter cache-aware streaming" model.
+
 ## Detection
 
 `detectsLanguage` is true only for Parakeet V3, Qwen3-ASR, Nemotron 3.5 ASR and the API transcription rows. The OpenAI-compatible row leaves detection to the server, like the other API rows.

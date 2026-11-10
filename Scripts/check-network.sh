@@ -13,3 +13,9 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -sdk "$(xcrun --sdk macosx --s
     "$repo_root/Tests/Network/CloudProviderChecks.swift" \
     -o "$check_directory/cloud-provider-checks"
 "$check_directory/cloud-provider-checks"
+
+xcrun swiftc -swift-version 6 -warnings-as-errors -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+    "$repo_root/Amanuensis/Models/FileDownload.swift" \
+    "$repo_root/Tests/Network/FileDownloadChecks.swift" \
+    -o "$check_directory/file-download-checks"
+"$check_directory/file-download-checks"

@@ -13,6 +13,8 @@ final class AppModel {
     var vocabulary: [VocabularyEntry] = []
     var microphones: [MicrophonePreference] = []
     var history: [RecordingEntry] = []
+    /// History's transcription times by speech model, rebuilt with History so views never walk it.
+    private(set) var speedSamples: [String: [TranscriptionSpeed.Sample]] = [:]
     var statistics = UsageStatistics()
     var phase: DictationPhase = .idle {
         didSet {
@@ -38,6 +40,9 @@ final class AppModel {
     var selectedRecordingID: UUID?
     /// The mode for the Modes screen to select, so the recorder can open the mode that failed.
     var modeToEdit: UUID?
+    /// The Models screen's latest Try it run. Its result is the History entry, so a canceled or deleted
+    /// run shows nothing.
+    private(set) var trial: ModelTrial?
     private(set) var accessibilityGranted = TextDelivery.isAccessibilityTrusted
     private(set) var microphoneAccess = AudioCapture.access
     /// True while the setup checklist's own download runs, which moves Apple Speech modes when it ends.
@@ -158,6 +163,7 @@ final class AppModel {
             vocabulary = saved.vocabulary
             microphones = saved.microphones
             history = opened.loadRecordings()
+            speedSamples = TranscriptionSpeed.samples(in: history)
             statistics = opened.statistics()
         }
         // refreshMicrophones() below saves the configuration, including these.
@@ -375,6 +381,8 @@ final class AppModel {
         }
     }
 
+    /// Loads the speech model in the background; `process` waits for it before timing transcription.
+    /// A retry calls it too, so its measured time also leaves out loading.
     private func prepareSpeechWhileRecording(_ entry: RecordingEntry) {
         guard let speech = entry.speechSnapshot else { return }
         let engine = speechEngine(for: speech)
@@ -416,6 +424,7 @@ final class AppModel {
         await stopSpeechPreparation()
         await unloadModels()
         try library.remove(descriptor)
+        if trial?.modelID == descriptor.id { trial = nil }
     }
 
     private func process(_ original: RecordingEntry, audioURL: URL, shouldDeliver: Bool) async throws {
@@ -429,11 +438,15 @@ final class AppModel {
         }
         statusMessage = "Transcribing with \(speech.name)…"
         phase = .transcribing
+        // Timed after preparation, so the Models screen's speed leaves out loading the model.
+        let started = ContinuousClock.now
         let raw = try await speechEngine(for: speech).transcribe(
             audioURL: audioURL, model: speech, language: entry.transcriptionLanguage,
             vocabulary: entry.vocabularySnapshot ?? [])
+        let elapsed = ContinuousClock.now - started
         try ensureActive(id)
         entry.rawText = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        entry.transcriptionSeconds = elapsed / .seconds(1)
         activeEntry = entry
         try store?.upsertRecording(entry)
         refreshHistory()
@@ -772,6 +785,7 @@ final class AppModel {
                 try ensureActive(id)
                 library.inUseModelIDs = Set(
                     [entry.mode.speechModelID, entry.mode.cleanupModelID].compactMap { $0 })
+                prepareSpeechWhileRecording(entry)
                 try await process(entry, audioURL: attemptURL, shouldDeliver: false)
             } catch {
                 guard activeID == id else {
@@ -861,16 +875,55 @@ final class AppModel {
         return mode.id
     }
 
-    /// Models a mode can pick right now: installed local models, Apple Speech, and API models with a key.
-    /// The mode's current choice is included even when it is not ready so the picker never goes blank.
-    func availableModels(for purpose: ModelPurpose, including currentID: String?) -> [ModelDescriptor] {
-        let readiness = readiness
-        // Resolved first: an API row's model ID, which availability needs, may come from settings.
-        return library.models.map { $0.applying(settings.apiModelOverrides) }.filter { descriptor in
-            guard descriptor.purpose == purpose else { return false }
-            return descriptor.id == currentID || readiness.isAvailable(descriptor)
+    /// Every catalog model for a purpose, as modes run it: an API row's model ID, which readiness
+    /// needs, may come from settings.
+    func catalogModels(for purpose: ModelPurpose) -> [ModelDescriptor] {
+        library.models.filter { $0.purpose == purpose }.map { $0.applying(settings.apiModelOverrides) }
+    }
+
+    /// The one way to assign a model to a mode, as its speech or cleanup model by the model's purpose.
+    func use(_ descriptor: ModelDescriptor, in modeID: UUID) {
+        guard var mode = modes.first(where: { $0.id == modeID }) else { return }
+        switch descriptor.purpose {
+        case .speech: mode.speechModelID = descriptor.id
+        case .cleanup: mode.cleanupModelID = descriptor.id
+        }
+        updateMode(mode)
+    }
+
+    /// Seconds this model took for 30 s of audio on this Mac, from History, or nil until measured.
+    /// A downloaded model counts only recordings made since its current files were installed, and an
+    /// API row only those made with its current model ID.
+    func secondsPer30(_ descriptor: ModelDescriptor) -> Double? {
+        var installedAt: Date?
+        if descriptor.location == .local {
+            guard let installation = library.installations[descriptor.id] else { return nil }
+            installedAt = installation.installedAt
+        }
+        return TranscriptionSpeed.secondsPer30(
+            speedSamples[descriptor.id] ?? [], installedAt: installedAt, apiModelID: descriptor.apiModelID)
+    }
+
+    /// Try it on the Models screen: records with this speech model alone, with no cleanup or paste, in
+    /// the Settings language. It is an ordinary recording with a one-off mode, so every guard, the
+    /// recorder pill and History apply to it.
+    func tryModel(_ speech: ModelDescriptor) {
+        guard speech.purpose == .speech else { return }
+        // Named after the model alone: the pill shortens names past 16 characters.
+        var mode = DictationMode(name: speech.name, preset: .dictation)
+        mode.speechModelID = speech.id
+        mode.autoPaste = false
+        beginRecording(mode: mode)
+        // A refused start leaves the previous run's result in place.
+        if let entry = activeEntry, entry.mode.id == mode.id {
+            trial = ModelTrial(modelID: speech.id, recordingID: entry.id)
         }
     }
+
+    /// Whether the Try it run is the job in progress.
+    var isTrialRunning: Bool { phase.isBusy && trial != nil && trial?.recordingID == activeEntry?.id }
+
+    func dismissTrial() { trial = nil }
 
     func updateMode(_ mode: DictationMode) {
         guard let index = modes.firstIndex(where: { $0.id == mode.id }) else { return }
@@ -1300,6 +1353,7 @@ final class AppModel {
 
     private func refreshHistory() {
         history = store?.loadRecordings() ?? []
+        speedSamples = TranscriptionSpeed.samples(in: history)
         statistics = store?.statistics() ?? UsageStatistics()
     }
     private func enforceRetention() {
@@ -1320,6 +1374,12 @@ final class AppModel {
             phase = .failed
         }
     }
+}
+
+/// A Try it run: the speech model, and the History entry that holds its result.
+struct ModelTrial: Equatable {
+    let modelID: String
+    let recordingID: UUID
 }
 
 private struct AppFailure: LocalizedError {
