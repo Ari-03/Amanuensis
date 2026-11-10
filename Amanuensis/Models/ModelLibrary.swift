@@ -8,6 +8,9 @@ final class ModelLibrary {
     private(set) var installations: [String: ModelInstallation]
     private(set) var progress: [String: DownloadProgress] = [:]
     private(set) var errors: [String: String] = [:]
+    /// Models whose folders passed a quick check, so views can ask without reading the disk on every
+    /// render. Install and remove keep it current; recording validation calls `refreshInstalledModels()`.
+    private(set) var installedModelIDs: Set<String> = []
     var inUseModelIDs: Set<String> = []
 
     @ObservationIgnored private let rootURL: URL
@@ -19,6 +22,34 @@ final class ModelLibrary {
         self.rootURL = rootURL.standardizedFileURL
         self.onChange = onChange
         self.installations = installations.reduce(into: [:]) { $0[$1.id] = $1 }
+        discardAbandonedStaging()
+        refreshInstalledModels()
+    }
+
+    /// Rechecks every installed folder. Catches files removed or damaged outside the app.
+    func refreshInstalledModels() {
+        let valid = Set(installations.keys.filter { localURL(for: $0) != nil })
+        if valid != installedModelIDs { installedModelIDs = valid }
+    }
+
+    /// Runs only when the single app instance opens its library. A quit or crash during a download or
+    /// import leaves its `.staging-<UUID>` folder behind. Other entries are never touched.
+    private func discardAbandonedStaging() {
+        let manager = FileManager.default
+        for name in (try? manager.contentsOfDirectory(atPath: rootURL.path)) ?? [] {
+            guard name.hasPrefix(".staging-") else { continue }
+            let suffix = String(name.dropFirst(".staging-".count))
+            guard let id = UUID(uuidString: suffix),
+                id.uuidString.caseInsensitiveCompare(suffix) == .orderedSame
+            else { continue }
+            let url = rootURL.appendingPathComponent(name)
+            // Inspect the directory entry itself, so a matching symlink cannot authorize deleting its target.
+            guard
+                (try? manager.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
+                    == .typeDirectory
+            else { continue }
+            try? manager.removeItem(at: url)
+        }
     }
 
     /// Download only after an explicit user action. A model becomes installed after validation and rename.
@@ -30,7 +61,7 @@ final class ModelLibrary {
         }
         let stage = rootURL.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         errors[model.id] = nil
-        progress[model.id] = DownloadProgress(fraction: 0, label: "Checking download")
+        progress[model.id] = DownloadProgress(stage: .checking)
         let operation = Task { [self] in
             defer { try? FileManager.default.removeItem(at: stage) }
             let metadataURL = URL(
@@ -43,7 +74,8 @@ final class ModelLibrary {
             }
             let files = try ModelFiles.selectedFiles(metadata.siblings, model: model)
             try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
-            let total = max(files.reduce(Int64(0)) { $0 + ($1.size ?? 0) }, 1)
+            let total = files.reduce(Int64(0)) { $0 + ($1.size ?? 0) }
+            progress[model.id] = DownloadProgress(stage: .downloading, totalBytes: total)
             var completed: Int64 = 0
             for file in files {
                 try Task.checkCancellation()
@@ -53,9 +85,8 @@ final class ModelLibrary {
                     Task { @MainActor in
                         guard let self, self.progress[model.id] != nil else { return }
                         self.progress[model.id] = DownloadProgress(
-                            fraction: min(0.98, Double(completedBeforeFile + bytes) / Double(total)),
-                            label: "Downloading \(file.rfilename)"
-                        )
+                            stage: .downloading, completedBytes: completedBeforeFile + bytes,
+                            totalBytes: total)
                     }
                 }
                 let url = URL(
@@ -71,7 +102,8 @@ final class ModelLibrary {
                 try FileManager.default.moveItem(at: temporary, to: destination)
                 completed += file.size ?? 0
             }
-            progress[model.id] = DownloadProgress(fraction: 0.99, label: "Validating model")
+            progress[model.id] = DownloadProgress(
+                stage: .validating, completedBytes: total, totalBytes: total)
             try await ModelFiles.runOffMain { try ModelFiles.validateDirectory(stage, model: model) }
             try ModelFiles.writeProvenance(model, directory: stage, imported: false)
             try Task.checkCancellation()
@@ -88,7 +120,7 @@ final class ModelLibrary {
         }
         let stage = rootURL.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         errors[model.id] = nil
-        progress[model.id] = DownloadProgress(fraction: 0, label: "Importing model")
+        progress[model.id] = DownloadProgress(stage: .importing)
         let operation = Task { [self] in
             defer { try? FileManager.default.removeItem(at: stage) }
             let access = source.startAccessingSecurityScopedResource()
@@ -116,6 +148,7 @@ final class ModelLibrary {
             }
         }
         installations[model.id] = nil
+        installedModelIDs.remove(model.id)
         errors[model.id] = nil
         onChange(Array(installations.values))
     }
@@ -131,7 +164,15 @@ final class ModelLibrary {
 
     func cancelDownload(_ id: String) { operations[id]?.cancel() }
 
+    /// A refused start is recorded like a failed download, so every download row can show it.
     private func requireAvailable(_ model: ModelDescriptor) throws {
+        do { try checkAvailable(model) } catch {
+            if operations[model.id] == nil { errors[model.id] = error.localizedDescription }
+            throw error
+        }
+    }
+
+    private func checkAvailable(_ model: ModelDescriptor) throws {
         guard operations[model.id] == nil else {
             throw ModelLibraryError.invalid("This model already has an operation running.")
         }
@@ -175,6 +216,7 @@ final class ModelLibrary {
         installations[model.id] = ModelInstallation(
             id: model.id, directory: destination.lastPathComponent, byteCount: byteCount, revision: revision
         )
+        installedModelIDs.insert(model.id)
         onChange(Array(installations.values))
     }
 
@@ -209,16 +251,17 @@ private struct HubFile: Decodable, Sendable {
     let lfs: LFS?
 }
 
-private final class ModelDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+/// Reports one file's received bytes. The async `download(from:delegate:)` never calls
+/// `didWriteData`, so this observes the task it creates instead.
+private final class ModelDownloadDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     let update: @Sendable (Int64) -> Void
+    private var observation: NSKeyValueObservation?
     init(update: @escaping @Sendable (Int64) -> Void) { self.update = update }
-    func urlSession(
-        _ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL
-    ) {}
-    func urlSession(
-        _ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64
-    ) { update(totalBytesWritten) }
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+        observation = task.observe(\.countOfBytesReceived) { [update] task, _ in
+            update(task.countOfBytesReceived)
+        }
+    }
 }
 
 private enum ModelFiles {

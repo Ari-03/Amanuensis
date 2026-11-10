@@ -38,6 +38,9 @@ final class AppModel {
     /// The History entry to select, so the recorder can open a specific recording.
     var selectedRecordingID: UUID?
     private(set) var accessibilityGranted = TextDelivery.isAccessibilityTrusted
+    private(set) var microphoneAccess = AudioCapture.access
+    /// True while the setup checklist's own download runs, which moves Apple Speech modes when it ends.
+    private(set) var isDownloadingRecommendedSpeech = false
     var isMovingRecorder = false
     var isEditingShortcut = false
     private var cancellationConfirmation = CancellationConfirmation() {
@@ -60,6 +63,8 @@ final class AppModel {
     @ObservationIgnored private let recorder = RecorderPanelController()
     @ObservationIgnored private let playback = PlaybackController()
     @ObservationIgnored private var cloud: CloudProviders!
+    /// The bundled S1-mini helper, checked once for views. Recording validation checks it again.
+    @ObservationIgnored private let cleanupHelperAvailable = S1MiniRunner.isAvailable
     @ObservationIgnored private var work: Task<Void, Never>?
     @ObservationIgnored private var speechPreparation: Task<Void, Never>?
     @ObservationIgnored private var modelReleaseCount = 0
@@ -154,6 +159,10 @@ final class AppModel {
             history = opened.loadRecordings()
             statistics = opened.statistics()
         }
+        // refreshMicrophones() below saves the configuration, including this.
+        if !settings.hasCompletedSetup && SetupChecklist.isImplied(by: statistics, history: history) {
+            settings.hasCompletedSetup = true
+        }
         cloud = CloudProviders(allowCloud: { [weak self] in self?.settings.requireLocalProcessing == false })
         audio.onInterruption = { [weak self] reason in self?.recordingInterrupted(reason) }
         meetingAudio.onInterruption = { [weak self] reason in self?.recordingInterrupted(reason) }
@@ -242,6 +251,8 @@ final class AppModel {
                 refreshHistory()
                 try playback.begin(chosen.playback)
                 let url = store.recordingsURL.appendingPathComponent(entry.audioFileName!)
+                // Starting may show the system microphone prompt.
+                defer { microphoneAccess = AudioCapture.access }
                 if chosen.recordSystemAudio {
                     try await meetingAudio.start(preferences: microphones, outputURL: url)
                 } else {
@@ -517,34 +528,61 @@ final class AppModel {
         cloud.cancel()
     }
 
+    /// Uses the same rules as the mode markers, after rechecking what they cache: model folders on disk,
+    /// Apple Speech assets, and the Keychain for the API models this recording uses. A Keychain error
+    /// is thrown as itself rather than reported as a missing key.
     private func validate(_ entry: RecordingEntry) async throws {
-        guard let speech = entry.speechSnapshot else {
-            throw AppFailure("The selected speech model is missing.")
-        }
-        for model in [speech, entry.cleanupSnapshot].compactMap({ $0 }) {
-            if settings.requireLocalProcessing && !model.isLocal {
-                throw RecordingFailure.blockedByLocalOnly(modelName: model.name)
+        if entry.speechSnapshot?.family == .apple { try await appleSpeech.checkReadiness() }
+        library.refreshInstalledModels()
+        var facts = readiness
+        facts.cleanupHelperAvailable = S1MiniRunner.isAvailable
+        if !settings.requireLocalProcessing {
+            for model in [entry.speechSnapshot, entry.cleanupSnapshot].compactMap({ $0 })
+            where model.location == .cloud {
+                if try CredentialStore.get(for: model.family) == nil {
+                    facts.connectedProviders.remove(model.family)
+                } else {
+                    facts.connectedProviders.insert(model.family)
+                }
             }
-            if model.location == .local && library.localURL(for: model.id) == nil {
-                throw RecordingFailure.modelNotInstalled(model.name)
-            }
-            if model.location == .cloud, try CredentialStore.get(for: model.family) == nil {
-                throw RecordingFailure.apiKeyMissing(provider: model.provider)
-            }
         }
-        if speech.family == .apple, try await !appleSpeech.checkReadiness() {
-            throw RecordingFailure.appleSpeechNotReady
+        if let failure = facts.blocker(
+            speech: entry.speechSnapshot, cleanup: entry.cleanupSnapshot,
+            identifySpeakers: entry.mode.identifySpeakers)
+        {
+            throw failure
         }
-        if entry.cleanupSnapshot?.family == .s1mini && !S1MiniRunner.isAvailable {
-            throw AppFailure("S1-mini's helper is missing. Rebuild with Scripts/build.sh.")
+    }
+
+    /// What decides whether a mode can record, from state kept in memory, so views can read it freely.
+    var readiness: RecordingReadiness {
+        RecordingReadiness(
+            requireLocalProcessing: settings.requireLocalProcessing,
+            installedModelIDs: library.installedModelIDs, connectedProviders: connectedProviders,
+            appleSpeechReady: appleSpeech.isPrepared, cleanupHelperAvailable: cleanupHelperAvailable)
+    }
+
+    /// Why each mode cannot record yet. Modes that can record are absent. Views read it once per render.
+    var modeBlockers: [UUID: RecordingFailure] {
+        let readiness = readiness
+        return modes.reduce(into: [:]) { blockers, mode in
+            blockers[mode.id] = readiness.blocker(
+                speech: effectiveModel(mode.speechModelID),
+                cleanup: mode.cleanupModelID.flatMap(effectiveModel),
+                identifySpeakers: mode.identifySpeakers)
         }
-        if entry.cleanupSnapshot?.family == .ollama {
-            throw AppFailure("Ollama is not connected in this build. Choose S1-mini for local cleanup.")
-        }
-        if entry.mode.identifySpeakers {
-            throw AppFailure(
-                "Speaker identification is not yet available. Turn it off to transcribe this recording.")
-        }
+    }
+
+    /// The current mode's speech model, or nil if the catalog no longer has it.
+    var currentSpeechModel: ModelDescriptor? { effectiveModel(currentMode.speechModelID) }
+
+    var setupChecklist: SetupChecklist {
+        SetupChecklist(
+            microphone: microphoneAccess,
+            speechBlocker: readiness.blocker(
+                speech: currentSpeechModel, cleanup: nil, identifySpeakers: false),
+            accessibilityGranted: accessibilityGranted,
+            textInsertionSkipped: settings.skippedTextInsertionSetup == true)
     }
 
     private func complete(_ entry: RecordingEntry, message: String, outcome: RecorderOutcome.Cause) throws {
@@ -692,6 +730,45 @@ final class AppModel {
         await task.value
     }
 
+    func requestMicrophoneAccess() async {
+        _ = await AudioCapture.requestAccess()
+        microphoneAccess = AudioCapture.access
+    }
+
+    func openMicrophoneSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Starts a catalog download from a setup or mode row. Progress and errors stay on `library`,
+    /// so every row showing this model shows the same download.
+    @discardableResult func download(_ descriptor: ModelDescriptor) async -> Bool {
+        do {
+            try await library.install(descriptor)
+            return true
+        } catch { return false }
+    }
+
+    /// The setup checklist's local route: download the recommended model if needed, then move every
+    /// mode still on Apple Speech to it. Cancel or failure leaves the modes alone.
+    func downloadAndUseRecommendedSpeech() async {
+        let recommended = ModelCatalog.recommendedSpeech
+        // Recheck the disk first, so modes never move to a model whose files were removed outside the app.
+        library.refreshInstalledModels()
+        if !library.installedModelIDs.contains(recommended.id) {
+            guard !isDownloadingRecommendedSpeech else { return }
+            isDownloadingRecommendedSpeech = true
+            defer { isDownloadingRecommendedSpeech = false }
+            guard await download(recommended) else { return }
+        }
+        for index in modes.indices where modes[index].speechModelID == "apple-speech" {
+            modes[index].speechModelID = recommended.id
+        }
+        saveConfiguration()
+    }
+
     func prepareAppleSpeech() async {
         do {
             statusMessage = "Preparing Apple's English speech model…"
@@ -719,17 +796,10 @@ final class AppModel {
     /// Models a mode can pick right now: installed local models, Apple Speech, and API models with a key.
     /// The mode's current choice is included even when it is not ready so the picker never goes blank.
     func availableModels(for purpose: ModelPurpose, including currentID: String?) -> [ModelDescriptor] {
-        library.models.filter { descriptor in
+        let readiness = readiness
+        return library.models.filter { descriptor in
             guard descriptor.purpose == purpose, descriptor.family != .ollama else { return false }
-            return descriptor.id == currentID || isReady(descriptor)
-        }
-    }
-
-    func isReady(_ descriptor: ModelDescriptor) -> Bool {
-        switch descriptor.location {
-        case .system: true
-        case .cloud: connectedProviders.contains(descriptor.family)
-        case .local: library.localURL(for: descriptor.id) != nil
+            return descriptor.id == currentID || readiness.isAvailable(descriptor)
         }
     }
 
@@ -819,6 +889,13 @@ final class AppModel {
             refreshHistory()
         } catch { report(error) }
     }
+    /// Picks up permission and Apple Speech changes made in System Settings while the app was inactive.
+    func refreshPermissions() {
+        refreshAccessibility()
+        microphoneAccess = AudioCapture.access
+        Task { _ = try? await appleSpeech.checkReadiness() }
+    }
+
     func refreshAccessibility() {
         accessibilityGranted = TextDelivery.isAccessibilityTrusted
         if accessibilityGranted && recorderOutcome?.action == .allowPaste { recorderOutcome = nil }

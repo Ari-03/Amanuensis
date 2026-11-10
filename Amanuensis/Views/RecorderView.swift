@@ -341,7 +341,7 @@ struct RecorderView: View {
             .accessibilityLabel("Change mode, current mode: \(model.currentMode.name)")
             .help("Change mode")
             .popover(isPresented: $showingModes, arrowEdge: popoverEdge) {
-                modeMenu
+                RecorderModeMenu(model: model) { showingModes = false }
             }
 
             Button(action: model.toggleRecording) {
@@ -395,34 +395,6 @@ struct RecorderView: View {
 
     private var popoverEdge: Edge {
         style == .notch || (model.settings.recorderPlacement ?? .bottom).y > 0.5 ? .bottom : .top
-    }
-
-    private var modeMenu: some View {
-        VStack(spacing: 4) {
-            ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(model.modes) { mode in
-                        RecorderModeRow(
-                            title: mode.name, symbol: mode.symbol,
-                            selected: model.currentMode.id == mode.id
-                        ) {
-                            model.selectMode(mode.id)
-                            showingModes = false
-                        }
-                    }
-                }
-            }
-            .frame(height: min(CGFloat(model.modes.count) * 36, 288))
-            Divider().padding(.vertical, 3)
-            RecorderModeRow(
-                title: "Automatic app modes", symbol: "arrow.triangle.branch",
-                selected: model.settings.automaticModeSelection
-            ) {
-                model.settings.automaticModeSelection.toggle()
-                showingModes = false
-            }
-        }
-        .padding(6).frame(width: 240)
     }
 
     private func scheduleCollapse() {
@@ -512,9 +484,45 @@ private struct RecorderChipButton: View {
     }
 }
 
+/// The recorder's mode popover. A mode that cannot record yet stays selectable and names what it needs.
+struct RecorderModeMenu: View {
+    @Bindable var model: AppModel
+    let dismiss: () -> Void
+
+    var body: some View {
+        let blockers = model.modeBlockers
+        VStack(spacing: 4) {
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(model.modes) { mode in
+                        RecorderModeRow(
+                            title: mode.name, symbol: mode.symbol, reason: blockers[mode.id]?.shortReason,
+                            selected: model.currentMode.id == mode.id
+                        ) {
+                            model.selectMode(mode.id)
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .frame(height: min(CGFloat(model.modes.count) * 36, 288))
+            Divider().padding(.vertical, 3)
+            RecorderModeRow(
+                title: "Automatic app modes", symbol: "arrow.triangle.branch",
+                selected: model.settings.automaticModeSelection
+            ) {
+                model.settings.automaticModeSelection.toggle()
+                dismiss()
+            }
+        }
+        .padding(6).frame(width: 240)
+    }
+}
+
 private struct RecorderModeRow: View {
     let title: String
     let symbol: String
+    var reason: String? = nil
     let selected: Bool
     let action: () -> Void
     @State private var hovering = false
@@ -523,7 +531,13 @@ private struct RecorderModeRow: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 20)
-                Text(title).lineLimit(1)
+                // Both lines fit the row's fixed height, so rows with and without a reason line up.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).lineLimit(1)
+                    if let reason {
+                        Text(reason).font(.system(size: 11)).foregroundStyle(.orange).lineLimit(1)
+                    }
+                }
                 Spacer(minLength: 8)
                 if selected { Image(systemName: "checkmark").fontWeight(.semibold) }
             }
@@ -537,6 +551,7 @@ private struct RecorderModeRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .accessibilityValue(reason ?? "")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

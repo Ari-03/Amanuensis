@@ -13,6 +13,7 @@ final class AppModel {
     var isMovingRecorder = false
     var accessibilityGranted = true
     var recorderOutcome: RecorderOutcome?
+    var modeBlockers: [UUID: RecordingFailure] = [:]
     var toggleCount = 0
     var skipCount = 0
     var outcomeActionCount = 0
@@ -280,6 +281,7 @@ struct RecorderChecks {
             precondition(lowBars[1] > lowBars[10] && highBars[10] > highBars[1])
             precondition(waveformHeights(bands: [.nan, .infinity, -1]).allSatisfy { $0 <= 4 })
             print("PASS: Individual frequency bands change the rendered shape independently")
+            await checkMarkedModeStaysSelectable()
 
             recorder.hide()
             precondition(!panel.isVisible)
@@ -500,6 +502,29 @@ struct RecorderChecks {
         print(
             "PASS: Invocation display survives refresh, resize, and hide/show for both styles on \(NSScreen.screens.count) connected display(s)"
         )
+    }
+
+    /// A mode that cannot record yet stays selectable: clicking its marked row selects it.
+    @MainActor private static func checkMarkedModeStaysSelectable() async {
+        let model = AppModel()
+        let mailIndex = model.modes.firstIndex { $0.preset == .mail }!
+        model.modeBlockers = [model.modes[mailIndex].id: .modelNotInstalled("S1-mini")]
+        var dismissed = 0
+        let window = NSWindow(
+            contentRect: NSRect(x: 200, y: 200, width: 252, height: 300), styleMask: [.borderless],
+            backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: RecorderModeMenu(model: model) { dismissed += 1 })
+        window.orderFrontRegardless()
+        await pause(150)
+        // Rows are 34 points tall with 2 points between them, below 6 points of padding.
+        let rowCenter = 6 + CGFloat(mailIndex) * 36 + 17
+        let point = NSPoint(x: 120, y: window.frame.height - rowCenter)
+        await postMouse(.leftMouseDown, at: point, to: window)
+        await postMouse(.leftMouseUp, at: point, to: window)
+        await pause(100)
+        precondition(model.settings.selectedModeID == model.modes[mailIndex].id && dismissed == 1)
+        window.orderOut(nil)
+        print("PASS: A mode marked as unable to record is still selected by clicking its row")
     }
 
     /// Measure the tallest rendered bar, including the actual SwiftUI frame and fill.

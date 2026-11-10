@@ -40,6 +40,25 @@ final class AudioCapture {
         worker.cancel()
     }
 
+    /// The system microphone permission, read fresh on every call.
+    static var access: MicrophoneAccess {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: .granted
+        case .notDetermined: .notDetermined
+        case .restricted: .restricted
+        default: .denied
+        }
+    }
+
+    /// Shows the system prompt when the permission is undecided. Returns whether access is granted.
+    static func requestAccess() async -> Bool {
+        switch access {
+        case .granted: true
+        case .notDetermined: await AVCaptureDevice.requestAccess(for: .audio)
+        case .denied, .restricted: false
+        }
+    }
+
     func refreshDevices() {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified
@@ -66,13 +85,7 @@ final class AudioCapture {
             if operationID == requestID { isStarting = false }
         }
 
-        let authorized: Bool
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: authorized = true
-        case .notDetermined: authorized = await AVCaptureDevice.requestAccess(for: .audio)
-        default: authorized = false
-        }
-        guard authorized else { throw AudioCaptureError.microphonePermission }
+        guard await Self.requestAccess() else { throw AudioCaptureError.microphonePermission }
         try Task.checkCancellation()
         guard operationID == requestID else { throw CancellationError() }
         refreshDevices()

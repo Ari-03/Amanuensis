@@ -15,18 +15,23 @@ struct RecorderOutcomeTests {
             (.nothingToInsert, "Nothing to insert", nil),
             (.cleanupFailed, "Cleanup failed", .pasteOriginal),
             (
-                .failed(.modelNotInstalled("Parakeet TDT 0.6B V2")), "Parakeet TDT 0.6B V2 not installed",
+                .failed(.modelNotInstalled("Parakeet TDT 0.6B V2")), "Needs Parakeet TDT 0.6B V2",
                 .openModels
             ),
-            (.failed(.apiKeyMissing(provider: "OpenAI")), "OpenAI key missing", .openModels),
+            (.failed(.apiKeyMissing(provider: "OpenAI")), "Needs OpenAI key", .openModels),
             (
                 .failed(.blockedByLocalOnly(modelName: "OpenAI Cleanup")), "Blocked by local-only",
                 .openSettings
             ),
             (.failed(.noMicrophone), "No microphone", .openSound),
-            (.failed(.appleSpeechNotReady), "Apple Speech not ready", .openModels),
+            (.failed(.appleSpeechNotReady), "Needs Apple Speech", .openModels),
             (.interrupted, "Recording interrupted", .showInHistory),
             (.failed(nil), "Couldn't finish", .showInHistory),
+            // Mode settings the pill cannot fix point to History.
+            (.failed(.cleanupHelperMissing), "Cleanup helper missing", .showInHistory),
+            (.failed(.unsupportedCleanup("Ollama")), "Ollama unsupported", .showInHistory),
+            (.failed(.speakerIdentificationUnavailable), "Speakers unsupported", .showInHistory),
+            (.failed(.speechModelMissing), "No speech model", .showInHistory),
         ]
         for (cause, label, action) in expected {
             let outcome = RecorderOutcome(cause, recordingID: nil, at: 0)

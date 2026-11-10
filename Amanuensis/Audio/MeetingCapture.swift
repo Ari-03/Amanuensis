@@ -39,13 +39,7 @@ final class MeetingCapture {
         defer { if operationID == operation { isStarting = false } }
         await teardownTask?.value
         try validateOperation(operation)
-        let authorized: Bool
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: authorized = true
-        case .notDetermined: authorized = await AVCaptureDevice.requestAccess(for: .audio)
-        default: authorized = false
-        }
-        guard authorized else { throw MeetingCaptureError.microphonePermission }
+        guard await AudioCapture.requestAccess() else { throw MeetingCaptureError.microphonePermission }
         try validateOperation(operation)
         let devices = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified

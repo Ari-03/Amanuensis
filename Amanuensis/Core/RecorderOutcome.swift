@@ -1,12 +1,18 @@
 import Foundation
 
-/// Failures the recorder pill can offer a fix for. Their messages are what the banner and History show.
+/// Typed reasons a recording cannot start. Their messages are what the banner and History show, and
+/// `shortReason` is the one short label, used by the recorder pill and by the marker beside a mode.
+/// All but `noMicrophone` also come from `RecordingReadiness`, which marks modes that cannot record yet.
 enum RecordingFailure: LocalizedError, Equatable, Sendable {
     case modelNotInstalled(String)
     case apiKeyMissing(provider: String)
     case blockedByLocalOnly(modelName: String)
     case noMicrophone
     case appleSpeechNotReady
+    case speechModelMissing
+    case cleanupHelperMissing
+    case unsupportedCleanup(String)
+    case speakerIdentificationUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +22,27 @@ enum RecordingFailure: LocalizedError, Equatable, Sendable {
             "\(name) uses an API. Choose a local model or turn off Require local processing."
         case .noMicrophone: "No included microphone is connected and available."
         case .appleSpeechNotReady: "Apple Speech needs its English model. Open Models and choose Prepare."
+        case .speechModelMissing: "The selected speech model is missing."
+        case .cleanupHelperMissing: "S1-mini's helper is missing. Rebuild with Scripts/build.sh."
+        case .unsupportedCleanup(let name):
+            "\(name) is not connected in this build. Choose S1-mini for local cleanup."
+        case .speakerIdentificationUnavailable:
+            "Speaker identification is not yet available. Turn it off to transcribe this recording."
+        }
+    }
+
+    /// A short label such as "Needs S1-mini", for mode markers and the recorder pill.
+    var shortReason: String {
+        switch self {
+        case .modelNotInstalled(let name): "Needs \(name)"
+        case .apiKeyMissing(let provider): "Needs \(provider) key"
+        case .blockedByLocalOnly: "Blocked by local-only"
+        case .noMicrophone: "No microphone"
+        case .appleSpeechNotReady: "Needs Apple Speech"
+        case .speechModelMissing: "No speech model"
+        case .cleanupHelperMissing: "Cleanup helper missing"
+        case .unsupportedCleanup(let name): "\(name) unsupported"
+        case .speakerIdentificationUnavailable: "Speakers unsupported"
         }
     }
 }
@@ -80,16 +107,25 @@ struct RecorderOutcome: Equatable, Sendable {
             case .nothingToInsert: ("Nothing to insert", .notice, nil)
             case .cleanupFailed: ("Cleanup failed", .failure, .pasteOriginal)
             case .interrupted: ("Recording interrupted", .failure, .showInHistory)
-            case .failed(.modelNotInstalled(let name)): ("\(name) not installed", .failure, .openModels)
-            case .failed(.apiKeyMissing(let provider)): ("\(provider) key missing", .failure, .openModels)
-            case .failed(.blockedByLocalOnly): ("Blocked by local-only", .failure, .openSettings)
-            case .failed(.noMicrophone): ("No microphone", .failure, .openSound)
-            case .failed(.appleSpeechNotReady): ("Apple Speech not ready", .failure, .openModels)
+            case .failed(let failure?): (failure.shortReason, .failure, Self.action(for: failure))
             case .failed(nil): ("Couldn't finish", .failure, .showInHistory)
             }
         self.kind = kind
         self.recordingID = recordingID
         deadline = kind == .failure ? nil : time + Self.displayDuration
+    }
+
+    /// Where the pill sends the user to fix a failure. Mode settings it cannot fix point to History,
+    /// which keeps the full message.
+    private static func action(for failure: RecordingFailure) -> Action {
+        switch failure {
+        case .modelNotInstalled, .apiKeyMissing, .appleSpeechNotReady: .openModels
+        case .blockedByLocalOnly: .openSettings
+        case .noMicrophone: .openSound
+        case .speechModelMissing, .cleanupHelperMissing, .unsupportedCleanup,
+            .speakerIdentificationUnavailable:
+            .showInHistory
+        }
     }
 
     /// AppModel skips this check while the pointer is on the pill, which holds the outcome open.

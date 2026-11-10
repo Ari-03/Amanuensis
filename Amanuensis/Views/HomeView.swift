@@ -3,11 +3,19 @@ import SwiftUI
 struct HomeView: View {
     @Bindable var model: AppModel
     var body: some View {
+        let settingUp = !model.settings.hasCompletedSetup
+        let blockers = model.modeBlockers
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 ScreenHeader(
                     title: "Make room for your words.",
                     subtitle: "Speak naturally. Keep your train of thought.")
+                if settingUp {
+                    SetupChecklistView(model: model)
+                        .onChange(of: model.setupChecklist.isComplete, initial: true) { _, complete in
+                            if complete { model.settings.hasCompletedSetup = true }
+                        }
+                }
                 HStack(spacing: 0) {
                     metric("\(model.statistics.wordsPerMinute)", unit: "WPM", label: "Average speed")
                     Divider().frame(height: 40)
@@ -27,7 +35,11 @@ struct HomeView: View {
                             }
                             Divider()
                             ForEach(model.modes) { mode in
-                                Button(mode.name, systemImage: mode.symbol) {
+                                // A mode that cannot record yet stays selectable and names what it needs.
+                                Button(
+                                    blockers[mode.id].map { "\(mode.name) · \($0.shortReason)" } ?? mode.name,
+                                    systemImage: mode.symbol
+                                ) {
                                     model.selectMode(mode.id)
                                 }
                             }
@@ -41,6 +53,17 @@ struct HomeView: View {
                         }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         .disabled(model.phase.isBusy).accessibilityLabel("Change active mode")
+                        // The checklist or the Apple Speech card below already explains these.
+                        if !model.phase.isBusy, let blocker = blockers[model.currentMode.id],
+                            blocker != .appleSpeechNotReady,
+                            !settingUp || blocker != model.setupChecklist.speechBlocker
+                        {
+                            Label(
+                                blocker.errorDescription ?? blocker.shortReason,
+                                systemImage: "exclamationmark.triangle"
+                            )
+                            .font(.callout).foregroundStyle(.orange)
+                        }
                         Text(
                             model.isCancellationPending
                                 ? "Cancel transcription? Press Esc again to discard." : model.statusMessage
@@ -102,7 +125,9 @@ struct HomeView: View {
                         }
                     }
                 }
-                if !model.appleSpeechReady && model.currentMode.speechModelID == "apple-speech" {
+                // The checklist covers these two while setup is open. Afterwards they catch revoked access.
+                if !settingUp && !model.appleSpeechReady && model.currentMode.speechModelID == "apple-speech"
+                {
                     SettingsCard {
                         Label("Set up Apple speech", systemImage: "arrow.down.circle").font(.headline)
                         Text(
@@ -121,7 +146,10 @@ struct HomeView: View {
                         }
                     }
                 }
-                if !model.accessibilityGranted {
+                // Skipping text insertion in setup also dismisses this card; the pill still offers Allow paste.
+                if !settingUp && !model.accessibilityGranted
+                    && model.settings.skippedTextInsertionSetup != true
+                {
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: "keyboard").font(.title2).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 6) {

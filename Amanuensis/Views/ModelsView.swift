@@ -319,13 +319,8 @@ struct ModelsView: View {
             HStack(spacing: 5) {
                 Button {
                     operationError = nil
-                    Task {
-                        do { try await model.library.install(descriptor) } catch {
-                            if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
-                                operationError = error.localizedDescription
-                            }
-                        }
-                    }
+                    // Failures show under the row, from the library, like every other download row.
+                    Task { await model.download(descriptor) }
                 } label: {
                     Label("Get", systemImage: "arrow.down")
                 }

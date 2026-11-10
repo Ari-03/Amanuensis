@@ -13,6 +13,7 @@ struct ModesView: View {
     private var selected: DictationMode? { model.modes.first { $0.id == selectedID } }
 
     var body: some View {
+        let blockers = model.modeBlockers
         HSplitView {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -30,11 +31,17 @@ struct ModesView: View {
                         Image(systemName: mode.symbol).frame(width: 20).foregroundStyle(.tint)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(mode.name).fontWeight(.medium)
-                            Text(
-                                ModelCatalog.models.first { $0.id == mode.speechModelID }?.name
-                                    ?? mode.speechModelID
-                            )
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            // A mode that cannot record yet names what it needs instead of its speech model.
+                            if let blocker = blockers[mode.id] {
+                                Label(blocker.shortReason, systemImage: "exclamationmark.triangle")
+                                    .font(.caption).foregroundStyle(.orange).lineLimit(1)
+                            } else {
+                                Text(
+                                    ModelCatalog.models.first { $0.id == mode.speechModelID }?.name
+                                        ?? mode.speechModelID
+                                )
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
                         }
                         Spacer(minLength: 2)
                         if model.currentMode.id == mode.id {
@@ -228,7 +235,8 @@ struct ModesView: View {
         }.frame(minWidth: 380)
     }
 
-    /// Lists models that are ready to use, plus the current choice if it stopped being ready.
+    /// Lists models that are ready to use, plus the current choice if it stopped being ready. Below it,
+    /// what the choice still needs, from the same rules recording uses. A missing download is fixed here.
     private func modelPicker(
         _ title: String, purpose: ModelPurpose, selection: Binding<String?>, allowNone: Bool
     ) -> some View {
@@ -241,17 +249,24 @@ struct ModesView: View {
                     Text(item.name + (item.location == .cloud ? " · API" : "")).tag(Optional(item.id))
                 }
             }
-            if let current, !model.isReady(current) {
-                Label(
-                    current.location == .cloud
-                        ? "\(current.name) needs a \(current.provider) API key. Connect it in Models before recording."
-                        : "\(current.name) is not installed. Download it in Models before recording.",
-                    systemImage: "exclamationmark.triangle"
-                )
-                .font(.caption).foregroundStyle(.orange)
-            } else if current?.family == .apple, !model.appleSpeechReady {
-                Label("Apple Speech needs preparing in Models.", systemImage: "arrow.down.circle")
-                    .font(.caption).foregroundStyle(.secondary)
+            if let current, let blocker = model.readiness.blocker(for: current) {
+                switch blocker {
+                case .modelNotInstalled where current.repository != nil:
+                    ModelDownloadRow(
+                        descriptor: current, progress: model.library.progress[current.id],
+                        error: model.library.errors[current.id],
+                        onDownload: { Task { await model.download(current) } },
+                        onCancel: { model.library.cancelDownload(current.id) })
+                case .appleSpeechNotReady:
+                    Label("Apple Speech needs preparing in Models.", systemImage: "arrow.down.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                default:
+                    Label(
+                        blocker.errorDescription ?? blocker.shortReason,
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption).foregroundStyle(.orange)
+                }
             }
         }
     }

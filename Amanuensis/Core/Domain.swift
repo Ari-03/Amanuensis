@@ -322,6 +322,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var automaticModeSelection = true
     var selectedModeID: UUID? = nil
     var hasCompletedSetup = false
+    /// Set by Skip on the setup checklist's text insertion step. Optional so earlier saves still decode.
+    var skippedTextInsertionSetup: Bool? = nil
     var apiModelOverrides: [String: String] = [:]
 }
 
@@ -357,9 +359,40 @@ struct ModelInstallation: Identifiable, Codable, Equatable, Sendable {
     var revision: String? = nil
 }
 
+/// One model operation's progress. Downloads count bytes across all of the model's files.
 struct DownloadProgress: Equatable, Sendable {
-    var fraction: Double
-    var label: String
+    enum Stage: Sendable { case checking, downloading, validating, importing }
+
+    var stage: Stage
+    var completedBytes: Int64 = 0
+    var totalBytes: Int64 = 0
+
+    /// Nil while there is no byte count, which progress bars show as indeterminate.
+    var fraction: Double? {
+        guard stage == .downloading || stage == .validating, totalBytes > 0 else { return nil }
+        return min(1, Double(max(0, completedBytes)) / Double(totalBytes))
+    }
+
+    var label: String {
+        switch stage {
+        case .checking: "Checking download"
+        case .downloading: Self.byteLabel(completed: completedBytes, total: totalBytes)
+        case .validating: "Validating model"
+        case .importing: "Importing model"
+        }
+    }
+
+    /// "1.19 of 2.47 GB", in the decimal units the catalog's size labels use.
+    static func byteLabel(completed: Int64, total: Int64) -> String {
+        guard total > 0 else { return "Downloading" }
+        let (unit, scale, digits): (String, Double, Int) =
+            total >= 1_000_000_000
+            ? ("GB", 1e9, 2) : total >= 1_000_000 ? ("MB", 1e6, 0) : ("KB", 1e3, 0)
+        func format(_ bytes: Int64) -> String {
+            String(format: "%.\(digits)f", Double(min(max(0, bytes), total)) / scale)
+        }
+        return "\(format(completed)) of \(format(total)) \(unit)"
+    }
 }
 
 enum RecordingStatus: String, Codable, Sendable {

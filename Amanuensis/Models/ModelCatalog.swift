@@ -3,6 +3,9 @@ import Foundation
 /// Model identities are separate from the pinned artifact used to run them.
 /// Speech artifacts include their tokenizers so loading never needs a network fallback.
 enum ModelCatalog {
+    /// The local speech model the setup checklist offers to download. English only for now.
+    static var recommendedSpeech: ModelDescriptor { models.first { $0.id == "parakeet-v2" }! }
+
     static let models: [ModelDescriptor] =
         [
             ModelDescriptor(
