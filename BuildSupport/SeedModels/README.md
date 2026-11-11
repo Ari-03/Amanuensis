@@ -2,6 +2,8 @@
 
 This tool imports existing, tested Whisper tiny, Parakeet V2, Cohere Transcribe 4-bit, and S1-mini artifacts through the app's `LocalStore` and `ModelLibrary`. It does not fetch model weights. Quit Amanuensis before running it.
 
+`seed.sh` builds the tool as a small Swift package around the app's own sources, because `ModelLibrary` uses the LocalSpeech package. The first run compiles the speech runtime and takes a few minutes; later runs reuse `BuildSupport/SeedModels/.build`.
+
 First prepare isolated copies of the speech smoke-test folders and S1-mini GGUF under `/tmp`. The preparation script fetches the publisher/converter model cards and full license texts. S1-mini gets its pinned official LICENSE and NOTICE. Cohere's public converter card records provenance because the official weight repository requires access approval.
 
 ```bash
