@@ -1,5 +1,7 @@
 # Amanuensis product brief
 
+> November 10, 2026: the owner withdrew the "English only, no language selector" rule below. The app now has a dictation language in Settings and an optional language per mode. See [implementation status](implementation-status.md).
+
 Captured from Aritra's two walkthroughs and fourteen Superwhisper/Spokenly screenshots on September 19, 2026. Aritra confirmed this pass should cover the product brief and research before any SwiftUI implementation. The app currently contains the default starter screen; this document describes intended behavior, not implemented features.
 
 The later [implementation plan](implementation-plan.md) consolidates the proposed architecture, appearance, defaults, milestones, and acceptance gates. This brief remains the record of requested behavior; plan recommendations do not become completed features.

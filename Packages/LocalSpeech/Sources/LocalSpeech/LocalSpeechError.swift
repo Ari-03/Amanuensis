@@ -1,11 +1,15 @@
 import Foundation
 
-public enum LocalSpeechError: Error, LocalizedError, Sendable {
+public enum LocalSpeechError: Error, LocalizedError, Equatable, Sendable {
     case unsupportedFamily(String)
     case busy
     case invalidModelDirectory
     case missingModelFile(String)
     case invalidAudio
+    case unrecognizedConfiguration(String)
+    case languageRequired(String)
+    /// The model was released while recording, so the rest is left for transcription after Stop.
+    case modelNotLoaded
 
     public var errorDescription: String? {
         switch self {
@@ -19,27 +23,12 @@ public enum LocalSpeechError: Error, LocalizedError, Sendable {
             "The local model is missing \(filename). Import a complete model folder; this operation will not download files."
         case .invalidAudio:
             "The recording has no readable audio or uses an unsupported audio format."
-        }
-    }
-}
-
-enum ModelFamily: String, Sendable {
-    case whisper
-    case parakeet
-    case cohere
-
-    init(validating value: String) throws {
-        guard let family = Self(rawValue: value.lowercased()) else {
-            throw LocalSpeechError.unsupportedFamily(value)
-        }
-        self = family
-    }
-
-    var requiredMetadata: [String] {
-        switch self {
-        case .whisper: ["config.json", "tokenizer.json", "tokenizer_config.json"]
-        case .parakeet: ["config.json"]
-        case .cohere: ["config.json", "tokenizer.model", "tokenizer_config.json"]
+        case .unrecognizedConfiguration(let family):
+            "This folder does not contain a \(family) configuration."
+        case .languageRequired(let family):
+            "\(family) cannot detect the spoken language. Choose a language."
+        case .modelNotLoaded:
+            "The speech model was released before it could transcribe while recording."
         }
     }
 }

@@ -11,10 +11,13 @@ final class AppModel {
     var recordingDuration: TimeInterval = 12
     var recordingSpectrum = Array(repeating: 0.6, count: AudioSpectrum.bandCount)
     var isMovingRecorder = false
-    var pasteNeedsAccessibility = false
     var accessibilityGranted = true
-    var history: [RecordingEntry] = []
+    var recorderOutcome: RecorderOutcome?
+    var modeBlockers: [UUID: RecordingFailure] = [:]
     var toggleCount = 0
+    var skipCount = 0
+    var outcomeActionCount = 0
+    var accessibilityRequestCount = 0
     var isCancellationPending = false
     var onResize: ((CGSize) -> Void)?
     var onDrag: ((CGSize) -> Void)?
@@ -30,8 +33,11 @@ final class AppModel {
     func finishMovingRecorder() { onEndDrag?() }
     func cancelMovingRecorder() { onCancelDrag?() }
     func refreshAccessibility() {}
-    func requestAccessibility() {}
-    func copyText(_ text: String) {}
+    func requestAccessibility() { accessibilityRequestCount += 1 }
+    func skipCleanup() { skipCount += 1 }
+    func performOutcomeAction() { outcomeActionCount += 1 }
+    func dismissOutcome() { recorderOutcome = nil }
+    func setRecorderHovering(_ hovering: Bool) {}
 }
 
 @main
@@ -102,16 +108,18 @@ struct RecorderChecks {
             print("PASS: Recording expands the minimized bar, and completion minimizes it again")
 
             model.accessibilityGranted = false
-            model.pasteNeedsAccessibility = true
             await pause(350)
             precondition(panel.frame.size == RecorderLayout.idleSize)
             model.accessibilityGranted = true
-            model.pasteNeedsAccessibility = false
             await pause(350)
             precondition(panel.frame.size == RecorderLayout.idleSize)
             print(
                 "PASS: Missing paste permission does not keep the recorder expanded"
             )
+            await checkPermissionWarning(model: model, recorder: recorder, panel: panel)
+            recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .top)
+            await pause(350)
+            precondition(panel.frame.size == RecorderLayout.idleSize)
 
             for phase in [DictationPhase.idle, .recording] {
                 model.phase = phase
@@ -164,7 +172,6 @@ struct RecorderChecks {
             } else {
                 precondition(abs(panel.frame.midX - panel.screen!.frame.midX) < 1)
             }
-            model.pasteNeedsAccessibility = true
             model.accessibilityGranted = false
             model.phase = .recording
             await pause(350)
@@ -184,7 +191,6 @@ struct RecorderChecks {
                 "PASS: Notch stays inside the menu bar while expanding and ignores saved positions and dragging"
             )
 
-            model.pasteNeedsAccessibility = false
             model.accessibilityGranted = true
             model.phase = .idle
             await pause(300)
@@ -213,18 +219,20 @@ struct RecorderChecks {
                 for phase in [DictationPhase.preparing, .transcribing, .cleaning, .delivering] {
                     model.phase = phase
                     await pause(350)
-                    let labelWidth = (phase.rawValue as NSString).size(withAttributes: [
-                        .font: NSFont.systemFont(ofSize: 11)
-                    ]).width
+                    // Spinner, spacing, and padding sit beside the label; cleaning adds Skip and cancel.
+                    let cleaningWidth =
+                        phase == .cleaning ? textWidth("Skip", size: 11, weight: .medium) + 48 : 0
                     precondition(
-                        panel.frame.width >= labelWidth + 100,
+                        panel.frame.width >= textWidth(phase.rawValue, size: 11) + 44 + cleaningWidth,
                         "\(style) must leave room for the full \(phase.rawValue) label and adjacent controls")
                 }
+                await checkCleaningUnderPointer(model: model, recorder: recorder, panel: panel, style: style)
                 for phase in [DictationPhase.complete, .failed, .interrupted, .idle] {
                     model.phase = phase
                     await pause(350)
                     precondition(panel.frame.width == 36, "Every finished state must minimize the recorder")
                 }
+                await checkOutcomes(model: model, recorder: recorder, panel: panel, style: style)
                 model.phase = .recording
                 model.isCancellationPending = true
                 recorder.show(content: AnyView(RecorderView(model: model)), style: .mini, placement: .top)
@@ -247,6 +255,10 @@ struct RecorderChecks {
                 }
             }
             print("PASS: Both styles fit full processing labels and minimize after completion or failure")
+            print("PASS: Hover keeps one cleaning layout in both styles, where Skip and cancel take clicks")
+            print(
+                "PASS: Outcomes resize the pill to fit, float failures as Mini, take action and dismiss clicks, and return to idle when cleared"
+            )
             print(
                 "PASS: Confirmation floats without stealing focus, then restores the configured recorder style"
             )
@@ -269,10 +281,12 @@ struct RecorderChecks {
             precondition(lowBars[1] > lowBars[10] && highBars[10] > highBars[1])
             precondition(waveformHeights(bands: [.nan, .infinity, -1]).allSatisfy { $0 <= 4 })
             print("PASS: Individual frequency bands change the rendered shape independently")
+            await checkMarkedModeStaysSelectable()
 
             recorder.hide()
             precondition(!panel.isVisible)
             await checkInvocationDisplays()
+            await checkLivePreview()
             let notchFirst = RecorderPanelController()
             notchFirst.show(content: AnyView(Color.clear), style: .notch, placement: nil)
             precondition(notchFirst.miniDisplayID == nil)
@@ -284,6 +298,173 @@ struct RecorderChecks {
             app.terminate(nil)
         }
         app.run()
+    }
+
+    /// Mirrors AppModel.updateRecorder, which shows the panel in the style the outcome needs.
+    @MainActor private static func present(_ model: AppModel, with recorder: RecorderPanelController) {
+        if let style = RecorderLayout.presentedStyle(
+            saved: model.settings.recorderStyle, alwaysShow: model.settings.alwaysShowRecorder,
+            busy: model.phase.isBusy, cancellationPending: model.isCancellationPending,
+            outcome: model.recorderOutcome)
+        {
+            recorder.show(content: AnyView(RecorderView(model: model)), style: style, placement: .top)
+        } else {
+            recorder.hide()
+        }
+    }
+
+    /// Each outcome must show its full label and action, then the pill must return to the idle bar.
+    @MainActor private static func checkOutcomes(
+        model: AppModel, recorder: RecorderPanelController, panel: NSWindow, style: RecorderStyle
+    ) async {
+        let idleWidth = RecorderLayout.idleSize(for: style).width
+        let cases: [(RecorderOutcome.Cause, RecorderStyle)] = [
+            (.inserted(app: "Mail"), style),
+            (.copied, style),
+            (.needsAccessibility, style),
+            (.cleanupFailed, .mini),
+            (.failed(.modelNotInstalled("Parakeet TDT 0.6B V2")), .mini),
+            (.failed(.unsupportedLanguage(modelName: "Parakeet TDT 0.6B V2", language: .code("fr"))), .mini),
+        ]
+        model.phase = .complete
+        for (cause, expectedStyle) in cases {
+            let outcome = RecorderOutcome(cause, recordingID: UUID())
+            model.recorderOutcome = outcome
+            present(model, with: recorder)
+            await pause(350)
+            // Icon, spacing, padding, the action button, and the dismiss control sit beside the label.
+            let actionWidth = outcome.action.map { textWidth($0.title, size: 11, weight: .medium) + 24 } ?? 0
+            let dismissWidth: CGFloat = outcome.kind == .failure ? 26 : 0
+            let needed = textWidth(outcome.label, size: 12, weight: .medium) + 40 + actionWidth + dismissWidth
+            precondition(
+                panel.frame.width >= needed, "\(style) must fit the full \(outcome.label) outcome")
+            // Notch keeps the menu bar's height; floating outcomes need room for their buttons.
+            precondition(expectedStyle == .notch || panel.frame.height >= 26)
+            precondition(
+                panel.level == (expectedStyle == .notch ? .statusBar : .floating),
+                "\(outcome.label) must use the \(expectedStyle) presentation")
+            precondition(!panel.canBecomeKey && !panel.canBecomeMain)
+            if outcome.action != nil {
+                // The action follows the icon and label.
+                let actions = model.outcomeActionCount
+                let leading: CGFloat = expectedStyle == .notch ? 20 : 14
+                let actionPoint = NSPoint(
+                    x: leading + 13 + 8 + textWidth(outcome.label, size: 12, weight: .medium) + 8
+                        + actionWidth / 2 - 4,
+                    y: panel.frame.height / 2)
+                await postMouse(.leftMouseDown, at: actionPoint, to: panel)
+                await postMouse(.leftMouseUp, at: actionPoint, to: panel)
+                precondition(
+                    model.outcomeActionCount == actions + 1, "\(outcome.label) action must be clickable")
+            }
+            if outcome.kind == .failure {
+                // Only failures stay until dismissed; their dismiss control is last.
+                let dismissPoint = NSPoint(x: panel.frame.width - 17, y: panel.frame.height / 2)
+                await postMouse(.leftMouseDown, at: dismissPoint, to: panel)
+                await postMouse(.leftMouseUp, at: dismissPoint, to: panel)
+                precondition(model.recorderOutcome == nil, "\(outcome.label) must be dismissable")
+            }
+        }
+        model.dismissOutcome()
+        present(model, with: recorder)
+        await pause(350)
+        precondition(panel.frame.width == idleWidth, "Clearing an outcome must return the pill to idle")
+        precondition(model.settings.recorderStyle == style, "Outcomes must preserve the saved style")
+
+        model.settings.recorderStyle = .hidden
+        model.recorderOutcome = RecorderOutcome(.inserted(app: "Mail"), recordingID: nil)
+        present(model, with: recorder)
+        precondition(!panel.isVisible, "Hidden shows no success outcome")
+        model.recorderOutcome = RecorderOutcome(.needsAccessibility, recordingID: UUID())
+        present(model, with: recorder)
+        precondition(!panel.isVisible, "Hidden shows no paste-permission hint after each dictation")
+        model.recorderOutcome = RecorderOutcome(.failed(nil), recordingID: UUID())
+        present(model, with: recorder)
+        await pause(350)
+        precondition(panel.isVisible && panel.level == .floating, "Hidden floats failures as Mini")
+        model.dismissOutcome()
+        present(model, with: recorder)
+        precondition(!panel.isVisible)
+        model.settings.recorderStyle = style
+        present(model, with: recorder)
+        await pause(350)
+    }
+
+    /// Hovering a cleaning pill must not move Skip or cancel. Posted events cannot trigger SwiftUI hover,
+    /// so the view starts in the state hovering produces; transcribing proves that state opens the controls.
+    @MainActor private static func checkCleaningUnderPointer(
+        model: AppModel, recorder: RecorderPanelController, panel: NSWindow, style: RecorderStyle
+    ) async {
+        func show(hovered: Bool) async {
+            recorder.show(
+                content: AnyView(RecorderView(model: model, revealControls: hovered).id(UUID())),
+                style: style,
+                placement: .top)
+            await pause(350)
+        }
+        model.phase = .transcribing
+        await show(hovered: false)
+        let compactTranscribing = panel.frame.width
+        await show(hovered: true)
+        precondition(
+            panel.frame.width != compactTranscribing, "Hovering a transcribing pill opens the controls")
+        model.phase = .cleaning
+        await show(hovered: false)
+        let compactCleaning = panel.frame.width
+        await show(hovered: true)
+        precondition(
+            panel.frame.width == compactCleaning, "\(style) hover must not change the cleaning layout")
+
+        // From the right: trailing padding, cancel (18 wide), spacing, then Skip.
+        let trailing: CGFloat = style == .notch ? 20 : 8
+        let skipChip = textWidth("Skip", size: 11, weight: .medium) + 16
+        let skips = model.skipCount
+        let skipPoint = NSPoint(
+            x: panel.frame.width - trailing - 18 - 10 - skipChip / 2, y: panel.frame.height / 2)
+        await postMouse(.leftMouseDown, at: skipPoint, to: panel)
+        await postMouse(.leftMouseUp, at: skipPoint, to: panel)
+        precondition(model.skipCount == skips + 1, "\(style) Skip must be clickable under the pointer")
+        precondition(!model.isCancellationPending, "Skip must not cancel")
+        let cancelPoint = NSPoint(x: panel.frame.width - trailing - 9, y: panel.frame.height / 2)
+        await postMouse(.leftMouseDown, at: cancelPoint, to: panel)
+        await postMouse(.leftMouseUp, at: cancelPoint, to: panel)
+        precondition(model.isCancellationPending, "\(style) cancel must be clickable under the pointer")
+        precondition(model.skipCount == skips + 1)
+        model.dismissCancellation()
+        recorder.show(content: AnyView(RecorderView(model: model)), style: style, placement: .top)
+        await pause(350)
+    }
+
+    /// The pre-recording warning opens the Accessibility prompt directly and disappears once access is granted.
+    @MainActor private static func checkPermissionWarning(
+        model: AppModel, recorder: RecorderPanelController, panel: NSWindow
+    ) async {
+        model.phase = .idle
+        model.accessibilityGranted = false
+        recorder.show(
+            content: AnyView(RecorderView(model: model, revealControls: true).id(UUID())), style: .mini,
+            placement: .top)
+        await pause(350)
+        let warnedWidth = panel.frame.width
+        // Controls are centered: mode menu (28), record (26), then the warning (22), 8 apart.
+        let requests = model.accessibilityRequestCount
+        let warningPoint = NSPoint(x: (warnedWidth - (28 + 26 + 22 + 16)) / 2 + 28 + 8 + 26 + 8 + 11, y: 18)
+        await postMouse(.leftMouseDown, at: warningPoint, to: panel)
+        await postMouse(.leftMouseUp, at: warningPoint, to: panel)
+        precondition(
+            model.accessibilityRequestCount == requests + 1, "The warning must open the Accessibility prompt")
+        model.accessibilityGranted = true
+        await pause(350)
+        precondition(panel.frame.width < warnedWidth, "Granting access must remove the warning")
+        print(
+            "PASS: The paste-permission warning opens the Accessibility prompt and clears once access is granted"
+        )
+    }
+
+    private static func textWidth(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular) -> CGFloat
+    {
+        (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: size, weight: weight)])
+            .width
     }
 
     /// Refreshes and resizes must retain the invocation display even with an older saved display.
@@ -323,6 +504,82 @@ struct RecorderChecks {
         print(
             "PASS: Invocation display survives refresh, resize, and hide/show for both styles on \(NSScreen.screens.count) connected display(s)"
         )
+    }
+
+    /// The live text shows only with text and only in Mini. It sits outside the pill toward the screen's
+    /// middle, grows to two lines at most, follows a drag, never takes focus or clicks, and leaves the
+    /// pill's size alone.
+    @MainActor private static func checkLivePreview() async {
+        let recorder = RecorderPanelController()
+        let visiblePanels = { NSApp.windows.filter { $0.isVisible && $0 is NSPanel } }
+        recorder.show(content: AnyView(Color.clear), style: .mini, placement: .bottom)
+        recorder.resize(to: NSSize(width: 180, height: 36))
+        await pause(220)
+        let pill = visiblePanels().first!
+        let pillFrame = pill.frame
+        recorder.showPreview(nil)
+        precondition(visiblePanels().count == 1)
+        recorder.showPreview("Please send the meeting notes to Sarah.")
+        let preview = visiblePanels().first { $0 !== pill }!
+        precondition(preview.ignoresMouseEvents && !preview.canBecomeKey && !preview.canBecomeMain)
+        precondition(pill.frame == pillFrame, "The preview must not move or resize the pill")
+        precondition(abs(preview.frame.minY - (pill.frame.maxY + 6)) < 1)
+        precondition(abs(preview.frame.midX - pill.frame.midX) < 1)
+        let oneLine = preview.frame.height
+        recorder.showPreview(
+            String(repeating: "We should review the project timeline and confirm the dashboard. ", count: 6))
+        precondition(
+            preview.frame.height > oneLine * 1.3 && preview.frame.height < oneLine * 1.9,
+            "\(oneLine) then \(preview.frame.size)")
+        precondition(preview.frame.width <= 320 && abs(preview.frame.midX - pill.frame.midX) < 1)
+        print("PASS: Live text appears above a bottom pill, one or two lines, without moving it")
+
+        recorder.show(content: AnyView(Color.clear), style: .mini, placement: .top)
+        await pause(220)
+        precondition(abs(preview.frame.maxY - (pill.frame.minY - 6)) < 1)
+        let start = NSPoint(x: pill.frame.midX, y: pill.frame.midY)
+        recorder.beginDrag(at: start)
+        recorder.continueDrag(at: NSPoint(x: start.x - 240, y: start.y))
+        precondition(abs(preview.frame.midX - pill.frame.midX) < 1 && !preview.frame.intersects(pill.frame))
+        recorder.cancelDrag()
+        await pause(220)
+        precondition(abs(preview.frame.maxY - (pill.frame.minY - 6)) < 1)
+        print("PASS: Live text sits below a top pill and follows it while dragging")
+
+        recorder.show(content: AnyView(Color.clear), style: .notch, placement: nil)
+        precondition(!preview.isVisible)
+        recorder.show(content: AnyView(Color.clear), style: .mini, placement: .top)
+        precondition(preview.isVisible)
+        recorder.hide()
+        precondition(!preview.isVisible)
+        recorder.show(content: AnyView(Color.clear), style: .mini, placement: .top)
+        recorder.showPreview(nil)
+        precondition(!preview.isVisible)
+        recorder.hide()
+        print("PASS: Live text never shows in Notch, while hidden, or without text")
+    }
+
+    /// A mode that cannot record yet stays selectable: clicking its marked row selects it.
+    @MainActor private static func checkMarkedModeStaysSelectable() async {
+        let model = AppModel()
+        let mailIndex = model.modes.firstIndex { $0.preset == .mail }!
+        model.modeBlockers = [model.modes[mailIndex].id: .modelNotInstalled("S1-mini")]
+        var dismissed = 0
+        let window = NSWindow(
+            contentRect: NSRect(x: 200, y: 200, width: 252, height: 300), styleMask: [.borderless],
+            backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: RecorderModeMenu(model: model) { dismissed += 1 })
+        window.orderFrontRegardless()
+        await pause(150)
+        // Rows are 34 points tall with 2 points between them, below 6 points of padding.
+        let rowCenter = 6 + CGFloat(mailIndex) * 36 + 17
+        let point = NSPoint(x: 120, y: window.frame.height - rowCenter)
+        await postMouse(.leftMouseDown, at: point, to: window)
+        await postMouse(.leftMouseUp, at: point, to: window)
+        await pause(100)
+        precondition(model.settings.selectedModeID == model.modes[mailIndex].id && dismissed == 1)
+        window.orderOut(nil)
+        print("PASS: A mode marked as unable to record is still selected by clicking its row")
     }
 
     /// Measure the tallest rendered bar, including the actual SwiftUI frame and fill.

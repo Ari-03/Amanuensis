@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import LocalSpeech
 import Observation
 
 @MainActor @Observable
@@ -8,31 +9,71 @@ final class ModelLibrary {
     private(set) var installations: [String: ModelInstallation]
     private(set) var progress: [String: DownloadProgress] = [:]
     private(set) var errors: [String: String] = [:]
+    /// Models whose folders passed a quick check, so views can ask without reading the disk on every
+    /// render. Install and remove keep it current; recording validation calls `refreshInstalledModels()`.
+    private(set) var installedModelIDs: Set<String> = []
     var inUseModelIDs: Set<String> = []
 
     @ObservationIgnored private let rootURL: URL
     @ObservationIgnored private let onChange: ([ModelInstallation]) -> Void
     @ObservationIgnored private var operations: [String: Task<Void, Error>] = [:]
+    /// Each download's staging folder, by model, from its start until it installs or is discarded.
+    /// One that stopped on an error stays while the app runs, so Retry continues from its files.
+    private var partials: [String: PartialDownload] = [:]
 
     init(rootURL: URL, installations: [ModelInstallation], onChange: @escaping ([ModelInstallation]) -> Void)
     {
         self.rootURL = rootURL.standardizedFileURL
         self.onChange = onChange
         self.installations = installations.reduce(into: [:]) { $0[$1.id] = $1 }
+        discardAbandonedStaging()
+        refreshInstalledModels()
+    }
+
+    /// Rechecks every installed folder. Catches files removed or damaged outside the app.
+    func refreshInstalledModels() {
+        let valid = Set(installations.keys.filter { localURL(for: $0) != nil })
+        if valid != installedModelIDs { installedModelIDs = valid }
+    }
+
+    /// Runs only when the single app instance opens its library. A quit or crash during a download or
+    /// import leaves its `.staging-<UUID>` folder behind. Other entries are never touched.
+    private func discardAbandonedStaging() {
+        let manager = FileManager.default
+        for name in (try? manager.contentsOfDirectory(atPath: rootURL.path)) ?? [] {
+            guard name.hasPrefix(".staging-") else { continue }
+            let suffix = String(name.dropFirst(".staging-".count))
+            guard let id = UUID(uuidString: suffix),
+                id.uuidString.caseInsensitiveCompare(suffix) == .orderedSame
+            else { continue }
+            let url = rootURL.appendingPathComponent(name)
+            // Inspect the directory entry itself, so a matching symlink cannot authorize deleting its target.
+            guard
+                (try? manager.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
+                    == .typeDirectory
+            else { continue }
+            try? manager.removeItem(at: url)
+        }
     }
 
     /// Download only after an explicit user action. A model becomes installed after validation and rename.
+    /// Each file arrives as `<name>.part` in the staging folder and gets its final name once its size,
+    /// and its SHA-256 where the hub publishes one, pass. After a failure the folder stays, so the next
+    /// install keeps the finished files and resumes the partial one. Cancel, or a folder that fails
+    /// validation, discards it.
     func install(_ model: ModelDescriptor) async throws {
         try requireAvailable(model)
         guard let repository = model.repository, let revision = model.revision else {
             throw ModelLibraryError.invalid(
                 "This model is configured through its system or provider settings.")
         }
-        let stage = rootURL.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
+        let stage =
+            partials[model.id]?.stage
+            ?? rootURL.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
+        partials[model.id] = PartialDownload(stage: stage, totalBytes: partials[model.id]?.totalBytes ?? 0)
         errors[model.id] = nil
-        progress[model.id] = DownloadProgress(fraction: 0, label: "Checking download")
+        progress[model.id] = DownloadProgress(stage: .checking)
         let operation = Task { [self] in
-            defer { try? FileManager.default.removeItem(at: stage) }
             let metadataURL = URL(
                 string: "https://huggingface.co/api/models/\(repository)/revision/\(revision)?blobs=true")!
             let (data, response) = try await URLSession.shared.data(from: metadataURL)
@@ -43,52 +84,102 @@ final class ModelLibrary {
             }
             let files = try ModelFiles.selectedFiles(metadata.siblings, model: model)
             try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
-            let total = max(files.reduce(Int64(0)) { $0 + ($1.size ?? 0) }, 1)
+            let total = files.reduce(Int64(0)) { $0 + ($1.size ?? 0) }
+            partials[model.id]?.totalBytes = total
+            // A Retry starts from the finished files and the partial one, not from zero.
+            progress[model.id] = DownloadProgress(
+                stage: .downloading, completedBytes: (try? ModelFiles.byteCount(stage)) ?? 0,
+                totalBytes: total)
             var completed: Int64 = 0
             for file in files {
                 try Task.checkCancellation()
                 let destination = stage.appendingPathComponent(file.rfilename)
-                let completedBeforeFile = completed
-                let delegate = ModelDownloadDelegate { [weak self] bytes in
-                    Task { @MainActor in
-                        guard let self, self.progress[model.id] != nil else { return }
-                        self.progress[model.id] = DownloadProgress(
-                            fraction: min(0.98, Double(completedBeforeFile + bytes) / Double(total)),
-                            label: "Downloading \(file.rfilename)"
-                        )
-                    }
+                // A file with its final name passed its checks before an earlier attempt failed.
+                if let size = file.size, (try? ModelFiles.fileSize(destination)) == size {
+                    completed += size
+                    continue
                 }
+                let part = stage.appendingPathComponent(file.rfilename + ".part")
+                let completedBeforeFile = completed
                 let url = URL(
                     string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(file.rfilename)")!
-                let (temporary, response) = try await URLSession.shared.download(
-                    from: url, delegate: delegate)
-                defer { try? FileManager.default.removeItem(at: temporary) }
-                try ModelFiles.checkResponse(response)
-                try await ModelFiles.runOffMain {
-                    try ModelFiles.validateFile(temporary, expectedSize: file.size, sha256: file.lfs?.sha256)
+                try await FileDownload.fetch(
+                    url, to: part, expectedSize: file.size,
+                    checkResponse: { try ModelFiles.checkResponse($0) }
+                ) { [weak self] bytes in
+                    Task { @MainActor in
+                        guard let self, self.progress[model.id]?.stage == .downloading else { return }
+                        self.progress[model.id] = DownloadProgress(
+                            stage: .downloading, completedBytes: completedBeforeFile + bytes,
+                            totalBytes: total)
+                    }
+                }
+                do {
+                    try await ModelFiles.runOffMain {
+                        try ModelFiles.validateFile(part, expectedSize: file.size, sha256: file.lfs?.sha256)
+                    }
+                } catch {
+                    // A resumed file that fails its check is never kept, so Retry fetches it again.
+                    try? FileManager.default.removeItem(at: part)
+                    throw error
                 }
                 try Task.checkCancellation()
-                try FileManager.default.moveItem(at: temporary, to: destination)
+                try FileManager.default.moveItem(at: part, to: destination)
                 completed += file.size ?? 0
             }
-            progress[model.id] = DownloadProgress(fraction: 0.99, label: "Validating model")
-            try await ModelFiles.runOffMain { try ModelFiles.validateDirectory(stage, model: model) }
+            progress[model.id] = DownloadProgress(
+                stage: .validating, completedBytes: total, totalBytes: total)
+            do {
+                try await ModelFiles.runOffMain { try ModelFiles.validateDirectory(stage, model: model) }
+            } catch {
+                discardPartial(model.id)
+                throw error
+            }
             try ModelFiles.writeProvenance(model, directory: stage, imported: false)
             try Task.checkCancellation()
             try finishInstallation(model, stage: stage, revision: revision)
         }
-        try await track(operation, modelID: model.id)
+        do {
+            try await track(operation, modelID: model.id)
+        } catch {
+            if Self.isCancellation(error) {
+                discardPartial(model.id)
+            } else if let stage = partials[model.id]?.stage {
+                partials[model.id]?.keptBytes = (try? ModelFiles.byteCount(stage)) ?? 0
+            }
+            throw error
+        }
+    }
+
+    /// What a download that stopped on an error kept on disk, which Retry continues from while the app
+    /// runs, or nil. Cancel discards it.
+    func resumable(_ id: String) -> DownloadProgress? {
+        guard progress[id] == nil, let partial = partials[id], let kept = partial.keptBytes, kept > 0 else {
+            return nil
+        }
+        return DownloadProgress(stage: .downloading, completedBytes: kept, totalBytes: partial.totalBytes)
+    }
+
+    /// Deletes a download's own staging folder and nothing else.
+    private func discardPartial(_ id: String) {
+        if let partial = partials.removeValue(forKey: id) {
+            try? FileManager.default.removeItem(at: partial.stage)
+        }
+    }
+
+    private static func isCancellation(_ error: any Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     /// Imports are managed copies. Moving or deleting the source later does not break the app.
     func importModel(_ model: ModelDescriptor, from source: URL) async throws {
         try requireAvailable(model)
-        guard model.location == .local, model.family != .ollama else {
+        guard model.location == .local else {
             throw ModelLibraryError.invalid("This model does not support file imports.")
         }
         let stage = rootURL.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         errors[model.id] = nil
-        progress[model.id] = DownloadProgress(fraction: 0, label: "Importing model")
+        progress[model.id] = DownloadProgress(stage: .importing)
         let operation = Task { [self] in
             defer { try? FileManager.default.removeItem(at: stage) }
             let access = source.startAccessingSecurityScopedResource()
@@ -101,7 +192,7 @@ final class ModelLibrary {
             try ModelFiles.writeProvenance(model, directory: stage, imported: true)
             // Imported directories are validated for format, not asserted to equal an upstream revision.
             try finishInstallation(
-                model, stage: stage, revision: model.family == .s1mini ? model.revision : nil)
+                model, stage: stage, revision: model.engine == .s1mini ? model.revision : nil)
         }
         try await track(operation, modelID: model.id)
     }
@@ -116,6 +207,7 @@ final class ModelLibrary {
             }
         }
         installations[model.id] = nil
+        installedModelIDs.remove(model.id)
         errors[model.id] = nil
         onChange(Array(installations.values))
     }
@@ -129,9 +221,27 @@ final class ModelLibrary {
         return directory
     }
 
-    func cancelDownload(_ id: String) { operations[id]?.cancel() }
+    /// Stops a running download, or discards what a stopped one kept, with its error, so the row offers
+    /// a fresh Download. Either way its partial files go. An import has no partial files; canceling it
+    /// stops the copy.
+    func cancelDownload(_ id: String) {
+        if let operation = operations[id] {
+            operation.cancel()
+        } else {
+            discardPartial(id)
+            errors[id] = nil
+        }
+    }
 
+    /// A refused start is recorded like a failed download, so every download row can show it.
     private func requireAvailable(_ model: ModelDescriptor) throws {
+        do { try checkAvailable(model) } catch {
+            if operations[model.id] == nil { errors[model.id] = error.localizedDescription }
+            throw error
+        }
+    }
+
+    private func checkAvailable(_ model: ModelDescriptor) throws {
         guard operations[model.id] == nil else {
             throw ModelLibraryError.invalid("This model already has an operation running.")
         }
@@ -156,9 +266,7 @@ final class ModelLibrary {
                 operation.cancel()
             }
         } catch {
-            if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
-                errors[modelID] = error.localizedDescription
-            }
+            if !Self.isCancellation(error) { errors[modelID] = error.localizedDescription }
             throw error
         }
     }
@@ -175,6 +283,9 @@ final class ModelLibrary {
         installations[model.id] = ModelInstallation(
             id: model.id, directory: destination.lastPathComponent, byteCount: byteCount, revision: revision
         )
+        installedModelIDs.insert(model.id)
+        // An import can finish while a stopped download's files wait for Retry; they are no longer needed.
+        discardPartial(model.id)
         onChange(Array(installations.values))
     }
 
@@ -209,16 +320,11 @@ private struct HubFile: Decodable, Sendable {
     let lfs: LFS?
 }
 
-private final class ModelDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    let update: @Sendable (Int64) -> Void
-    init(update: @escaping @Sendable (Int64) -> Void) { self.update = update }
-    func urlSession(
-        _ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL
-    ) {}
-    func urlSession(
-        _ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64
-    ) { update(totalBytesWritten) }
+/// A download's staging folder. `keptBytes` is what was on disk when it last stopped on an error.
+private struct PartialDownload {
+    let stage: URL
+    var totalBytes: Int64
+    var keptBytes: Int64? = nil
 }
 
 private enum ModelFiles {
@@ -255,12 +361,10 @@ private enum ModelFiles {
         let selected = files.filter { file in
             let name = file.rfilename
             guard !name.contains("/"), !name.hasPrefix(".") else { return false }
-            if model.family == .s1mini {
+            if model.engine == .s1mini {
                 return [model.fileName, "LICENSE", "NOTICE", "README.md"].contains(name)
             }
-            if name.contains(".fp32") { return false }
-            return name.hasSuffix(".json") || name.hasSuffix(".safetensors") || name.hasSuffix(".txt")
-                || name.hasSuffix(".model") || name.hasSuffix(".vocab")
+            return LocalSpeechFamily.isModelFile(name)
                 || ["LICENSE", "LICENSE.md", "LICENSE.txt", "NOTICE", "README.md"].contains(name)
         }
         guard !selected.isEmpty else {
@@ -276,7 +380,7 @@ private enum ModelFiles {
             throw ModelLibraryError.invalid("Import the actual model files, rather than a symbolic link.")
         }
         try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        if model.family == .s1mini, info.isDirectory != true {
+        if model.engine == .s1mini, info.isDirectory != true {
             guard let fileName = model.fileName else {
                 throw ModelLibraryError.invalid("The S1-mini filename is missing.")
             }
@@ -332,7 +436,7 @@ private enum ModelFiles {
                 throw ModelLibraryError.invalid("The model folder is missing a complete \(name).")
             }
         }
-        if model.family == .s1mini {
+        if model.engine == .s1mini {
             guard let name = model.fileName else {
                 throw ModelLibraryError.invalid("Missing S1-mini artifact name.")
             }
@@ -346,50 +450,13 @@ private enum ModelFiles {
             if verifyHash { try validateFile(file, expectedSize: 484_219_808, sha256: model.sha256) }
             return
         }
-        try require("config.json")
-        var configData = try Data(contentsOf: directory.appendingPathComponent("config.json"))
-        if model.family == .parakeet, var text = String(data: configData, encoding: .utf8) {
-            // Match the pinned NeMo loader's treatment of non-standard floating-point values.
-            for value in ["-Infinity", "Infinity", "NaN"] {
-                text = text.replacingOccurrences(of: value, with: "null")
-            }
-            configData = Data(text.utf8)
+        // Everything else runs on a LocalSpeech family, which knows its files and configuration.
+        let family: LocalSpeechFamily
+        do { family = try LocalSpeechFamily.named(model.engine.rawValue) } catch {
+            throw ModelLibraryError.invalid("This model has no managed local artifact.")
         }
-        guard let config = try JSONSerialization.jsonObject(with: configData) as? [String: Any] else {
-            throw ModelLibraryError.invalid("The model configuration is not a JSON object.")
-        }
-        switch model.family {
-        case .whisper:
-            guard config["model_type"] as? String == "whisper" || config["n_mels"] != nil else {
-                throw ModelLibraryError.invalid("This folder does not contain a Whisper configuration.")
-            }
-            try require("tokenizer.json")
-            try require("tokenizer_config.json")
-        case .parakeet:
-            guard config["encoder"] != nil, config["decoder"] != nil else {
-                throw ModelLibraryError.invalid("This folder does not contain a Parakeet configuration.")
-            }
-            // Parakeet's decoder reads its token table directly from the configuration.
-            // The accompanying SentencePiece file is useful provenance, but is not needed offline.
-            let joint = config["joint"] as? [String: Any]
-            let decoder = config["decoder"] as? [String: Any]
-            let vocabulary =
-                joint?["vocabulary"] as? [String]
-                ?? decoder?["vocabulary"] as? [String]
-                ?? config["labels"] as? [String]
-            guard let vocabulary, !vocabulary.isEmpty else {
-                throw ModelLibraryError.invalid(
-                    "Parakeet's configuration is missing its embedded vocabulary.")
-            }
-        case .cohere:
-            guard (config["model_type"] as? String)?.contains("cohere") == true else {
-                throw ModelLibraryError.invalid(
-                    "This folder does not contain a Cohere Transcribe configuration.")
-            }
-            try require("tokenizer.model")
-            try require("tokenizer_config.json")
-        default: throw ModelLibraryError.invalid("This model has no managed local artifact.")
-        }
+        for file in family.requiredFiles { try require(file) }
+        try family.checkConfiguration(Data(contentsOf: directory.appendingPathComponent("config.json")))
         let weights = try manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "safetensors" }
         guard !weights.isEmpty else {
@@ -441,9 +508,13 @@ private enum ModelFiles {
         }
     }
 
+    static func fileSize(_ url: URL) throws -> Int64 {
+        Int64(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+    }
+
     static func validateFile(_ url: URL, expectedSize: Int64?, sha256: String?) throws {
-        let actual = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard actual > 0, expectedSize == nil || Int64(actual) == expectedSize else {
+        let actual = try fileSize(url)
+        guard actual > 0, expectedSize == nil || actual == expectedSize else {
             throw ModelLibraryError.invalid("A model file is incomplete. Download it again.")
         }
         if let sha256 {

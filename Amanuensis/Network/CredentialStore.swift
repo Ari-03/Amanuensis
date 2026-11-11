@@ -46,7 +46,7 @@ enum CredentialStore {
     }
 
     private static func query(for provider: ModelFamily) throws -> [String: Any] {
-        guard [.openAI, .groq, .anthropic].contains(provider) else {
+        guard [.openAI, .groq, .anthropic, .openAICompatible].contains(provider) else {
             throw CredentialError.unsupportedProvider
         }
         return [

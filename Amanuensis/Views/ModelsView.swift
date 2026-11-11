@@ -1,100 +1,66 @@
 import AppKit
 import SwiftUI
 
+/// The catalog, one purpose at a time, narrowed by where models run, a language and a search, in catalog,
+/// size or measured speed order. Each row states facts that differ between models and offers what can
+/// be done with it now: download, connect, try, or use in a mode.
 struct ModelsView: View {
     @Bindable var model: AppModel
-    @State private var query = ""
-    @State private var filter: LibraryFilter = .all
+    @State private var options = ModelListOptions()
     @State private var selectedAPI: ModelDescriptor?
     @State private var pendingRemoval: ModelDescriptor?
     @State private var operationError: String?
-    @State private var expandedFamilies: Set<ModelFamily> = []
-
-    private enum LibraryFilter: String, CaseIterable {
-        case all = "All models"
-        case local = "Local"
-        case installed = "Installed"
-        case api = "API"
-        case speech = "Speech"
-        case cleanup = "Cleanup"
-    }
-
-    /// Families with several checkpoints are shown as one collapsible collection.
-    private static let collections: [ModelFamily: (title: String, subtitle: String)] = [
-        .whisper: ("Whisper", "Choose a size and an English or multilingual checkpoint."),
-        .parakeet: ("Parakeet", "NVIDIA TDT 0.6B. Choose the English V2 or multilingual V3 checkpoint."),
-    ]
-
-    private enum Row: Identifiable {
-        case single(ModelDescriptor)
-        case collection(ModelFamily, [ModelDescriptor])
-        var id: String {
-            switch self {
-            case .single(let descriptor): descriptor.id
-            case .collection(let family, _): "collection-\(family.rawValue)"
-            }
-        }
-    }
-
-    private var filteredModels: [ModelDescriptor] {
-        model.library.models.filter { descriptor in
-            guard descriptor.family != .ollama else { return false }
-            let matchesFilter =
-                switch filter {
-                case .all: true
-                case .local: descriptor.isLocal
-                case .installed: model.library.localURL(for: descriptor.id) != nil
-                case .api: descriptor.location == .cloud
-                case .speech: descriptor.purpose == .speech
-                case .cleanup: descriptor.purpose == .cleanup
-                }
-            return matchesFilter
-                && (query.isEmpty
-                    || descriptor.name.localizedCaseInsensitiveContains(query)
-                    || descriptor.provider.localizedCaseInsensitiveContains(query))
-        }
-    }
-
-    /// Keeps catalog order, folding each collection into the position of its first member.
-    private var rows: [Row] {
-        var rows: [Row] = []
-        var seen: Set<ModelFamily> = []
-        for descriptor in filteredModels {
-            guard Self.collections[descriptor.family] != nil else {
-                rows.append(.single(descriptor))
-                continue
-            }
-            guard seen.insert(descriptor.family).inserted else { continue }
-            rows.append(
-                .collection(descriptor.family, filteredModels.filter { $0.family == descriptor.family }))
-        }
-        return rows
-    }
+    /// Built when Apple Speech's languages arrive rather than on every render: sorting language names
+    /// is slow, and download progress renders this screen several times a second.
+    @State private var languageCodes: [String] = []
+    @State private var languageBadges: [String: (title: String, help: String)] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        let readiness = model.readiness
+        let models = model.catalogModels(for: options.purpose)
+        let speeds = models.reduce(into: [String: Double]()) { speeds, item in
+            speeds[item.id] = model.secondsPer30(item)
+        }
+        let rows = options.apply(to: models, readiness: readiness, speeds: speeds)
+        let usedBy = modeNames()
+        VStack(alignment: .leading, spacing: 16) {
             ScreenHeader(title: "Models", subtitle: "Choose what listens. Choose what edits.")
+
+            HStack {
+                Picker("Purpose", selection: $options.purpose) {
+                    Text("Speech").tag(ModelPurpose.speech)
+                    Text("Cleanup").tag(ModelPurpose.cleanup)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                Spacer()
+                Text(
+                    rows.count == models.count
+                        ? "\(models.count) models" : "\(rows.count) of \(models.count) models"
+                )
+                .font(.caption).foregroundStyle(.secondary)
+            }
 
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search models or providers", text: $query)
+                TextField("Search models or providers", text: $options.search)
                     .textFieldStyle(.plain)
             }
-            .padding(11)
+            .padding(10)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
 
-            HStack {
-                Picker("Filter models", selection: $filter) {
-                    ForEach(LibraryFilter.allCases, id: \.self) { filter in
-                        Text(filter.rawValue).tag(filter)
-                    }
+            // One line when the window is wide enough, else the menus go under the chips.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    placeChips
+                    Spacer(minLength: 12)
+                    listMenus
                 }
-                .pickerStyle(.segmented).labelsHidden()
-                .frame(maxWidth: 490)
-                Spacer()
-                Text("\(filteredModels.count) models")
-                    .font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 6) { placeChips }
+                    HStack(spacing: 6) { listMenus }
+                }
             }
+            .font(.callout)
 
             if model.settings.requireLocalProcessing {
                 HStack(spacing: 10) {
@@ -126,19 +92,19 @@ struct ModelsView: View {
                 .font(.callout)
             }
 
-            if filteredModels.isEmpty {
-                ContentUnavailableView.search(text: query)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if rows.isEmpty {
+                ContentUnavailableView(
+                    "No models match", systemImage: "line.3.horizontal.decrease.circle",
+                    description: Text("Change the filters or the search.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(rows) { row in
-                            switch row {
-                            case .single(let descriptor):
-                                modelRow(descriptor)
-                            case .collection(let family, let variants):
-                                collectionRow(family, variants: variants)
-                            }
+                        ForEach(rows) { descriptor in
+                            modelRow(
+                                descriptor, readiness: readiness, usedBy: usedBy[descriptor.id] ?? [],
+                                speed: speeds[descriptor.id])
                             Divider().padding(.leading, 62)
                         }
                     }
@@ -153,6 +119,12 @@ struct ModelsView: View {
             .font(.caption).foregroundStyle(.secondary)
         }
         .padding(24)
+        .onChange(of: model.appleSpeech.locales, initial: true) {
+            languageCodes = model.languageChoices(for: nil)
+            languageBadges = model.library.models.reduce(into: [:]) { badges, item in
+                badges[item.id] = languageBadge(item)
+            }
+        }
         .sheet(item: $selectedAPI) { descriptor in
             APIConfigurationSheet(model: model, descriptor: descriptor)
         }
@@ -181,40 +153,58 @@ struct ModelsView: View {
         }
     }
 
-    private func collectionRow(_ family: ModelFamily, variants: [ModelDescriptor]) -> some View {
-        let info = Self.collections[family]!
-        let installed = variants.filter { model.library.localURL(for: $0.id) != nil }.count
-        return DisclosureGroup(
-            isExpanded: Binding(
-                get: { expandedFamilies.contains(family) || !query.isEmpty },
-                set: { expanded in
-                    if expanded { expandedFamilies.insert(family) } else { expandedFamilies.remove(family) }
-                }
-            )
-        ) {
-            ForEach(variants) { variant in
-                modelRow(variant)
-                Divider()
-            }
-        } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "waveform").font(.title3).foregroundStyle(.tint).frame(width: 34)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(info.title).font(.headline)
-                    Text(info.subtitle).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if installed > 0 {
-                    Label("\(installed) installed", systemImage: "checkmark.circle.fill")
-                        .font(.caption).foregroundStyle(.green)
-                }
-                Text("\(variants.count) variants").font(.caption).foregroundStyle(.secondary)
-            }
+    private var placeChips: some View {
+        ForEach(ModelListOptions.Place.allCases, id: \.self) { place in
+            FilterChip(title: place.rawValue, isOn: options.place == place) { options.place = place }
         }
-        .padding(16)
     }
 
-    private func modelRow(_ descriptor: ModelDescriptor) -> some View {
+    /// The language filter, for speech only, and the order.
+    @ViewBuilder private var listMenus: some View {
+        if options.purpose == .speech {
+            Picker("Language", selection: $options.language) {
+                Text("Any language").tag(String?.none)
+                Divider()
+                ForEach(languageCodes, id: \.self) { code in
+                    Text(SpeechLanguage.name(of: code)).tag(Optional(code))
+                }
+            }
+            .fixedSize()
+        }
+        Picker("Sort", selection: $options.order) {
+            ForEach(ModelListOptions.Order.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        }
+        .fixedSize()
+    }
+
+    /// Mode names by the model IDs they use, for "Used by".
+    private func modeNames() -> [String: [String]] {
+        model.modes.reduce(into: [:]) { names, mode in
+            for id in Set([mode.speechModelID, mode.cleanupModelID].compactMap { $0 }) {
+                names[id, default: []].append(mode.name)
+            }
+        }
+    }
+
+    /// "English", "25 languages" with the names as help, or who decides when the catalog has no list.
+    private func languageBadge(_ descriptor: ModelDescriptor) -> (title: String, help: String) {
+        let codes =
+            descriptor.engine == .apple
+            ? model.appleSpeech.locales.map { Array($0.keys) } : descriptor.languages
+        guard let codes else {
+            return ("macOS languages", "macOS decides which languages Apple Speech transcribes on this Mac.")
+        }
+        if codes.isEmpty {
+            return ("Provider's languages", "The provider decides which languages this model handles.")
+        }
+        let names = SpeechLanguage.sortedByName(codes).map(SpeechLanguage.name(of:))
+        let list = names.formatted(.list(type: .and))
+        return codes.count == 1 ? (list, list) : ("\(codes.count) languages", list)
+    }
+
+    private func modelRow(
+        _ descriptor: ModelDescriptor, readiness: RecordingReadiness, usedBy: [String], speed: Double?
+    ) -> some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: descriptor.purpose == .speech ? "waveform" : "text.badge.checkmark")
                 .font(.system(size: 18, weight: .medium))
@@ -223,14 +213,17 @@ struct ModelsView: View {
                 .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 9))
 
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text(descriptor.name).font(.system(size: 14, weight: .semibold))
-                    Text(descriptor.purpose == .speech ? "SPEECH" : "CLEANUP")
-                        .font(.system(size: 9, weight: .semibold))
-                        .tracking(0.5)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5).padding(.vertical, 3)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                    if let badge = languageBadges[descriptor.id] {
+                        Text(badge.title)
+                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
+                            .help(badge.help)
+                    }
+                    Spacer(minLength: 8)
+                    status(descriptor)
                 }
                 Text(descriptor.summary)
                     .font(.callout).foregroundStyle(.secondary)
@@ -240,64 +233,47 @@ struct ModelsView: View {
                     Label(
                         descriptor.isLocal ? "On this Mac" : "API",
                         systemImage: descriptor.isLocal ? "desktopcomputer" : "cloud")
-                    if !descriptor.sizeLabel.isEmpty { Text(descriptor.sizeLabel) }
-                    if descriptor.location == .cloud, let chosen = apiModelID(descriptor) {
+                    if let size = descriptor.sizeLabel, !size.isEmpty { Text(size) }
+                    if descriptor.location == .cloud, let chosen = descriptor.apiModelID {
                         Text(chosen).font(.system(.caption, design: .monospaced))
                     }
                 }
-                .font(.caption).foregroundStyle(.tertiary)
-                if let progress = model.library.progress[descriptor.id] {
-                    ProgressView(value: progress.fraction)
-                        .progressViewStyle(.linear)
-                    Text(progress.label).font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondary)
+                actions(descriptor, readiness: readiness)
+                    .padding(.top, 2)
+                // Everything that comes and goes sits below the buttons: Used by after the first
+                // assignment, speed after the first measurement, progress and the Try it result. So none
+                // of them moves a button under the pointer.
+                if !usedBy.isEmpty {
+                    Label(
+                        "Used by \(usedBy.formatted(.list(type: .and)))", systemImage: "slider.horizontal.3"
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
                 }
-                if let error = model.library.errors[descriptor.id] {
-                    Text(error).font(.caption).foregroundStyle(.orange)
+                if let speed {
+                    Label(
+                        TranscriptionSpeed.label(secondsPer30: speed, isAPI: descriptor.location == .cloud),
+                        systemImage: "stopwatch"
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
                 }
+                if descriptor.location == .local {
+                    ModelDownloadStatus(
+                        name: descriptor.name, progress: model.library.progress[descriptor.id],
+                        resumable: model.library.resumable(descriptor.id),
+                        error: model.library.errors[descriptor.id],
+                        onCancel: { model.library.cancelDownload(descriptor.id) })
+                }
+                trialResult(descriptor)
             }
-            Spacer(minLength: 8)
-            modelActions(descriptor)
-                .frame(minWidth: 102, alignment: .trailing)
-                .padding(.top, 3)
         }
         .padding(16)
     }
 
-    private func apiModelID(_ descriptor: ModelDescriptor) -> String? {
-        let override = model.settings.apiModelOverrides[descriptor.id]?.trimmingCharacters(in: .whitespaces)
-        return override?.isEmpty == false ? override : descriptor.apiModelID
-    }
-
-    @ViewBuilder
-    private func modelActions(_ descriptor: ModelDescriptor) -> some View {
-        if descriptor.location == .cloud {
-            HStack(spacing: 8) {
-                if model.connectedProviders.contains(descriptor.family) {
-                    Label("Connected", systemImage: "checkmark.circle.fill")
-                        .font(.caption).foregroundStyle(.green)
-                    Button("Configure") { selectedAPI = descriptor }
-                } else {
-                    Button("Connect") { selectedAPI = descriptor }
-                }
-            }
-        } else if descriptor.location == .system {
-            if model.appleSpeech.isPreparing {
-                ProgressView().controlSize(.small)
-                    .help("Preparing English speech assets")
-            } else if model.appleSpeechReady {
-                Label("Ready", systemImage: "checkmark.circle.fill")
-                    .font(.caption).foregroundStyle(.green)
-            } else {
-                Button("Prepare") { Task { await model.prepareAppleSpeech() } }
-                    .disabled(model.phase.isBusy)
-                    .help("Download English speech assets through macOS")
-            }
-        } else if descriptor.family == .ollama {
-            Text("Local server")
-                .font(.caption).foregroundStyle(.secondary)
-        } else if model.library.progress[descriptor.id] != nil {
-            Button("Cancel") { model.library.cancelDownload(descriptor.id) }
-        } else if model.library.localURL(for: descriptor.id) != nil {
+    /// The state on the right of a row's name: installed with its options, connected, or ready.
+    @ViewBuilder private func status(_ descriptor: ModelDescriptor) -> some View {
+        switch descriptor.location {
+        case .local where model.library.installedModelIDs.contains(descriptor.id):
             HStack(spacing: 8) {
                 Label("Installed", systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)
@@ -312,31 +288,152 @@ struct ModelsView: View {
                     Image(systemName: "ellipsis")
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .frame(width: 20)
                 .accessibilityLabel("Options for \(descriptor.name)")
             }
-        } else {
-            HStack(spacing: 5) {
-                Button {
-                    operationError = nil
-                    Task {
-                        do { try await model.library.install(descriptor) } catch {
-                            if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
-                                operationError = error.localizedDescription
-                            }
+        case .cloud
+        where model.connectedProviders.contains(descriptor.engine) && descriptor.apiModelID != nil:
+            Label("Connected", systemImage: "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(.green)
+        case .system where !model.appleSpeech.readyLanguages.isEmpty:
+            Label("Ready", systemImage: "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(.green)
+                .help(
+                    "Prepared for "
+                        + SpeechLanguage.sortedByName(model.appleSpeech.readyLanguages)
+                        .map(SpeechLanguage.name(of:)).formatted(.list(type: .and)))
+        default:
+            EmptyView()
+        }
+    }
+
+    /// What can be done with the model now, else what it needs: a download, a connection or preparation.
+    /// Try it records in the Settings language, so it needs the model ready for that language. Use in
+    /// mode appears when the model is ready for it, or when some mode's own language makes it ready, such
+    /// as Apple Speech prepared for an English mode while Settings is French; its items judge each mode.
+    @ViewBuilder
+    private func actions(_ descriptor: ModelDescriptor, readiness: RecordingReadiness) -> some View {
+        let language = model.settings.language
+        let ready = readiness.availability(of: descriptor, language: language) == .ready
+        let usable =
+            ready
+            || model.modes.contains {
+                readiness.blocker(for: descriptor, language: model.language(for: $0)) == nil
+            }
+        HStack(spacing: 8) {
+            switch descriptor.location {
+            case .local where !model.library.installedModelIDs.contains(descriptor.id):
+                downloadButtons(descriptor)
+            case .cloud:
+                let connected =
+                    model.connectedProviders.contains(descriptor.engine) && descriptor.apiModelID != nil
+                Button(connected ? "Configure" : "Connect") { selectedAPI = descriptor }
+            case .system:
+                appleSpeechPreparation()
+            default:
+                EmptyView()
+            }
+            if ready && descriptor.purpose == .speech {
+                let blocker = readiness.blocker(for: descriptor, language: language)
+                Button("Try it", systemImage: "mic") { model.tryModel(descriptor) }
+                    .disabled(model.phase.isBusy || blocker != nil)
+                    .help(
+                        blocker?.errorDescription
+                            ?? "Record a short test in \(language.name) with no cleanup or paste.")
+            }
+            if usable {
+                Menu("Use in mode") {
+                    UseInModeItems(model: model, descriptor: descriptor, readiness: readiness)
+                }
+                .fixedSize()
+            }
+        }
+        .controlSize(.small)
+    }
+
+    /// Download or Retry, which stays in place, disabled, while the download runs; Cancel sits with the
+    /// progress below. The chevron imports a copy from disk instead.
+    @ViewBuilder private func downloadButtons(_ descriptor: ModelDescriptor) -> some View {
+        let progress = model.library.progress[descriptor.id]
+        // Retry only continues kept bytes; a failed import must not turn into a download offer.
+        let retry = model.library.resumable(descriptor.id) != nil
+        Button(retry ? "Retry" : "Download", systemImage: "arrow.down") {
+            operationError = nil
+            // Failures show under the row, from the library, like every other download row.
+            Task { await model.download(descriptor) }
+        }
+        .disabled(progress != nil)
+        Menu {
+            Button("Import existing model…") { importModel(descriptor) }
+        } label: {
+            Image(systemName: "chevron.down")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 18)
+        .disabled(progress != nil)
+        .accessibilityLabel("Import \(descriptor.name)")
+    }
+
+    /// Apple Speech's assets are per language. Offer the languages modes record in that still need them.
+    @ViewBuilder private func appleSpeechPreparation() -> some View {
+        if let preparing = model.appleSpeech.preparingLanguage {
+            ProgressView().controlSize(.small)
+            Text("Preparing \(SpeechLanguage.name(of: preparing))").font(.caption).foregroundStyle(.secondary)
+        } else if let needed = model.appleSpeechLanguagesToPrepare.first {
+            Button("Prepare \(SpeechLanguage.name(of: needed))") {
+                Task { await model.prepareAppleSpeech(language: needed) }
+            }
+            .disabled(model.phase.isBusy)
+            .help("Download \(SpeechLanguage.name(of: needed)) speech assets through macOS")
+        }
+    }
+
+    /// The model's Try it run: its phase with Stop while it records, then the transcript and how long
+    /// transcription took, read from the History entry.
+    @ViewBuilder private func trialResult(_ descriptor: ModelDescriptor) -> some View {
+        if let trial = model.trial, trial.modelID == descriptor.id {
+            if model.isTrialRunning {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("\(model.phase.rawValue)…").font(.caption).foregroundStyle(.secondary)
+                    if model.phase == .recording {
+                        Button("Stop") { model.stopRecording() }.controlSize(.small)
+                    }
+                }
+            } else if let entry = model.history.first(where: { $0.id == trial.recordingID }) {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        switch entry.status {
+                        case .complete, .empty:
+                            Text("“\(entry.preview)”").font(.callout).textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        case .noSpeech:
+                            Text("No speech detected.").font(.callout).foregroundStyle(.secondary)
+                        default:
+                            Label(entry.error ?? "Couldn't finish.", systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let seconds = entry.transcriptionSeconds {
+                            Text(
+                                "Transcribed \(TranscriptionSpeed.format(entry.duration)) of audio in \(TranscriptionSpeed.format(seconds))."
+                            )
+                            .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                } label: {
-                    Label("Get", systemImage: "arrow.down")
+                    Spacer(minLength: 8)
+                    Button {
+                        model.dismissTrial()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .accessibilityLabel("Dismiss test result")
                 }
-                Menu {
-                    Button("Import existing model…") { importModel(descriptor) }
-                } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .menuStyle(.borderlessButton)
-                .frame(width: 18)
-                .accessibilityLabel("Import \(descriptor.name)")
+                .padding(10)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
             }
         }
     }
@@ -345,10 +442,10 @@ struct ModelsView: View {
         let panel = NSOpenPanel()
         panel.title = "Import \(descriptor.name)"
         panel.message =
-            descriptor.family == .s1mini
+            descriptor.engine == .s1mini
             ? "Choose the official S1-mini Q4_K_M GGUF file. Amanuensis keeps its own copy."
             : "Choose a complete supported model folder, including weights and tokenizer. Amanuensis keeps its own copy."
-        panel.canChooseFiles = descriptor.family == .s1mini
+        panel.canChooseFiles = descriptor.engine == .s1mini
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Import"
@@ -366,130 +463,51 @@ struct ModelsView: View {
     }
 }
 
-/// Connects one provider entry: the API key for its provider and the model ID it should call.
-private struct APIConfigurationSheet: View {
-    @Bindable var model: AppModel
+/// The modes a ready model can be assigned to, for its Use in mode menu. A mode whose language the
+/// model cannot handle, or for which it is not ready, is listed with the reason and cannot be chosen,
+/// so the menu never creates a mode that cannot record.
+struct UseInModeItems: View {
+    let model: AppModel
     let descriptor: ModelDescriptor
-    @Environment(\.dismiss) private var dismiss
-    @State private var apiKey = ""
-    @State private var modelID = ""
-    @State private var isTesting = false
-    @State private var message: String?
-    @State private var testSucceeded = false
-
-    private var connected: Bool { model.connectedProviders.contains(descriptor.family) }
-    private var defaultModelID: String { descriptor.apiModelID ?? descriptor.id }
-    private var trimmedModelID: String { modelID.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var canSubmit: Bool { !isTesting && !trimmedModelID.isEmpty && (connected || !apiKey.isEmpty) }
+    let readiness: RecordingReadiness
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 12) {
-                Image(systemName: "key.fill").font(.title2).foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(descriptor.name).font(.title2.weight(.semibold))
-                    Text(descriptor.summary).font(.callout).foregroundStyle(.secondary)
-                }
-            }
-
-            Form {
-                SecureField(
-                    "\(descriptor.provider) API key", text: $apiKey,
-                    prompt: Text(connected ? "Leave blank to keep the saved key" : "Paste your API key")
-                )
-                .textContentType(.password)
-                LabeledContent("Model") {
-                    HStack(spacing: 8) {
-                        TextField("Model ID", text: $modelID).autocorrectionDisabled()
-                            .multilineTextAlignment(.trailing).labelsHidden()
-                        if trimmedModelID != defaultModelID {
-                            Button("Use default") { modelID = defaultModelID }.buttonStyle(.link)
-                                .help("Use \(defaultModelID)")
-                        }
+        ForEach(model.modes) { mode in
+            let language = model.language(for: mode)
+            let current = descriptor.purpose == .speech ? mode.speechModelID : mode.cleanupModelID
+            if current == descriptor.id {
+                Button(mode.name, systemImage: "checkmark") {}
+            } else if let blocker = readiness.blocker(for: descriptor, language: language) {
+                let reason: String =
+                    if case .unsupportedLanguage = blocker { language.unsupportedLabel } else {
+                        blocker.shortReason
                     }
-                }
-            }
-            .formStyle(.grouped)
-            .frame(height: 130)
-            .disabled(isTesting)
-
-            Text(
-                "Keys are stored in macOS Keychain and shared by every \(descriptor.provider) model. Checking saves an entered key and verifies the model is available. It does not test transcription, cleanup, or billing access."
-            )
-            .font(.caption).foregroundStyle(.secondary)
-            if let message {
-                Label(message, systemImage: testSucceeded ? "checkmark.circle" : "exclamationmark.circle")
-                    .font(.callout)
-                    .foregroundStyle(testSucceeded ? Color.green : Color.orange)
-                    .textSelection(.enabled)
-            }
-
-            HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                if connected {
-                    Button("Remove key", role: .destructive) { removeKey() }.disabled(isTesting)
-                }
-                Spacer()
-                if isTesting { ProgressView().controlSize(.small) }
-                Button("Check model") { testConnection() }.disabled(!canSubmit)
-                Button("Save") { saveAndClose() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSubmit)
+                Button("\(mode.name) · \(reason)") {}.disabled(true)
+            } else {
+                Button(mode.name) { model.use(descriptor, in: mode.id) }
             }
         }
-        .padding(28)
-        .frame(width: 550)
-        .interactiveDismissDisabled(isTesting)
-        .onAppear {
-            modelID = model.settings.apiModelOverrides[descriptor.id] ?? defaultModelID
-        }
     }
+}
 
-    private func saveKey() throws {
-        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !key.isEmpty { try model.saveAPIKey(key, provider: descriptor.family) }
-    }
+/// One choice in a row of filters, filled while it is selected.
+private struct FilterChip: View {
+    let title: String
+    let isOn: Bool
+    let action: () -> Void
 
-    private func saveAndClose() {
-        do {
-            try saveKey()
-            model.settings.apiModelOverrides[descriptor.id] = trimmedModelID
-            model.saveConfiguration()
-            apiKey = ""
-            dismiss()
-        } catch {
-            testSucceeded = false
-            message = error.localizedDescription
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .lineLimit(1).fixedSize()
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .foregroundStyle(isOn ? Color.accentColor : Color.primary)
+                .background(
+                    isOn ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.08), in: Capsule()
+                )
+                .contentShape(Capsule())
         }
-    }
-
-    private func removeKey() {
-        do {
-            try model.removeAPIKey(provider: descriptor.family)
-            apiKey = ""
-            testSucceeded = true
-            message = "The \(descriptor.provider) key was removed from your Keychain."
-        } catch {
-            testSucceeded = false
-            message = error.localizedDescription
-        }
-    }
-
-    private func testConnection() {
-        isTesting = true
-        message = nil
-        Task {
-            defer { isTesting = false }
-            do {
-                try saveKey()
-                message = try await model.validateAPI(provider: descriptor.family, modelID: trimmedModelID)
-                testSucceeded = true
-                apiKey = ""
-            } catch {
-                testSucceeded = false
-                message = error.localizedDescription
-            }
-        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 }

@@ -3,6 +3,7 @@ import Foundation
 import LocalSpeech
 
 /// Verifies the shipped Metal resources and helper using a supplied audio fixture, never a microphone.
+/// The fixture is English, the language S1-mini cleans up.
 @MainActor
 enum SmokeLaunch {
     static func runIfRequested() async {
@@ -16,13 +17,15 @@ enum SmokeLaunch {
                 modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4])
             let speech = try await engine.transcribe(
                 audioURL: URL(fileURLWithPath: arguments[2]),
-                modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4])
+                modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4], language: "en"
+            ).text
             let cleaned = try await normalizer.clean(
                 text: speech, modelURL: URL(fileURLWithPath: arguments[5]),
                 mode: DictationMode.make(preset: .message))
             let repeated = try await engine.transcribe(
                 audioURL: URL(fileURLWithPath: arguments[2]),
-                modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4])
+                modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4], language: "en"
+            ).text
             let repeatedCleanup = try await normalizer.clean(
                 text: repeated, modelURL: URL(fileURLWithPath: arguments[5]),
                 mode: DictationMode.make(preset: .message))

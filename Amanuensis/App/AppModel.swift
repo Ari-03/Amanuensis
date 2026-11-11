@@ -14,20 +14,45 @@ final class AppModel {
     var vocabulary: [VocabularyEntry] = []
     var microphones: [MicrophonePreference] = []
     var history: [RecordingEntry] = []
+    /// History's transcription times by speech model, rebuilt with History so views never walk it.
+    private(set) var speedSamples: [String: [TranscriptionSpeed.Sample]] = [:]
     var statistics = UsageStatistics()
     var phase: DictationPhase = .idle {
         didSet {
             if phase != oldValue { dismissCancellation() }
+            // Any new work replaces the previous job's outcome.
+            if phase.isBusy { recorderOutcome = nil }
             shortcuts.setRecordingActive(phase.isBusy)
             updateRecorder()
         }
     }
     var statusMessage = "Your voice, on your Mac."
-    var errorMessage: String?
-    var pasteNeedsAccessibility = false {
-        didSet { if pasteNeedsAccessibility != oldValue { updateRecorder() } }
+    /// What the speech model has transcribed so far of the recording in progress, for the live previews.
+    /// Empty unless the model transcribes while recording.
+    private(set) var liveText = "" {
+        didSet { if liveText != oldValue { updateLivePreview() } }
     }
+    var errorMessage: String?
+    /// How the last job ended, shown by the recorder pill until it expires or the user handles it.
+    private(set) var recorderOutcome: RecorderOutcome? {
+        didSet {
+            guard recorderOutcome != oldValue else { return }
+            if recorderOutcome?.action != .pasteOriginal { originalOffer = nil }
+            scheduleOutcomeExpiry()
+            updateRecorder()
+        }
+    }
+    /// The History entry to select, so the recorder can open a specific recording.
+    var selectedRecordingID: UUID?
+    /// The mode for the Modes screen to select, so the recorder can open the mode that failed.
+    var modeToEdit: UUID?
+    /// The Models screen's latest Try it run. Its result is the History entry, so a canceled or deleted
+    /// run shows nothing.
+    private(set) var trial: ModelTrial?
     private(set) var accessibilityGranted = TextDelivery.isAccessibilityTrusted
+    private(set) var microphoneAccess = AudioCapture.access
+    /// True while the setup checklist's own download runs, which moves Apple Speech modes when it ends.
+    private(set) var isDownloadingRecommendedSpeech = false
     var isMovingRecorder = false
     var isEditingShortcut = false
     private var cancellationConfirmation = CancellationConfirmation() {
@@ -43,15 +68,21 @@ final class AppModel {
     let updater = AppUpdater()
 
     @ObservationIgnored private let store: LocalStore?
-    @ObservationIgnored private let localSpeech = LocalSpeechEngine()
+    @ObservationIgnored private let localSpeech: LocalModelSpeech
     @ObservationIgnored private let normalizer = S1MiniRunner()
     @ObservationIgnored private let delivery = TextDelivery()
     @ObservationIgnored private let shortcuts = GlobalShortcuts()
     @ObservationIgnored private let recorder = RecorderPanelController()
     @ObservationIgnored private let playback = PlaybackController()
     @ObservationIgnored private var cloud: CloudProviders!
+    /// The bundled S1-mini helper, checked once for views. Recording validation checks it again.
+    @ObservationIgnored private let cleanupHelperAvailable = S1MiniRunner.isAvailable
     @ObservationIgnored private var work: Task<Void, Never>?
     @ObservationIgnored private var speechPreparation: Task<Void, Never>?
+    /// The microphone recording's transcription while capturing, for local models. `detachLive` takes it
+    /// when the recording stops, fails, is cancelled or is preserved, which also clears `liveText`.
+    /// `discarded` is set once its texts no longer count, after which its preview stays empty.
+    @ObservationIgnored private var live: (id: UUID, transcription: LiveTranscription, discarded: Bool)?
     @ObservationIgnored private var modelReleaseCount = 0
     @ObservationIgnored private var preservation: Task<Void, Never>?
     @ObservationIgnored private var activeID: UUID?
@@ -62,13 +93,22 @@ final class AppModel {
     @ObservationIgnored private var changingConfiguration = false
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
     @ObservationIgnored private var cancellationExpiry: Task<Void, Never>?
+    @ObservationIgnored private var outcomeExpiry: Task<Void, Never>?
+    @ObservationIgnored private var recorderHovering = false
+    /// Set by Skip during the cleanup await. Skip and the returning cleanup both run on the main actor,
+    /// and Skip is accepted only while the phase is cleaning, which `process()` leaves without
+    /// suspending once the await returns. So exactly one of them delivers.
+    @ObservationIgnored private var cleanupSkipped = false
+    /// A cleanup failure keeps its rule-applied raw text and the destination captured when recording
+    /// began, until the user pastes it, dismisses the offer, or starts other work.
+    @ObservationIgnored private var originalOffer:
+        (id: UUID, text: String, app: String?, destination: InsertionTarget?)?
 
     var currentMode: DictationMode {
         if phase.isBusy, let activeEntry { return activeEntry.mode }
         return modes.first(where: { $0.id == settings.selectedModeID }) ?? modes.first
             ?? DictationMode(name: "Voice to text", preset: .dictation)
     }
-    var appleSpeechReady: Bool { appleSpeech.isPrepared }
     var recordingDuration: Double {
         activeEntry?.mode.recordSystemAudio == true ? meetingAudio.duration : audio.duration
     }
@@ -78,6 +118,13 @@ final class AppModel {
 
     var recordingSpectrum: [Double] {
         activeEntry?.mode.recordSystemAudio == true ? meetingAudio.spectrum : audio.spectrum
+    }
+
+    /// The newest History text, final if there is one, for the menu bar's Copy last transcript.
+    /// History is loaded newest first.
+    var lastTranscript: String? {
+        history.first { !$0.finalText.isEmpty || !$0.rawText.isEmpty }
+            .map { $0.finalText.isEmpty ? $0.rawText : $0.finalText }
     }
 
     var microphoneName: String {
@@ -112,6 +159,7 @@ final class AppModel {
                     name: .amanuensisStorageError, object: error.localizedDescription)
             }
         }
+        localSpeech = LocalModelSpeech(library: library)
         if let opened {
             let saved = opened.loadConfiguration()
             settings = saved.settings
@@ -125,9 +173,22 @@ final class AppModel {
             vocabulary = saved.vocabulary
             microphones = saved.microphones
             history = opened.loadRecordings()
+            speedSamples = TranscriptionSpeed.samples(in: history)
             statistics = opened.statistics()
         }
-        cloud = CloudProviders(allowCloud: { [weak self] in self?.settings.requireLocalProcessing == false })
+        // refreshMicrophones() below saves the configuration, including these.
+        if !settings.hasCompletedSetup && SetupChecklist.isImplied(by: statistics, history: history) {
+            settings.hasCompletedSetup = true
+        }
+        if settings.dictationLanguage == nil {
+            settings.dictationLanguage = .initial(
+                freshInstall: opened?.hasSavedConfiguration == false,
+                supported: Set(library.models.filter { $0.purpose == .speech }.flatMap { $0.languages ?? [] })
+            )
+        }
+        cloud = CloudProviders(
+            allowCloud: { [weak self] in self?.settings.requireLocalProcessing == false },
+            compatibleBaseURL: { [weak self] in self?.settings.compatibleBaseURL })
         audio.onInterruption = { [weak self] reason in self?.recordingInterrupted(reason) }
         meetingAudio.onInterruption = { [weak self] reason in self?.recordingInterrupted(reason) }
         recorder.onPlacementChanged = { [weak self] in self?.settings.recorderPlacement = $0 }
@@ -142,7 +203,7 @@ final class AppModel {
         if !CommandLine.arguments.contains("--speech-smoke") { updater.startAutomaticChecks() }
         Task { [weak self] in
             guard let self else { return }
-            _ = try? await appleSpeech.checkReadiness()
+            try? await appleSpeech.checkReadiness()
             updateRecorder()
         }
         retentionTask = Task { [weak self] in
@@ -169,6 +230,8 @@ final class AppModel {
         else {
             return
         }
+        // An attempted start ends the previous job's outcome, even when the start is refused below.
+        recorderOutcome = nil
         guard !updater.isInstalling else {
             report(AppFailure("Amanuensis is installing an update and will restart in a moment."))
             return
@@ -179,7 +242,6 @@ final class AppModel {
         }
         recorder.followDisplay(containing: NSEvent.mouseLocation)
         refreshAccessibility()
-        pasteNeedsAccessibility = false
         let frontmost = NSWorkspace.shared.frontmostApplication
         let chosen: DictationMode
         if let override {
@@ -198,6 +260,7 @@ final class AppModel {
         entry.speechSnapshot = effectiveModel(chosen.speechModelID)
         entry.cleanupSnapshot = chosen.cleanupModelID.flatMap(effectiveModel)
         entry.vocabularySnapshot = vocabulary
+        entry.language = language(for: chosen)
         activeID = id
         activeEntry = entry
         destination = delivery.captureDestination()
@@ -214,13 +277,21 @@ final class AppModel {
                 refreshHistory()
                 try playback.begin(chosen.playback)
                 let url = store.recordingsURL.appendingPathComponent(entry.audioFileName!)
+                // Starting may show the system microphone prompt.
+                defer { microphoneAccess = AudioCapture.access }
+                // Meeting mode keeps transcribing after Stop.
+                var liveTranscription: LiveTranscription?
                 if chosen.recordSystemAudio {
                     try await meetingAudio.start(preferences: microphones, outputURL: url)
                 } else {
-                    try await audio.start(preferences: microphones, outputURL: url)
+                    liveTranscription = startLiveTranscription(entry)
+                    var samples: (@Sendable (UnsafeBufferPointer<Int16>) -> Void)?
+                    if let live = liveTranscription { samples = { live.append(pcm16: $0) } }
+                    try await audio.start(preferences: microphones, outputURL: url, samples: samples)
                 }
                 try ensureActive(id)
                 prepareSpeechWhileRecording(entry)
+                liveTranscription?.begin(after: speechPreparation)
                 phase = .recording
                 statusMessage = "Listening in \(chosen.name)"
                 shortcuts.setRecordingActive(true)
@@ -228,11 +299,47 @@ final class AppModel {
             } catch {
                 audio.cancel()
                 meetingAudio.cancel()
+                detachLive(id)?.cancel()
                 restorePlayback()
                 guard activeID == id else { return }
                 await fail(entry, error: error)
             }
         }
+    }
+
+    /// Creates the live transcription for a microphone recording whose engine transcribes while capturing.
+    private func startLiveTranscription(_ entry: RecordingEntry) -> LiveTranscription? {
+        guard let speech = entry.speechSnapshot else { return nil }
+        let id = entry.id
+        let transcription = speechEngine(for: speech).liveTranscription(
+            model: speech, language: entry.transcriptionLanguage
+        ) { [weak self] update in
+            Task { @MainActor in self?.showLive(update, for: id) }
+        }
+        live = transcription.map { (id, $0, false) }
+        return transcription
+    }
+
+    private func showLive(_ update: LiveTranscription.Update, for id: UUID) {
+        // An update can arrive after its recording ended, or after a discard it was sent before.
+        guard let current = live, current.id == id, !current.discarded else { return }
+        switch update {
+        case .committed(let text):
+            // Each one holds all the text so far.
+            if text.count > liveText.count { liveText = text }
+        case .discarded:
+            live?.discarded = true
+            liveText = ""
+        }
+    }
+
+    /// Takes the recording's live transcription away from the previews and returns it, for the caller to
+    /// finish or cancel. Nil when the recording has none or it was already taken.
+    private func detachLive(_ id: UUID) -> LiveTranscription? {
+        guard let live, live.id == id else { return nil }
+        self.live = nil
+        liveText = ""
+        return live.transcription
     }
 
     func stopRecording() {
@@ -300,11 +407,14 @@ final class AppModel {
         let previousPreparation = speechPreparation
         previousPreparation?.cancel()
         speechPreparation = nil
+        let speech = activeEntry?.speechSnapshot.map(speechEngine(for:))
+        let liveTranscription = detachLive(id)
         audio.cancel()
         meetingAudio.cancel()
-        appleSpeech.cancel()
-        localSpeech.cancel()
+        liveTranscription?.cancel()
+        speech?.cancel()
         normalizer.cancel()
+        // Also stops API cleanup.
         cloud.cancel()
         restorePlayback()
         do { try store?.deleteRecording(id: id) } catch { errorMessage = error.localizedDescription }
@@ -319,21 +429,37 @@ final class AppModel {
             await meetingAudio.cancelAndWait()
             await previousWork?.value
             await previousPreparation?.value
-            await localSpeech.unload()
+            await liveTranscription?.wait()
+            await speech?.unload()
             await normalizer.unload()
             finishCancelledJob(id)
         }
     }
 
+    /// Loads the speech model in the background; `process` waits for it before timing transcription.
+    /// A retry calls it too, so its measured time also leaves out loading.
     private func prepareSpeechWhileRecording(_ entry: RecordingEntry) {
-        guard let speech = entry.speechSnapshot, speech.location == .local,
-            [.whisper, .parakeet, .cohere].contains(speech.family),
-            let directory = library.localURL(for: speech.id)
-        else { return }
-        speechPreparation = Task { [localSpeech] in
+        guard let speech = entry.speechSnapshot else { return }
+        let engine = speechEngine(for: speech)
+        speechPreparation = Task {
             // Preparation is optional. The transcription call will report/retry a load error.
-            try? await localSpeech.prepare(modelDirectory: directory, family: speech.family.rawValue)
+            try? await engine.prepare(speech)
         }
+    }
+
+    /// The one place that decides which engine runs a speech model.
+    private func speechEngine(for model: ModelDescriptor) -> any SpeechEngine {
+        switch model.location {
+        case .system: appleSpeech
+        case .local: localSpeech
+        case .cloud: cloud
+        }
+    }
+
+    /// Releases every engine's model files, for removal, sleep and quit.
+    private func unloadModels() async {
+        for engine: any SpeechEngine in [appleSpeech, localSpeech, cloud] { await engine.unload() }
+        await normalizer.unload()
     }
 
     private func stopSpeechPreparation() async {
@@ -351,9 +477,9 @@ final class AppModel {
         modelReleaseCount += 1
         defer { modelReleaseCount -= 1 }
         await stopSpeechPreparation()
-        await localSpeech.unload()
-        await normalizer.unload()
+        await unloadModels()
         try library.remove(descriptor)
+        if trial?.modelID == descriptor.id { trial = nil }
     }
 
     private func process(_ original: RecordingEntry, audioURL: URL, shouldDeliver: Bool) async throws {
@@ -367,28 +493,33 @@ final class AppModel {
         }
         statusMessage = "Transcribing with \(speech.name)…"
         phase = .transcribing
+        // Timed after preparation, so the Models screen's speed leaves out loading the model.
+        let started = ContinuousClock.now
         let raw: String
-        if speech.location == .cloud {
-            raw = try await cloud.transcribe(
-                audioURL: audioURL, model: speech,
-                vocabulary: entry.vocabularySnapshot ?? [])
-        } else if speech.family == .apple {
-            raw = try await appleSpeech.transcribe(url: audioURL)
+        let seconds: Double
+        if let live = detachLive(id) {
+            // The file is transcribed again, reusing segments transcribed while recording. Their model
+            // time counts too, so the speed stays per second of audio rather than the wait after Stop.
+            let transcript = try await live.finish(audioURL: audioURL)
+            raw = transcript.text
+            seconds = transcript.seconds
         } else {
-            guard let directory = library.localURL(for: speech.id) else {
-                throw AppFailure("Install \(speech.name) first.")
-            }
-            raw = try await localSpeech.transcribe(
-                audioURL: audioURL, modelDirectory: directory, family: speech.family.rawValue)
+            let result = try await speechEngine(for: speech).transcription(
+                audioURL: audioURL, model: speech, language: entry.transcriptionLanguage,
+                vocabulary: entry.vocabularySnapshot ?? [])
+            raw = result.text
+            // Local models report their own time, which leaves out reading the file and any reload.
+            seconds = result.modelSeconds ?? (ContinuousClock.now - started) / .seconds(1)
         }
         try ensureActive(id)
         entry.rawText = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        entry.transcriptionSeconds = seconds
         activeEntry = entry
         try store?.upsertRecording(entry)
         refreshHistory()
         if entry.rawText.isEmpty {
             entry.status = .noSpeech
-            try complete(entry, message: "No speech detected. Nothing was inserted.")
+            try complete(entry, message: "No speech detected. Nothing was inserted.", outcome: .noSpeech)
             return
         }
 
@@ -398,30 +529,32 @@ final class AppModel {
             statusMessage = "Cleaning up with \(cleanup.name)…"
             entry.status = .cleaning
             try store?.upsertRecording(entry)
-            do {
-                if cleanup.location == .cloud {
-                    selectedText = try await cloud.clean(
-                        text: entry.rawText, model: cleanup, mode: entry.mode)
-                } else if cleanup.family == .s1mini {
-                    guard let path = library.localURL(for: cleanup.id) else {
-                        throw AppFailure("Install S1-mini first.")
-                    }
-                    selectedText = try await normalizer.clean(
-                        text: entry.rawText, modelURL: path, mode: entry.mode)
-                } else {
-                    throw AppFailure("This cleanup engine is not supported by this build.")
-                }
-                try ensureActive(id)
-                entry.cleanedText = selectedText
+            cleanupSkipped = false
+            let result: Result<String, any Error>
+            do { result = .success(try await clean(entry.rawText, with: cleanup, mode: entry.mode)) } catch {
+                result = .failure(error)
+            }
+            // Skip wins even if the model finished; its cancellation error is ignored.
+            let skipped = cleanupSkipped
+            cleanupSkipped = false
+            try ensureActive(id)
+            switch (skipped, result) {
+            case (true, _):
+                entry.cleanupSkipped = true
+            case (false, .success(let cleaned)):
+                selectedText = cleaned
+                entry.cleanedText = cleaned
                 activeEntry = entry
-            } catch {
-                try ensureActive(id)
+            case (false, .failure(let error)):
                 entry.error = "Cleanup failed: \(error.localizedDescription)"
                 entry.finalText = TextRules.apply(
                     entry.rawText, vocabulary: entry.vocabularySnapshot ?? [],
                     capitalize: entry.mode.capitalize)
                 entry.status = .failed
-                try complete(entry, message: "Cleanup failed. Your original transcript is saved in History.")
+                originalOffer = (id, entry.finalText, entry.destinationApp, destination)
+                try complete(
+                    entry, message: "Cleanup failed. Your original transcript is saved in History.",
+                    outcome: .cleanupFailed)
                 return
             }
         }
@@ -433,55 +566,159 @@ final class AppModel {
         try store?.upsertRecording(entry)
         if entry.finalText.isEmpty {
             try complete(
-                entry, message: "Nothing to insert. The original transcript is available in History.")
+                entry, message: "Nothing to insert. The original transcript is available in History.",
+                outcome: .nothingToInsert)
             return
         }
+        let outcome: RecorderOutcome.Cause
         if shouldDeliver && entry.mode.autoPaste {
             phase = .delivering
             statusMessage = "Inserting your text…"
-            let outcome = await delivery.deliver(text: entry.finalText, to: destination)
+            let delivered = await delivery.deliver(text: entry.finalText, to: destination)
             try ensureActive(id)
             refreshAccessibility()
-            pasteNeedsAccessibility = outcome == .accessibilityRequired
-            entry.deliveryMessage = outcome.message
+            entry.deliveryMessage = delivered.message
+            outcome = cause(of: delivered, app: entry.destinationApp)
         } else {
             entry.deliveryMessage = "Your transcript is ready to copy."
+            outcome = .savedToHistory
         }
-        try complete(entry, message: entry.deliveryMessage ?? "Your transcript is ready.")
+        try complete(entry, message: entry.deliveryMessage ?? "Your transcript is ready.", outcome: outcome)
     }
 
+    private func clean(_ text: String, with cleanup: ModelDescriptor, mode: DictationMode) async throws
+        -> String
+    {
+        if cleanup.location == .cloud {
+            return try await cloud.clean(text: text, model: cleanup, mode: mode)
+        }
+        guard cleanup.engine == .s1mini else {
+            throw AppFailure("This cleanup engine is not supported by this build.")
+        }
+        guard let path = library.localURL(for: cleanup.id) else {
+            throw AppFailure("Install S1-mini first.")
+        }
+        return try await normalizer.clean(text: text, modelURL: path, mode: mode)
+    }
+
+    private func cause(of delivered: DeliveryOutcome, app: String?) -> RecorderOutcome.Cause {
+        switch delivered {
+        case .commandPosted: .inserted(app: app)
+        case .copied: .copied
+        case .accessibilityRequired: .needsAccessibility
+        // Held text may not be on the clipboard, so point to History instead.
+        case .held: .failed(nil)
+        }
+    }
+
+    /// Ends cleanup early and finishes as if the mode had no cleanup model.
+    func skipCleanup() {
+        guard phase == .cleaning, activeID != nil, !cleanupSkipped else { return }
+        cleanupSkipped = true
+        statusMessage = "Skipping cleanup…"
+        normalizer.cancel()
+        cloud.cancel()
+    }
+
+    /// Uses the same rules as the mode markers, after rechecking what they cache: model folders on disk,
+    /// Apple Speech assets, and the Keychain for the API models this recording uses. A Keychain error
+    /// is thrown as itself rather than reported as a missing key.
     private func validate(_ entry: RecordingEntry) async throws {
-        guard let speech = entry.speechSnapshot else {
-            throw AppFailure("The selected speech model is missing.")
-        }
-        for model in [speech, entry.cleanupSnapshot].compactMap({ $0 }) {
-            if settings.requireLocalProcessing && !model.isLocal {
-                throw AppFailure(
-                    "\(model.name) uses an API. Choose a local model or turn off Require local processing.")
+        if entry.speechSnapshot?.engine == .apple { try await appleSpeech.checkReadiness() }
+        library.refreshInstalledModels()
+        var facts = readiness
+        facts.cleanupHelperAvailable = S1MiniRunner.isAvailable
+        if !settings.requireLocalProcessing {
+            // A compatible server's key is optional; its address is in settings, already in `facts`.
+            for model in [entry.speechSnapshot, entry.cleanupSnapshot].compactMap({ $0 })
+            where model.location == .cloud && model.engine != .openAICompatible {
+                if try CredentialStore.get(for: model.engine) == nil {
+                    facts.connectedProviders.remove(model.engine)
+                } else {
+                    facts.connectedProviders.insert(model.engine)
+                }
             }
-            if model.location == .local && library.localURL(for: model.id) == nil {
-                throw AppFailure("Install \(model.name) from Models before recording.")
-            }
-            if model.location == .cloud, try CredentialStore.get(for: model.family) == nil {
-                throw AppFailure("Add your \(model.provider) API key in Models first.")
-            }
         }
-        if speech.family == .apple, try await !appleSpeech.checkReadiness() {
-            throw AppFailure("Apple Speech needs its English model. Open Models and choose Prepare.")
-        }
-        if entry.cleanupSnapshot?.family == .s1mini && !S1MiniRunner.isAvailable {
-            throw AppFailure("S1-mini's helper is missing. Rebuild with Scripts/build.sh.")
-        }
-        if entry.cleanupSnapshot?.family == .ollama {
-            throw AppFailure("Ollama is not connected in this build. Choose S1-mini for local cleanup.")
-        }
-        if entry.mode.identifySpeakers {
-            throw AppFailure(
-                "Speaker identification is not yet available. Turn it off to transcribe this recording.")
+        if let failure = facts.blocker(
+            speech: entry.speechSnapshot, cleanup: entry.cleanupSnapshot,
+            cleanupModelID: entry.mode.cleanupModelID,
+            language: entry.transcriptionLanguage, identifySpeakers: entry.mode.identifySpeakers)
+        {
+            throw failure
         }
     }
 
-    private func complete(_ entry: RecordingEntry, message: String) throws {
+    /// What decides whether a mode can record, from state kept in memory, so views can read it freely.
+    var readiness: RecordingReadiness {
+        RecordingReadiness(
+            requireLocalProcessing: settings.requireLocalProcessing,
+            installedModelIDs: library.installedModelIDs, connectedProviders: connectedProviders,
+            appleSpeechReadyLanguages: appleSpeech.readyLanguages,
+            appleSpeechLanguages: appleSpeech.locales.map { Set($0.keys) },
+            cleanupHelperAvailable: cleanupHelperAvailable)
+    }
+
+    /// The language a mode records in: its own override, else the Settings language.
+    func language(for mode: DictationMode) -> SpeechLanguage {
+        mode.language ?? settings.language
+    }
+
+    /// Language codes a picker offers for a speech model, sorted by name. Where the provider or macOS
+    /// decides, or for Settings (nil), it lists every language any speech model here handles.
+    func languageChoices(for speech: ModelDescriptor?) -> [String] {
+        let apple = appleSpeech.locales.map { Array($0.keys) }
+        if let speech, speech.engine == .apple, let apple { return SpeechLanguage.sortedByName(apple) }
+        if let declared = speech?.languages, !declared.isEmpty {
+            return SpeechLanguage.sortedByName(declared)
+        }
+        return SpeechLanguage.sortedByName(Set(library.models.flatMap { $0.languages ?? [] } + (apple ?? [])))
+    }
+
+    /// Apple Speech languages worth preparing: those modes record in, current mode first, then the
+    /// Settings language. Only languages macOS supports here and whose assets are missing. Models
+    /// offers these rather than only the current mode's language, because another mode's marker
+    /// ("Needs Apple Speech") sends the user to Models to prepare that mode's language.
+    var appleSpeechLanguagesToPrepare: [String] {
+        guard let apple = effectiveModel("apple-speech") else { return [] }
+        let readiness = readiness
+        let wanted =
+            ([currentMode] + modes).filter { $0.speechModelID == apple.id }.map(language(for:))
+            + [settings.language]
+        var codes: [String] = []
+        for language in wanted {
+            guard case .appleSpeechNotReady(let code)? = readiness.blocker(for: apple, language: language),
+                !codes.contains(code)
+            else { continue }
+            codes.append(code)
+        }
+        return codes
+    }
+
+    /// Why each mode cannot record yet. Modes that can record are absent. Views read it once per render.
+    var modeBlockers: [UUID: RecordingFailure] {
+        let readiness = readiness
+        return modes.reduce(into: [:]) { blockers, mode in
+            blockers[mode.id] = readiness.blocker(
+                speech: effectiveModel(mode.speechModelID),
+                cleanup: mode.cleanupModelID.flatMap(effectiveModel), cleanupModelID: mode.cleanupModelID,
+                language: language(for: mode), identifySpeakers: mode.identifySpeakers)
+        }
+    }
+
+    /// The current mode's speech model, or nil if the catalog no longer has it.
+    var currentSpeechModel: ModelDescriptor? { effectiveModel(currentMode.speechModelID) }
+
+    var setupChecklist: SetupChecklist {
+        SetupChecklist(
+            microphone: microphoneAccess,
+            speechBlocker: readiness.blocker(
+                speech: currentSpeechModel, cleanup: nil, cleanupModelID: nil,
+                language: language(for: currentMode), identifySpeakers: false),
+            accessibilityGranted: accessibilityGranted,
+            textInsertionSkipped: settings.skippedTextInsertionSetup == true)
+    }
+
+    private func complete(_ entry: RecordingEntry, message: String, outcome: RecorderOutcome.Cause) throws {
         try store?.upsertRecording(entry)
         try store?.countIfNeeded(recording: entry)
         activeID = nil
@@ -489,6 +726,9 @@ final class AppModel {
         destination = nil
         library.inUseModelIDs = []
         shortcuts.setRecordingActive(false)
+        // Showing the outcome while the phase is still busy lets the pill change in place instead of
+        // hiding, when controls are not kept visible, and reappearing at idle size.
+        showOutcome(outcome, for: entry.id)
         phase = .complete
         statusMessage = message
         refreshHistory()
@@ -496,8 +736,12 @@ final class AppModel {
     }
 
     private func fail(_ original: RecordingEntry, error: Error) async {
+        if let liveTranscription = detachLive(original.id) {
+            liveTranscription.cancel()
+            await liveTranscription.wait()
+        }
         await stopSpeechPreparation()
-        await localSpeech.unload()
+        if let speech = original.speechSnapshot { await speechEngine(for: speech).unload() }
         guard activeID == original.id else { return }
         var entry = original
         entry.status = .failed
@@ -509,6 +753,7 @@ final class AppModel {
         destination = nil
         library.inUseModelIDs = []
         shortcuts.setRecordingActive(false)
+        showOutcome(.failed(error as? RecordingFailure), for: entry.id)
         phase = .failed
         statusMessage = entry.error ?? "Recording could not finish."
         errorMessage = entry.error
@@ -531,6 +776,8 @@ final class AppModel {
 
     private func recordingInterrupted(_ reason: String) {
         guard phase == .recording, let original = activeEntry else { return }
+        let liveTranscription = detachLive(original.id)
+        liveTranscription?.cancel()
         phase = .transcribing
         statusMessage = "Preserving captured audio…"
         restorePlayback()
@@ -544,16 +791,20 @@ final class AppModel {
                 } else {
                     captured = try await audio.stop()
                 }
+                // After the file is saved: the worker may be waiting for a model that is still loading.
+                await liveTranscription?.wait()
                 try ensureActive(entry.id)
                 entry.duration = captured.duration
                 await stopSpeechPreparation()
-                await localSpeech.unload()
+                if let speech = entry.speechSnapshot { await speechEngine(for: speech).unload() }
                 try ensureActive(entry.id)
                 entry.status = .interrupted
                 entry.error = reason
-                try complete(entry, message: "\(reason) Captured audio is saved in History.")
+                try complete(
+                    entry, message: "\(reason) Captured audio is saved in History.", outcome: .interrupted)
                 phase = .interrupted
             } catch {
+                await liveTranscription?.wait()
                 guard activeID == entry.id else { return }
                 await fail(entry, error: error)
             }
@@ -573,9 +824,12 @@ final class AppModel {
             return
         }
         var entry = original.retryAttempt()
-        entry.speechSnapshot = original.speechSnapshot ?? effectiveModel(original.mode.speechModelID)
+        entry.speechSnapshot =
+            original.speechSnapshot?.resolved(against: library.models)
+            ?? effectiveModel(original.mode.speechModelID)
         entry.cleanupSnapshot =
-            original.cleanupSnapshot ?? original.mode.cleanupModelID.flatMap(effectiveModel)
+            original.cleanupSnapshot?.resolved(against: library.models)
+            ?? original.mode.cleanupModelID.flatMap(effectiveModel)
         let id = entry.id
         let attemptURL = store.recordingsURL.appendingPathComponent("\(id.uuidString).wav")
         activeID = entry.id
@@ -607,6 +861,7 @@ final class AppModel {
                 try ensureActive(id)
                 library.inUseModelIDs = Set(
                     [entry.mode.speechModelID, entry.mode.cleanupModelID].compactMap { $0 })
+                prepareSpeechWhileRecording(entry)
                 try await process(entry, audioURL: attemptURL, shouldDeliver: false)
             } catch {
                 guard activeID == id else {
@@ -621,11 +876,62 @@ final class AppModel {
         await task.value
     }
 
-    func prepareAppleSpeech() async {
+    func requestMicrophoneAccess() async {
+        _ = await AudioCapture.requestAccess()
+        microphoneAccess = AudioCapture.access
+    }
+
+    func openMicrophoneSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Starts a catalog download from a setup or mode row. Progress and errors stay on `library`,
+    /// so every row showing this model shows the same download.
+    @discardableResult func download(_ descriptor: ModelDescriptor) async -> Bool {
         do {
-            statusMessage = "Preparing Apple's English speech model…"
-            try await appleSpeech.prepare()
-            statusMessage = "Apple Speech is ready on this Mac."
+            try await library.install(descriptor)
+            return true
+        } catch { return false }
+    }
+
+    /// The setup checklist's local route: download the model recommended for the current mode's language
+    /// if needed, then move every mode still on Apple Speech whose language it handles. Cancel or failure
+    /// leaves the modes alone.
+    func downloadAndUseRecommendedSpeech() async {
+        guard let recommended = recommendedSpeech else { return }
+        // Recheck the disk first, so modes never move to a model whose files were removed outside the app.
+        library.refreshInstalledModels()
+        if !library.installedModelIDs.contains(recommended.id) {
+            guard !isDownloadingRecommendedSpeech else { return }
+            isDownloadingRecommendedSpeech = true
+            defer { isDownloadingRecommendedSpeech = false }
+            guard await download(recommended) else { return }
+        }
+        for index in modes.indices
+        where modes[index].speechModelID == "apple-speech"
+            && recommended.declares(language(for: modes[index]))
+        {
+            modes[index].speechModelID = recommended.id
+        }
+        saveConfiguration()
+    }
+
+    /// The local model the setup checklist offers for the current mode's language, if any handles it.
+    var recommendedSpeech: ModelDescriptor? {
+        ModelCatalog.recommendedSpeech(for: language(for: currentMode))
+    }
+
+    func prepareAppleSpeech(language code: String) async {
+        let name = SpeechLanguage.name(of: code)
+        // macOS limits how many languages an app keeps; ones nothing records in may be released.
+        let inUse = Set((modes.map(language(for:)) + [settings.language]).compactMap(\.languageCode))
+        do {
+            statusMessage = "Preparing Apple Speech for \(name)…"
+            try await appleSpeech.prepare(language: code, keeping: inUse)
+            statusMessage = "Apple Speech is ready for \(name) on this Mac."
         } catch { report(error) }
     }
 
@@ -645,22 +951,55 @@ final class AppModel {
         return mode.id
     }
 
-    /// Models a mode can pick right now: installed local models, Apple Speech, and API models with a key.
-    /// The mode's current choice is included even when it is not ready so the picker never goes blank.
-    func availableModels(for purpose: ModelPurpose, including currentID: String?) -> [ModelDescriptor] {
-        library.models.filter { descriptor in
-            guard descriptor.purpose == purpose, descriptor.family != .ollama else { return false }
-            return descriptor.id == currentID || isReady(descriptor)
+    /// Every catalog model for a purpose, as modes run it: an API row's model ID, which readiness
+    /// needs, may come from settings.
+    func catalogModels(for purpose: ModelPurpose) -> [ModelDescriptor] {
+        library.models.filter { $0.purpose == purpose }.map { $0.applying(settings.apiModelOverrides) }
+    }
+
+    /// The one way to assign a model to a mode, as its speech or cleanup model by the model's purpose.
+    func use(_ descriptor: ModelDescriptor, in modeID: UUID) {
+        guard var mode = modes.first(where: { $0.id == modeID }) else { return }
+        switch descriptor.purpose {
+        case .speech: mode.speechModelID = descriptor.id
+        case .cleanup: mode.cleanupModelID = descriptor.id
+        }
+        updateMode(mode)
+    }
+
+    /// Seconds this model took for 30 s of audio on this Mac, from History, or nil until measured.
+    /// A downloaded model counts only recordings made since its current files were installed, and an
+    /// API row only those made with its current model ID.
+    func secondsPer30(_ descriptor: ModelDescriptor) -> Double? {
+        var installedAt: Date?
+        if descriptor.location == .local {
+            guard let installation = library.installations[descriptor.id] else { return nil }
+            installedAt = installation.installedAt
+        }
+        return TranscriptionSpeed.secondsPer30(
+            speedSamples[descriptor.id] ?? [], installedAt: installedAt, apiModelID: descriptor.apiModelID)
+    }
+
+    /// Try it on the Models screen: records with this speech model alone, with no cleanup or paste, in
+    /// the Settings language. It is an ordinary recording with a one-off mode, so every guard, the
+    /// recorder pill and History apply to it.
+    func tryModel(_ speech: ModelDescriptor) {
+        guard speech.purpose == .speech else { return }
+        // Named after the model alone: the pill shortens names past 16 characters.
+        var mode = DictationMode(name: speech.name, preset: .dictation)
+        mode.speechModelID = speech.id
+        mode.autoPaste = false
+        beginRecording(mode: mode)
+        // A refused start leaves the previous run's result in place.
+        if let entry = activeEntry, entry.mode.id == mode.id {
+            trial = ModelTrial(modelID: speech.id, recordingID: entry.id)
         }
     }
 
-    func isReady(_ descriptor: ModelDescriptor) -> Bool {
-        switch descriptor.location {
-        case .system: true
-        case .cloud: connectedProviders.contains(descriptor.family)
-        case .local: library.localURL(for: descriptor.id) != nil
-        }
-    }
+    /// Whether the Try it run is the job in progress.
+    var isTrialRunning: Bool { phase.isBusy && trial != nil && trial?.recordingID == activeEntry?.id }
+
+    func dismissTrial() { trial = nil }
 
     func updateMode(_ mode: DictationMode) {
         guard let index = modes.firstIndex(where: { $0.id == mode.id }) else { return }
@@ -736,6 +1075,8 @@ final class AppModel {
         }
         do {
             try store?.deleteRecording(id: id)
+            // A deleted recording's outcome must not offer its text; this also drops a Paste original offer.
+            if recorderOutcome?.recordingID == id { recorderOutcome = nil }
             refreshHistory()
         } catch { report(error) }
     }
@@ -746,9 +1087,104 @@ final class AppModel {
             refreshHistory()
         } catch { report(error) }
     }
+    /// Picks up permission and Apple Speech changes made in System Settings while the app was inactive.
+    func refreshPermissions() {
+        refreshAccessibility()
+        microphoneAccess = AudioCapture.access
+        Task { try? await appleSpeech.checkReadiness() }
+    }
+
     func refreshAccessibility() {
         accessibilityGranted = TextDelivery.isAccessibilityTrusted
-        if accessibilityGranted { pasteNeedsAccessibility = false }
+        if accessibilityGranted && recorderOutcome?.action == .allowPaste { recorderOutcome = nil }
+    }
+
+    private func showOutcome(_ cause: RecorderOutcome.Cause, for id: UUID) {
+        let outcome = RecorderOutcome(cause, recordingID: id)
+        recorderOutcome = outcome
+        if outcome.kind == .failure || outcome.kind == .warning {
+            AccessibilityNotification.Announcement(outcome.label).post()
+        }
+    }
+
+    func dismissOutcome() { recorderOutcome = nil }
+
+    /// Runs the pill's action button and ends its outcome. Paste original ends it only once delivery
+    /// starts; if another job is running, the offer stays.
+    func performOutcomeAction() {
+        guard let outcome = recorderOutcome, let action = outcome.action else { return }
+        switch action {
+        case .allowPaste: requestAccessibility()
+        case .pasteOriginal: pasteOriginal()
+        case .openModels: showMainWindow(.models)
+        case .openModes:
+            // The recording keeps a copy of its mode; open that mode unless it was deleted since.
+            let failed = history.first { $0.id == outcome.recordingID }?.mode.id
+            modeToEdit = modes.first { $0.id == failed }?.id
+            showMainWindow(.modes)
+        case .openSettings: showMainWindow(.configuration)
+        case .openSound: showMainWindow(.sound)
+        case .showInHistory:
+            selectedRecordingID = outcome.recordingID
+            showMainWindow(.history)
+        }
+        if action != .pasteOriginal { recorderOutcome = nil }
+    }
+
+    func showMainWindow(_ section: AppSection) {
+        selectedSection = section
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Delivers a failed cleanup's original text to the destination captured when recording began.
+    /// Delivery rechecks focus and falls back to the clipboard, then History records what happened.
+    private func pasteOriginal() {
+        guard let offer = originalOffer, !phase.isBusy, activeID == nil, cancellingID == nil else { return }
+        phase = .delivering
+        statusMessage = "Inserting your original transcript…"
+        work = Task { [weak self] in
+            guard let self else { return }
+            let delivered = await delivery.deliver(text: offer.text, to: offer.destination)
+            refreshAccessibility()
+            if var entry = history.first(where: { $0.id == offer.id }) {
+                entry.deliveryMessage = delivered.message
+                do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
+                refreshHistory()
+            }
+            showOutcome(cause(of: delivered, app: offer.app), for: offer.id)
+            phase = .complete
+            statusMessage = delivered.message
+        }
+    }
+
+    func setRecorderHovering(_ hovering: Bool) {
+        recorderHovering = hovering
+        guard !hovering else { return }
+        recorderOutcome?.pointerLeft(at: ProcessInfo.processInfo.systemUptime)
+        // The expiry check stops while the pointer is on the pill, so restart it even if the deadline held.
+        scheduleOutcomeExpiry()
+    }
+
+    /// Closes a success or notice at its deadline. If the pointer is on the pill then, leaving it
+    /// moves the deadline, which schedules a new check.
+    private func scheduleOutcomeExpiry() {
+        outcomeExpiry?.cancel()
+        guard let deadline = recorderOutcome?.deadline else { return }
+        outcomeExpiry = Task { [weak self] in
+            while true {
+                guard let self, let outcome = recorderOutcome, !recorderHovering else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                if outcome.isExpired(at: now) {
+                    recorderOutcome = nil
+                    return
+                }
+                // The suspending clock matches systemUptime, which also pauses while the Mac sleeps.
+                do { try await Task.sleep(for: .seconds(deadline - now), clock: .suspending) } catch {
+                    return
+                }
+            }
+        }
     }
 
     func requestAccessibility() {
@@ -772,12 +1208,44 @@ final class AppModel {
         defer { refreshConnectedProviders() }
         try CredentialStore.remove(for: provider)
     }
-    private func refreshConnectedProviders() {
-        connectedProviders = Set(
-            [ModelFamily.openAI, .groq, .anthropic].filter { (try? CredentialStore.get(for: $0)) != nil })
+    /// Saves the OpenAI-compatible server's address, already normalized by `APIBaseURL`, and its key.
+    /// A new address drops the saved key unless a key is entered with it, so a key only ever goes to
+    /// the server it was saved for. Address and key change together on the main actor, between requests.
+    func saveCompatibleServer(_ address: URL, key: String) throws {
+        defer { refreshConnectedProviders() }
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !key.isEmpty {
+            try CredentialStore.set(key, for: .openAICompatible)
+        } else if address.absoluteString != settings.compatibleBaseURL {
+            try CredentialStore.remove(for: .openAICompatible)
+        }
+        settings.compatibleBaseURL = address.absoluteString
     }
-    func validateAPI(provider: ModelFamily, modelID: String) async throws -> String {
-        try await cloud.validate(provider: provider, modelID: modelID)
+
+    /// Forgets the compatible server's address and key. Its model IDs stay for the next server.
+    func removeCompatibleServer() throws {
+        defer { refreshConnectedProviders() }
+        try CredentialStore.remove(for: .openAICompatible)
+        settings.compatibleBaseURL = nil
+    }
+
+    /// Keyed providers count as connected with a key; a compatible server with a valid address.
+    private func refreshConnectedProviders() {
+        var connected = Set(
+            [ModelFamily.openAI, .groq, .anthropic].filter { (try? CredentialStore.get(for: $0)) != nil })
+        if case .success = APIBaseURL.parse(settings.compatibleBaseURL ?? "") {
+            connected.insert(.openAICompatible)
+        }
+        connectedProviders = connected
+    }
+    /// `server` and `key` are the configuration sheet's unsaved entries; `CloudProviders.makeRequest`
+    /// decides which key goes where.
+    func validateAPI(provider: ModelFamily, modelID: String, server: URL?, key: String) async throws -> String
+    {
+        try await cloud.validate(provider: provider, modelID: modelID, server: server, key: key)
+    }
+    func listAPIModels(provider: ModelFamily, server: URL?, key: String) async throws -> [String] {
+        try await cloud.listModels(provider: provider, server: server, key: key)
     }
 
     /// Sleep and normal quit preserve unfinished work; only explicit Cancel discards it.
@@ -798,25 +1266,25 @@ final class AppModel {
         let previousWork = work
         if phase == .delivering {
             await previousWork?.value
-            await localSpeech.unload()
-            await normalizer.unload()
+            await unloadModels()
             return
         }
         guard var entry = activeEntry, let id = activeID else {
             await stopSpeechPreparation()
-            await localSpeech.unload()
-            await normalizer.unload()
+            await unloadModels()
             return
         }
         let wasRecording = phase == .recording
+        let liveTranscription = detachLive(id)
+        liveTranscription?.cancel()
         activeID = nil
         cancellingID = id
         phase = .preparing
         statusMessage = "Saving unfinished work…"
         previousWork?.cancel()
-        appleSpeech.cancel()
-        localSpeech.cancel()
+        entry.speechSnapshot.map(speechEngine(for:))?.cancel()
         normalizer.cancel()
+        // Also stops API cleanup.
         cloud.cancel()
         restorePlayback()
         if wasRecording {
@@ -835,8 +1303,8 @@ final class AppModel {
         }
         await stopSpeechPreparation()
         await previousWork?.value
-        await localSpeech.unload()
-        await normalizer.unload()
+        await liveTranscription?.wait()
+        await unloadModels()
         entry.status = .interrupted
         if entry.error == nil { entry.error = "Interrupted before completion. Retry from History." }
         if let store, store.audioURL(for: entry) == nil { entry.audioFileName = nil }
@@ -845,6 +1313,7 @@ final class AppModel {
         destination = nil
         cancellingID = nil
         library.inUseModelIDs = []
+        showOutcome(.interrupted, for: entry.id)
         phase = .interrupted
         statusMessage = "Unfinished work is saved in History."
         refreshHistory()
@@ -858,13 +1327,7 @@ final class AppModel {
     }
 
     private func effectiveModel(_ id: String) -> ModelDescriptor? {
-        guard var model = library.models.first(where: { $0.id == id }) else { return nil }
-        if let override = settings.apiModelOverrides[id],
-            !override.trimmingCharacters(in: .whitespaces).isEmpty
-        {
-            model.apiModelID = override.trimmingCharacters(in: .whitespaces)
-        }
-        return model
+        library.models.first(where: { $0.id == id })?.applying(settings.apiModelOverrides)
     }
 
     private func configurationChanged(previous: AppSettings) {
@@ -953,21 +1416,30 @@ final class AppModel {
 
     private func updateRecorder() {
         guard startupComplete else { return }
-        if isCancellationPending
-            || settings.recorderStyle != .hidden
-                && (settings.alwaysShowRecorder || phase.isBusy || pasteNeedsAccessibility)
+        if let style = RecorderLayout.presentedStyle(
+            saved: settings.recorderStyle, alwaysShow: settings.alwaysShowRecorder, busy: phase.isBusy,
+            cancellationPending: isCancellationPending, outcome: recorderOutcome)
         {
             recorder.show(
-                content: AnyView(RecorderView(model: self)),
-                style: isCancellationPending ? .mini : settings.recorderStyle,
+                content: AnyView(RecorderView(model: self)), style: style,
                 placement: settings.recorderPlacement)
         } else {
             recorder.hide()
+            // A hidden panel reports no hover exit, so a stale hover must not hold the next outcome open.
+            recorderHovering = false
         }
+        updateLivePreview()
+    }
+
+    /// The Mini recorder shows the live text beside it while recording, unless Settings turns that off.
+    private func updateLivePreview() {
+        let shown = phase == .recording && settings.recorderStyle == .mini && settings.showsLivePreview
+        recorder.showPreview(shown && !liveText.isEmpty ? liveText : nil)
     }
 
     private func refreshHistory() {
         history = store?.loadRecordings() ?? []
+        speedSamples = TranscriptionSpeed.samples(in: history)
         statistics = store?.statistics() ?? UsageStatistics()
     }
     private func enforceRetention() {
@@ -988,6 +1460,12 @@ final class AppModel {
             phase = .failed
         }
     }
+}
+
+/// A Try it run: the speech model, and the History entry that holds its result.
+struct ModelTrial: Equatable {
+    let modelID: String
+    let recordingID: UUID
 }
 
 private struct AppFailure: LocalizedError {

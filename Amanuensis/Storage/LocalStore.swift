@@ -13,6 +13,8 @@ final class LocalStore {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var configuration = SavedConfiguration()
+    /// False until a configuration has been saved, which is how the app tells a fresh install.
+    private(set) var hasSavedConfiguration = false
     private var recordings: [RecordingEntry] = []
     private var installedModels: [ModelInstallation] = []
     private var usage = UsageStatistics()
@@ -20,12 +22,7 @@ final class LocalStore {
 
     init(rootURL: URL? = nil) throws {
         let fileManager = FileManager.default
-        let directory =
-            try rootURL
-            ?? fileManager.url(
-                for: .applicationSupportDirectory, in: .userDomainMask,
-                appropriateFor: nil, create: true
-            ).appendingPathComponent("Amanuensis", isDirectory: true)
+        let directory = try rootURL ?? AppDataDirectory.url()
         self.rootURL = directory
         recordingsURL = directory.appendingPathComponent("Recordings", isDirectory: true)
         modelsURL = directory.appendingPathComponent("Models", isDirectory: true)
@@ -62,6 +59,7 @@ final class LocalStore {
             [.data(try encoder.encode(value))]
         )
         configuration = value
+        hasSavedConfiguration = true
     }
 
     func saveInstallations(_ values: [ModelInstallation]) throws {
@@ -237,6 +235,7 @@ final class LocalStore {
     private func reload() throws {
         if let payload = try rows("SELECT payload FROM configuration WHERE id = 1").first?.first?.data {
             configuration = try decoder.decode(SavedConfiguration.self, from: payload)
+            hasSavedConfiguration = true
         }
         installedModels = try rows("SELECT payload FROM installations ORDER BY id").map {
             try decoder.decode(ModelInstallation.self, from: try $0[0].requiredData())
