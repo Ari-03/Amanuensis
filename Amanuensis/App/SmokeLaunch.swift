@@ -17,13 +17,15 @@ enum SmokeLaunch {
                 modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4])
             let speech = try await engine.transcribe(
                 audioURL: URL(fileURLWithPath: arguments[2]),
-                modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4], language: "en")
+                modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4], language: "en"
+            ).text
             let cleaned = try await normalizer.clean(
                 text: speech, modelURL: URL(fileURLWithPath: arguments[5]),
                 mode: DictationMode.make(preset: .message))
             let repeated = try await engine.transcribe(
                 audioURL: URL(fileURLWithPath: arguments[2]),
-                modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4], language: "en")
+                modelDirectory: URL(fileURLWithPath: arguments[3]), family: arguments[4], language: "en"
+            ).text
             let repeatedCleanup = try await normalizer.clean(
                 text: repeated, modelURL: URL(fileURLWithPath: arguments[5]),
                 mode: DictationMode.make(preset: .message))

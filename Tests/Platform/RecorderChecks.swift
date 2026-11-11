@@ -286,6 +286,7 @@ struct RecorderChecks {
             recorder.hide()
             precondition(!panel.isVisible)
             await checkInvocationDisplays()
+            await checkLivePreview()
             let notchFirst = RecorderPanelController()
             notchFirst.show(content: AnyView(Color.clear), style: .notch, placement: nil)
             precondition(notchFirst.miniDisplayID == nil)
@@ -503,6 +504,59 @@ struct RecorderChecks {
         print(
             "PASS: Invocation display survives refresh, resize, and hide/show for both styles on \(NSScreen.screens.count) connected display(s)"
         )
+    }
+
+    /// The live text shows only with text and only in Mini. It sits outside the pill toward the screen's
+    /// middle, grows to two lines at most, follows a drag, never takes focus or clicks, and leaves the
+    /// pill's size alone.
+    @MainActor private static func checkLivePreview() async {
+        let recorder = RecorderPanelController()
+        let visiblePanels = { NSApp.windows.filter { $0.isVisible && $0 is NSPanel } }
+        recorder.show(content: AnyView(Color.clear), style: .mini, placement: .bottom)
+        recorder.resize(to: NSSize(width: 180, height: 36))
+        await pause(220)
+        let pill = visiblePanels().first!
+        let pillFrame = pill.frame
+        recorder.showPreview(nil)
+        precondition(visiblePanels().count == 1)
+        recorder.showPreview("Please send the meeting notes to Sarah.")
+        let preview = visiblePanels().first { $0 !== pill }!
+        precondition(preview.ignoresMouseEvents && !preview.canBecomeKey && !preview.canBecomeMain)
+        precondition(pill.frame == pillFrame, "The preview must not move or resize the pill")
+        precondition(abs(preview.frame.minY - (pill.frame.maxY + 6)) < 1)
+        precondition(abs(preview.frame.midX - pill.frame.midX) < 1)
+        let oneLine = preview.frame.height
+        recorder.showPreview(
+            String(repeating: "We should review the project timeline and confirm the dashboard. ", count: 6))
+        precondition(
+            preview.frame.height > oneLine * 1.3 && preview.frame.height < oneLine * 1.9,
+            "\(oneLine) then \(preview.frame.size)")
+        precondition(preview.frame.width <= 320 && abs(preview.frame.midX - pill.frame.midX) < 1)
+        print("PASS: Live text appears above a bottom pill, one or two lines, without moving it")
+
+        recorder.show(content: AnyView(Color.clear), style: .mini, placement: .top)
+        await pause(220)
+        precondition(abs(preview.frame.maxY - (pill.frame.minY - 6)) < 1)
+        let start = NSPoint(x: pill.frame.midX, y: pill.frame.midY)
+        recorder.beginDrag(at: start)
+        recorder.continueDrag(at: NSPoint(x: start.x - 240, y: start.y))
+        precondition(abs(preview.frame.midX - pill.frame.midX) < 1 && !preview.frame.intersects(pill.frame))
+        recorder.cancelDrag()
+        await pause(220)
+        precondition(abs(preview.frame.maxY - (pill.frame.minY - 6)) < 1)
+        print("PASS: Live text sits below a top pill and follows it while dragging")
+
+        recorder.show(content: AnyView(Color.clear), style: .notch, placement: nil)
+        precondition(!preview.isVisible)
+        recorder.show(content: AnyView(Color.clear), style: .mini, placement: .top)
+        precondition(preview.isVisible)
+        recorder.hide()
+        precondition(!preview.isVisible)
+        recorder.show(content: AnyView(Color.clear), style: .mini, placement: .top)
+        recorder.showPreview(nil)
+        precondition(!preview.isVisible)
+        recorder.hide()
+        print("PASS: Live text never shows in Notch, while hidden, or without text")
     }
 
     /// A mode that cannot record yet stays selectable: clicking its marked row selects it.

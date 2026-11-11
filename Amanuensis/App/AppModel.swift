@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LocalSpeech
 import Observation
 import ServiceManagement
 import SwiftUI
@@ -26,6 +27,11 @@ final class AppModel {
         }
     }
     var statusMessage = "Your voice, on your Mac."
+    /// What the speech model has transcribed so far of the recording in progress, for the live previews.
+    /// Empty unless the model transcribes while recording.
+    private(set) var liveText = "" {
+        didSet { if liveText != oldValue { updateLivePreview() } }
+    }
     var errorMessage: String?
     /// How the last job ended, shown by the recorder pill until it expires or the user handles it.
     private(set) var recorderOutcome: RecorderOutcome? {
@@ -73,6 +79,10 @@ final class AppModel {
     @ObservationIgnored private let cleanupHelperAvailable = S1MiniRunner.isAvailable
     @ObservationIgnored private var work: Task<Void, Never>?
     @ObservationIgnored private var speechPreparation: Task<Void, Never>?
+    /// The microphone recording's transcription while capturing, for local models. `detachLive` takes it
+    /// when the recording stops, fails, is cancelled or is preserved, which also clears `liveText`.
+    /// `discarded` is set once its texts no longer count, after which its preview stays empty.
+    @ObservationIgnored private var live: (id: UUID, transcription: LiveTranscription, discarded: Bool)?
     @ObservationIgnored private var modelReleaseCount = 0
     @ObservationIgnored private var preservation: Task<Void, Never>?
     @ObservationIgnored private var activeID: UUID?
@@ -269,13 +279,19 @@ final class AppModel {
                 let url = store.recordingsURL.appendingPathComponent(entry.audioFileName!)
                 // Starting may show the system microphone prompt.
                 defer { microphoneAccess = AudioCapture.access }
+                // Meeting mode keeps transcribing after Stop.
+                var liveTranscription: LiveTranscription?
                 if chosen.recordSystemAudio {
                     try await meetingAudio.start(preferences: microphones, outputURL: url)
                 } else {
-                    try await audio.start(preferences: microphones, outputURL: url)
+                    liveTranscription = startLiveTranscription(entry)
+                    var samples: (@Sendable (UnsafeBufferPointer<Int16>) -> Void)?
+                    if let live = liveTranscription { samples = { live.append(pcm16: $0) } }
+                    try await audio.start(preferences: microphones, outputURL: url, samples: samples)
                 }
                 try ensureActive(id)
                 prepareSpeechWhileRecording(entry)
+                liveTranscription?.begin(after: speechPreparation)
                 phase = .recording
                 statusMessage = "Listening in \(chosen.name)"
                 shortcuts.setRecordingActive(true)
@@ -283,11 +299,47 @@ final class AppModel {
             } catch {
                 audio.cancel()
                 meetingAudio.cancel()
+                detachLive(id)?.cancel()
                 restorePlayback()
                 guard activeID == id else { return }
                 await fail(entry, error: error)
             }
         }
+    }
+
+    /// Creates the live transcription for a microphone recording whose engine transcribes while capturing.
+    private func startLiveTranscription(_ entry: RecordingEntry) -> LiveTranscription? {
+        guard let speech = entry.speechSnapshot else { return nil }
+        let id = entry.id
+        let transcription = speechEngine(for: speech).liveTranscription(
+            model: speech, language: entry.transcriptionLanguage
+        ) { [weak self] update in
+            Task { @MainActor in self?.showLive(update, for: id) }
+        }
+        live = transcription.map { (id, $0, false) }
+        return transcription
+    }
+
+    private func showLive(_ update: LiveTranscription.Update, for id: UUID) {
+        // An update can arrive after its recording ended, or after a discard it was sent before.
+        guard let current = live, current.id == id, !current.discarded else { return }
+        switch update {
+        case .committed(let text):
+            // Each one holds all the text so far.
+            if text.count > liveText.count { liveText = text }
+        case .discarded:
+            live?.discarded = true
+            liveText = ""
+        }
+    }
+
+    /// Takes the recording's live transcription away from the previews and returns it, for the caller to
+    /// finish or cancel. Nil when the recording has none or it was already taken.
+    private func detachLive(_ id: UUID) -> LiveTranscription? {
+        guard let live, live.id == id else { return nil }
+        self.live = nil
+        liveText = ""
+        return live.transcription
     }
 
     func stopRecording() {
@@ -356,8 +408,10 @@ final class AppModel {
         previousPreparation?.cancel()
         speechPreparation = nil
         let speech = activeEntry?.speechSnapshot.map(speechEngine(for:))
+        let liveTranscription = detachLive(id)
         audio.cancel()
         meetingAudio.cancel()
+        liveTranscription?.cancel()
         speech?.cancel()
         normalizer.cancel()
         // Also stops API cleanup.
@@ -375,6 +429,7 @@ final class AppModel {
             await meetingAudio.cancelAndWait()
             await previousWork?.value
             await previousPreparation?.value
+            await liveTranscription?.wait()
             await speech?.unload()
             await normalizer.unload()
             finishCancelledJob(id)
@@ -440,13 +495,25 @@ final class AppModel {
         phase = .transcribing
         // Timed after preparation, so the Models screen's speed leaves out loading the model.
         let started = ContinuousClock.now
-        let raw = try await speechEngine(for: speech).transcribe(
-            audioURL: audioURL, model: speech, language: entry.transcriptionLanguage,
-            vocabulary: entry.vocabularySnapshot ?? [])
-        let elapsed = ContinuousClock.now - started
+        let raw: String
+        let seconds: Double
+        if let live = detachLive(id) {
+            // The file is transcribed again, reusing segments transcribed while recording. Their model
+            // time counts too, so the speed stays per second of audio rather than the wait after Stop.
+            let transcript = try await live.finish(audioURL: audioURL)
+            raw = transcript.text
+            seconds = transcript.seconds
+        } else {
+            let result = try await speechEngine(for: speech).transcription(
+                audioURL: audioURL, model: speech, language: entry.transcriptionLanguage,
+                vocabulary: entry.vocabularySnapshot ?? [])
+            raw = result.text
+            // Local models report their own time, which leaves out reading the file and any reload.
+            seconds = result.modelSeconds ?? (ContinuousClock.now - started) / .seconds(1)
+        }
         try ensureActive(id)
         entry.rawText = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        entry.transcriptionSeconds = elapsed / .seconds(1)
+        entry.transcriptionSeconds = seconds
         activeEntry = entry
         try store?.upsertRecording(entry)
         refreshHistory()
@@ -669,6 +736,10 @@ final class AppModel {
     }
 
     private func fail(_ original: RecordingEntry, error: Error) async {
+        if let liveTranscription = detachLive(original.id) {
+            liveTranscription.cancel()
+            await liveTranscription.wait()
+        }
         await stopSpeechPreparation()
         if let speech = original.speechSnapshot { await speechEngine(for: speech).unload() }
         guard activeID == original.id else { return }
@@ -705,6 +776,8 @@ final class AppModel {
 
     private func recordingInterrupted(_ reason: String) {
         guard phase == .recording, let original = activeEntry else { return }
+        let liveTranscription = detachLive(original.id)
+        liveTranscription?.cancel()
         phase = .transcribing
         statusMessage = "Preserving captured audio…"
         restorePlayback()
@@ -718,6 +791,8 @@ final class AppModel {
                 } else {
                     captured = try await audio.stop()
                 }
+                // After the file is saved: the worker may be waiting for a model that is still loading.
+                await liveTranscription?.wait()
                 try ensureActive(entry.id)
                 entry.duration = captured.duration
                 await stopSpeechPreparation()
@@ -729,6 +804,7 @@ final class AppModel {
                     entry, message: "\(reason) Captured audio is saved in History.", outcome: .interrupted)
                 phase = .interrupted
             } catch {
+                await liveTranscription?.wait()
                 guard activeID == entry.id else { return }
                 await fail(entry, error: error)
             }
@@ -1199,6 +1275,8 @@ final class AppModel {
             return
         }
         let wasRecording = phase == .recording
+        let liveTranscription = detachLive(id)
+        liveTranscription?.cancel()
         activeID = nil
         cancellingID = id
         phase = .preparing
@@ -1225,6 +1303,7 @@ final class AppModel {
         }
         await stopSpeechPreparation()
         await previousWork?.value
+        await liveTranscription?.wait()
         await unloadModels()
         entry.status = .interrupted
         if entry.error == nil { entry.error = "Interrupted before completion. Retry from History." }
@@ -1349,6 +1428,13 @@ final class AppModel {
             // A hidden panel reports no hover exit, so a stale hover must not hold the next outcome open.
             recorderHovering = false
         }
+        updateLivePreview()
+    }
+
+    /// The Mini recorder shows the live text beside it while recording, unless Settings turns that off.
+    private func updateLivePreview() {
+        let shown = phase == .recording && settings.recorderStyle == .mini && settings.showsLivePreview
+        recorder.showPreview(shown && !liveText.isEmpty ? liveText : nil)
     }
 
     private func refreshHistory() {

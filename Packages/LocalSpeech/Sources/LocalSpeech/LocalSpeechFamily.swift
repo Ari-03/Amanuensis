@@ -21,11 +21,15 @@ public struct LocalSpeechFamily: Sendable {
     /// Turns a BCP-47 code, or nil for detection, into what the runtime's generation parameters expect.
     let languageArgument: @Sendable (String?) -> String?
     let load: @Sendable (URL) async throws -> any STTGenerationModel
-    /// Tokens one 30-second window may generate. Nil keeps the runtime's default, capped at 1024.
+    /// Tokens one segment of up to `SpeechSegmenter.maximumSeconds` may generate. Nil keeps the runtime's
+    /// default, capped at 1024.
     var maxTokens: Int? = nil
     /// Every value the runtime's language table accepts, for runtimes that silently fall back on an
     /// unknown one. Copied from the pinned checkpoint; a test checks every catalog language lands in it.
     var languageArguments: Set<String>? = nil
+    /// The shortest segment while recording. A family whose every call pays a fixed cost can ask for
+    /// longer ones; the file pass after Stop uses the same value so reused texts match.
+    public internal(set) var liveMinimumSeconds = SpeechSegmenter.minimumSeconds
 
     /// Every family this build can run, in no particular order.
     public static let all: [LocalSpeechFamily] = [
@@ -73,7 +77,7 @@ public struct LocalSpeechFamily: Sendable {
             recognizes: { $0["model_type"] as? String == "moonshine" },
             languageArgument: { _ in nil },
             load: { try await MoonshineModel.fromModelDirectory($0) },
-            // The runtime's default of 200 cut off the end of a 30-second window of English read at 380
+            // The runtime's default of 200 cut off the end of a 30-second stretch of English read at 380
             // words a minute; 400 kept it. At 180 and 280 words a minute, 1000 changed nothing.
             maxTokens: 400),
         LocalSpeechFamily(

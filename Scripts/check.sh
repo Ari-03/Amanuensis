@@ -2,7 +2,7 @@
 set -euo pipefail
 app_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$app_root"
-xcrun swift-format lint --strict --recursive Amanuensis Tests Packages/LocalSpeech/Sources
+xcrun swift-format lint --strict --recursive Amanuensis Tests Packages/LocalSpeech/Sources Packages/LocalSpeech/Tests
 swift test
 checks_dir="$(mktemp -d "${TMPDIR:-/tmp}/amanuensis-checks.XXXXXX")"
 trap 'rm -rf "$checks_dir"' EXIT

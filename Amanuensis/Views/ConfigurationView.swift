@@ -38,6 +38,12 @@ struct ConfigurationView: View {
                             Spacer()
                             recorderPositionPicker
                         }
+                        Divider()
+                        Toggle("Show text while recording", isOn: $model.settings.showsLivePreview)
+                        Text(
+                            "Local models show what they have heard beside the recorder. Nothing is inserted until you stop, and cleanup may change the text."
+                        )
+                        .font(.caption).foregroundStyle(.secondary)
                     } else if model.settings.recorderStyle == .notch {
                         Text(
                             "Notch stays in the menu bar, beside the camera or centered on displays without one."

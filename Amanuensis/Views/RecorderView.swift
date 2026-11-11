@@ -408,6 +408,29 @@ struct RecorderView: View {
     }
 }
 
+/// The Mini recorder's live text: the end of what a local model has transcribed so far, in at most two
+/// lines. Display only; its panel ignores the mouse and never takes focus.
+struct RecorderLivePreview: View {
+    static let maxWidth: CGFloat = 320
+    let text: String
+
+    var body: some View {
+        // The panel is sized to what this measures at `maxWidth`, so short text gets a narrow box.
+        Text(RecorderLayout.previewTail(of: text))
+            .font(.system(size: 12))
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .foregroundStyle(.white.opacity(0.9))
+            .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .environment(\.colorScheme, .dark)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Transcript so far")
+            .accessibilityValue(text)
+    }
+}
+
 /// The notch's shoulders meet the screen edge; the mini recorder floats with rounded ends.
 struct RecorderSilhouette: Shape {
     var style: RecorderStyle

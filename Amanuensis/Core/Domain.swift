@@ -296,6 +296,25 @@ enum RecorderLayout {
 
     // Keep horizontal centers stable on hover while top and bottom presets expand inward.
     static let anchorWidth: CGFloat = 300
+
+    /// The end of the live text, from a word start, short enough for the Mini preview's two lines.
+    static func previewTail(of text: String, characters: Int = 90) -> String {
+        guard text.count > characters else { return text }
+        let tail = text.suffix(characters)
+        if text[text.index(before: tail.startIndex)] == " " { return "…" + tail }
+        guard let space = tail.firstIndex(of: " ") else { return "…" + tail }
+        return "…" + tail[tail.index(after: space)...]
+    }
+
+    /// Where the Mini recorder's live text goes: centered on the pill, on the side facing the middle of
+    /// the screen, so it never covers the pill and the pill never moves for it.
+    static func previewFrame(size: CGSize, beside pill: CGRect, in bounds: CGRect) -> CGRect {
+        let gap: CGFloat = 6
+        let width = min(size.width, bounds.width)
+        let y = pill.midY < bounds.midY ? pill.maxY + gap : pill.minY - gap - size.height
+        let x = min(max(pill.midX - width / 2, bounds.minX), bounds.maxX - width)
+        return CGRect(x: x, y: y, width: width, height: size.height)
+    }
 }
 
 /// Normalized positions keep the recorder aligned to the chosen screen edge as its size changes.
@@ -365,6 +384,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var recorderStyle: RecorderStyle = .mini
     var recorderPlacement: RecorderPlacement? = nil
     var alwaysShowRecorder = true
+    /// Nil until changed, which means on. Optional so earlier saves still decode; read `showsLivePreview`.
+    var livePreview: Bool? = nil
     var requireLocalProcessing = true
     var toggleShortcut: ShortcutBinding = .recording
     var pushToTalkShortcut: ShortcutBinding? = nil
@@ -389,6 +410,11 @@ struct AppSettings: Codable, Equatable, Sendable {
     var dictationLanguage: SpeechLanguage? = nil
     /// The Settings language, for every reader.
     var language: SpeechLanguage { dictationLanguage ?? .english }
+    /// Whether the Mini recorder shows what a local model has transcribed so far while recording.
+    var showsLivePreview: Bool {
+        get { livePreview ?? true }
+        set { livePreview = newValue }
+    }
 }
 
 enum ModelPurpose: String, Codable, CaseIterable, Sendable { case speech, cleanup }
@@ -570,8 +596,11 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
     /// The language resolved when recording started, so a retry transcribes the same way.
     /// Nil in rows saved before languages existed; `transcriptionLanguage` reads those as English.
     var language: SpeechLanguage? = nil
-    /// How long the speech model took to transcribe the audio, once it had loaded. Set when
-    /// transcription succeeds; nil in rows saved before it existed. `TranscriptionSpeed` reads it.
+    /// How long the speech model took to transcribe the audio. For local models it is the model's own
+    /// time summed over every segment, including any transcribed while recording, and leaves out reading
+    /// the file and loading the model, so it is time per second of audio rather than the wait after Stop.
+    /// For Apple Speech and APIs it is the request's wall time. Set when transcription succeeds; nil in
+    /// rows saved before it existed. `TranscriptionSpeed` reads it.
     var transcriptionSeconds: Double? = nil
     var transcriptionLanguage: SpeechLanguage { language ?? .english }
     var preview: String {

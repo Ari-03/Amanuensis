@@ -41,7 +41,7 @@ public actor LocalSpeechEngine {
     /// Holds the prepared model until transcription or unload. Memory pressure may evict it.
     /// Call while recording, and await completion before starting transcription on this engine.
     public func prepare(modelDirectory: URL, family: String) async throws {
-        try await withModel(modelDirectory: modelDirectory, family: family, preparing: true) {
+        try await withModel(modelDirectory: modelDirectory, family: family, holds: true) {
             _, cancellation in
             try cancellation.check()
             return ()
@@ -52,18 +52,43 @@ public actor LocalSpeechEngine {
     /// Each `LocalSpeechFamily` says whether it can detect and how its runtime takes the language. A
     /// family that cannot detect throws `languageRequired` for nil. Callers check that the checkpoint
     /// handles the language first: some runtimes silently substitute English for one they lack.
-    public func transcribe(audioURL: URL, modelDirectory: URL, family: String, language: String?)
-        async throws -> String
-    {
-        let speechFamily = try LocalSpeechFamily.named(family)
-        guard language != nil || speechFamily.detectsLanguage else {
-            throw LocalSpeechError.languageRequired(speechFamily.displayName)
-        }
-        let requested = speechFamily.languageArgument(language)
+    ///
+    /// The file is cut with `minimumSeconds`. The default suits a file nothing was transcribed from while
+    /// recording, where short segments would only add model calls.
+    public func transcribe(
+        audioURL: URL, modelDirectory: URL, family: String, language: String?,
+        minimumSeconds: Double = SpeechSegmenter.wholeFileMinimumSeconds
+    ) async throws -> SpeechTranscript {
+        try await transcribe(
+            audioURL: audioURL, modelDirectory: modelDirectory, family: family, language: language,
+            minimumSeconds: minimumSeconds, reusing: [:])
+    }
+
+    /// Transcribes the file segment by segment as `SpeechSegmenter` cuts it with `minimumSeconds`. A
+    /// segment whose exact samples are in `known` takes that text instead of running the model again.
+    func transcribe(
+        audioURL: URL, modelDirectory: URL, family: String, language: String?, minimumSeconds: Double,
+        reusing known: [Data: SegmentText]
+    ) async throws -> SpeechTranscript {
+        let request = try SpeechRequest(family: family, language: language)
         return try await withModel(modelDirectory: modelDirectory, family: family) { model, cancellation in
-            try transcribeWindows(
-                audioURL: audioURL, model: model, language: requested, maxTokens: speechFamily.maxTokens,
-                cancellation: cancellation)
+            try transcribeFile(
+                audioURL: audioURL, model: model, request: request, minimumSeconds: minimumSeconds,
+                known: known, cancellation: cancellation)
+        }
+    }
+
+    /// Transcribes one segment cut while recording, with the model `prepare` loaded. Throws
+    /// `modelNotLoaded` instead of loading, so memory pressure that evicted the model is not undone
+    /// mid-recording, and keeps the model held like preparation does.
+    func transcribe(segment: SpeechSegment, modelDirectory: URL, family: String, language: String?)
+        async throws -> SegmentText
+    {
+        let request = try SpeechRequest(family: family, language: language)
+        return try await withModel(modelDirectory: modelDirectory, family: family, loads: false, holds: true)
+        { model, cancellation in
+            try cancellation.check()
+            return try request.transcribe(segment, model: model)
         }
     }
 
@@ -81,8 +106,9 @@ public actor LocalSpeechEngine {
         }
     }
 
+    /// `holds` keeps the model without starting the idle expiry, for preparation and recording.
     private func withModel<T>(
-        modelDirectory: URL, family: String, preparing: Bool = false,
+        modelDirectory: URL, family: String, loads: Bool = true, holds: Bool = false,
         operation: (any STTGenerationModel, CancellationFlag) throws -> T
     ) async throws -> T {
         try Task.checkCancellation()
@@ -117,12 +143,13 @@ public actor LocalSpeechEngine {
             let waiters = unloadWaiters
             unloadWaiters.removeAll()
             for waiter in waiters { waiter.resume() }
-            if resident != nil, !preparing { scheduleExpiry() }
+            if resident != nil, !holds { scheduleExpiry() }
         }
         return try await withTaskCancellationHandler {
             try cancellation.check()
             let identity = try LocalModelIdentity(directory: modelDirectory, family: modelFamily)
             if resident?.identity != identity {
+                guard loads else { throw LocalSpeechError.modelNotLoaded }
                 resident = nil
                 let files = try LocalModelFiles(source: modelDirectory, family: modelFamily)
                 do {
@@ -193,10 +220,10 @@ public actor LocalSpeechEngine {
         Self.runtimeBusy.withLock { $0 = false }
     }
 
-    private func transcribeWindows(
-        audioURL: URL, model: any STTGenerationModel, language: String?, maxTokens: Int?,
-        cancellation: CancellationFlag
-    ) throws -> String {
+    private func transcribeFile(
+        audioURL: URL, model: any STTGenerationModel, request: SpeechRequest, minimumSeconds: Double,
+        known: [Data: SegmentText], cancellation: CancellationFlag
+    ) throws -> SpeechTranscript {
         guard audioURL.isFileURL else { throw LocalSpeechError.invalidAudio }
         let file = try AVAudioFile(forReading: audioURL, commonFormat: .pcmFormatFloat32, interleaved: false)
         let format = file.processingFormat
@@ -208,11 +235,15 @@ public actor LocalSpeechEngine {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
             throw LocalSpeechError.invalidAudio
         }
-        let parameters = STTGenerateParameters(
-            maxTokens: maxTokens ?? min(model.defaultGenerationParameters.maxTokens, 1024),
-            temperature: 0, language: language, chunkDuration: 30, minChunkDuration: 0.1
-        )
-        var parts: [String] = []
+        var segmenter = SpeechSegmenter(sampleRate: format.sampleRate, minimumSeconds: minimumSeconds)
+        var result = SpeechTranscript(text: "", seconds: 0, segments: 0, reused: 0)
+        func add(_ segment: SpeechSegment) throws {
+            try cancellation.check()
+            let reused = known.isEmpty || !segment.hasSound ? nil : known[segment.key]
+            let part = try reused ?? request.transcribe(segment, model: model)
+            try cancellation.check()
+            result.add(part, reused: reused != nil)
+        }
         while file.framePosition < file.length {
             try cancellation.check()
             try file.read(into: buffer)
@@ -226,21 +257,75 @@ public actor LocalSpeechEngine {
                 }
             }
             guard samples.allSatisfy(\.isFinite) else { throw LocalSpeechError.invalidAudio }
-            try cancellation.check()
-            // Exact digital silence requires no model call and cannot produce hallucinated text.
-            if samples.allSatisfy({ $0 == 0 }) { continue }
-            if format.sampleRate != 16_000 {
-                samples = try resampleAudio(samples, from: Int(format.sampleRate), to: 16_000)
-            }
-            let text = autoreleasepool {
-                model.generate(audio: MLXArray(samples), generationParameters: parameters).text
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            try cancellation.check()
-            if !text.isEmpty { parts.append(text) }
+            for segment in segmenter.append(samples) { try add(segment) }
         }
+        if let last = segmenter.finish() { try add(last) }
         try cancellation.check()
-        return parts.joined(separator: " ")
+        return result
+    }
+}
+
+/// What one transcription needs besides the model and audio, checked before the model is touched.
+private struct SpeechRequest {
+    let language: String?
+    let maxTokens: Int?
+
+    init(family name: String, language: String?) throws {
+        let family = try LocalSpeechFamily.named(name)
+        guard language != nil || family.detectsLanguage else {
+            throw LocalSpeechError.languageRequired(family.displayName)
+        }
+        self.language = family.languageArgument(language)
+        maxTokens = family.maxTokens
+    }
+
+    /// The one model call for a segment, whether it was cut while recording or from the file.
+    func transcribe(_ segment: SpeechSegment, model: any STTGenerationModel) throws -> SegmentText {
+        // Silence, digital or below -60 dBFS throughout, needs no model call, and models invent words for it.
+        guard segment.hasSound else { return SegmentText(text: "", seconds: 0) }
+        let started = ContinuousClock.now
+        var samples = segment.samples
+        if segment.sampleRate != 16_000 {
+            samples = try resampleAudio(samples, from: Int(segment.sampleRate), to: 16_000)
+        }
+        // A cut can leave only 0.1 s of pause on each side. Padding lowers, but does not remove, the odds
+        // that a model invents sentences there: Cohere did for three Italian segments without it and not
+        // with 0.3 or 0.5 s, yet still did on another Italian clip and with 12-second segments. It costs
+        // model time, from 2% for Whisper to 16% for Nemotron.
+        let padding = [Float](repeating: 0, count: 8_000)
+        samples = padding + samples + padding
+        let parameters = STTGenerateParameters(
+            maxTokens: maxTokens ?? min(model.defaultGenerationParameters.maxTokens, 1024),
+            temperature: 0, language: language, chunkDuration: 30, minChunkDuration: 0.1
+        )
+        let text = autoreleasepool {
+            model.generate(audio: MLXArray(samples), generationParameters: parameters).text
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return SegmentText(text: text, seconds: (ContinuousClock.now - started) / .seconds(1))
+    }
+}
+
+/// One segment's text and the seconds the model spent on it.
+struct SegmentText: Sendable {
+    let text: String
+    let seconds: Double
+}
+
+/// A recording's transcript. `seconds` is the model's time summed over every segment, including any
+/// transcribed while recording, so it measures speed per second of audio rather than the wait after Stop.
+public struct SpeechTranscript: Sendable, Equatable {
+    public private(set) var text: String
+    public private(set) var seconds: Double
+    /// How many segments the recording had, and how many took their text from live transcription.
+    public private(set) var segments: Int
+    public private(set) var reused: Int
+
+    mutating func add(_ part: SegmentText, reused wasReused: Bool) {
+        if !part.text.isEmpty { text = text.isEmpty ? part.text : text + " " + part.text }
+        seconds += part.seconds
+        segments += 1
+        if wasReused { reused += 1 }
     }
 }
 

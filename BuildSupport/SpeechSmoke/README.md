@@ -66,7 +66,7 @@ These are single-run smoke measurements, including model loading. Filesystem cac
 
 The implementation now adds two production measurements. `reload_each_request` uses `LocalSpeechEngine(retentionDuration: .zero)` to preserve the original baseline. `production_prepare` measures preparation once; `production_preloaded` measures subsequent calls to the retained production engine. The `retained_setup` and `retained` rows remain the original laboratory duplicate for comparison. Historical JSONL files recorded before the implementation used `production` for the reload-per-request path.
 
-`SpeechBench` compares repeated calls to the production `LocalSpeechEngine` with an experimental model retained across calls. It is a diagnostic executable, excluded from the app. Its retained path duplicates the engine's 30-second PCM windows, channel averaging, 16 kHz resampling, silence handling, and generation parameters. Keep that duplicate in sync before reusing this experiment after engine changes.
+`SpeechBench` compares repeated calls to the production `LocalSpeechEngine` with an experimental model retained across calls. It is a diagnostic executable, excluded from the app. Its retained path duplicates the engine's 30-second PCM windows, channel averaging, 16 kHz resampling, silence handling, and generation parameters. Keep that duplicate in sync before reusing this experiment after engine changes. The engine has since replaced fixed windows with `SpeechSegmenter`, so the duplicate no longer matches it.
 
 The executable takes `<family> <model-directory> <audio-file> [repetitions=3] [retained-cache-MiB=64] [expected-transcript]`. It validates every result against the supplied expected transcript, or the first production result when none is supplied. Empty or changed transcripts fail the run. Output contains JSONL timing and character counts, without transcript text. The baseline always uses the production 64 MiB allocator cache; the optional cache setting applies only to the retained path.
 
@@ -188,3 +188,13 @@ Scripts/check-packaged-speech.sh artifacts/Amanuensis.app \
 ```
 
 This checks the app signature, denies network access, runs speech and cleanup twice, requires matching output, unloads both engines, and requires the app to exit within 90 seconds. It passed for the implemented Cohere and S1-mini paths. It does not capture the microphone or paste into another application.
+
+## Transcribing while recording
+
+`SpeechStream` measures `LiveTranscription` against transcribing after Stop, on a real model, network denied. It takes `<family> <model-directory> <16-bit mono WAV> <language|auto> <whole|live> [pace] [evict|drop|offset]`.
+
+- `whole` prepares the model, as the app does while recording, then times transcribing the file with whole-file segments: the wait after Stop without live transcription. It also reports the model's own summed time, which the app stores for local models.
+- `live` feeds the file's 16-bit samples to `LiveTranscription` in 1024-sample buffers, like the microphone tap, at `pace` times real time (default 1, 0 for no waiting). It times `finish` from the moment the last buffer is in, which is the wait after Stop. It then transcribes the file again in the same process with the same segments and no reuse, and reports `equal`, whether the two texts match, plus `segments`, `reused` (segments whose live text was used) and `modelSeconds`.
+- `evict` releases the model after the second committed segment, so live transcription fails and the whole file is transcribed after Stop. `drop` leaves out one 1024-sample buffer at 20 seconds, so every later live segment differs from the file and is transcribed again. `offset` leaves out the first sample, as a tap one sample late would, so nothing matches.
+
+Build it like the other executables with `-scheme SpeechStream`. Fixtures must be 16-bit mono WAV; the app records 48 kHz, so convert with `afconvert -f WAVE -d LEI16@48000 -c 1`. Results from November 10, 2026 are in [the performance investigation](../../docs/research/transcription-performance.md#transcribing-while-recording).

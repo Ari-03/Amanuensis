@@ -8,6 +8,8 @@ public enum LocalSpeechError: Error, LocalizedError, Equatable, Sendable {
     case invalidAudio
     case unrecognizedConfiguration(String)
     case languageRequired(String)
+    /// The model was released while recording, so the rest is left for transcription after Stop.
+    case modelNotLoaded
 
     public var errorDescription: String? {
         switch self {
@@ -25,6 +27,8 @@ public enum LocalSpeechError: Error, LocalizedError, Equatable, Sendable {
             "This folder does not contain a \(family) configuration."
         case .languageRequired(let family):
             "\(family) cannot detect the spoken language. Choose a language."
+        case .modelNotLoaded:
+            "The speech model was released before it could transcribe while recording."
         }
     }
 }

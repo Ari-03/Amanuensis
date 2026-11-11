@@ -96,6 +96,21 @@ struct HomeView: View {
                         }
                     }
                     AudioLevelView(level: model.recordingLevel, active: model.phase == .recording)
+                    // Raw text from a local model, while recording only. It is never inserted.
+                    // It keeps the newest words in view and can be scrolled back.
+                    if model.phase == .recording && !model.liveText.isEmpty {
+                        ScrollView {
+                            Text(model.liveText)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                        }
+                        .defaultScrollAnchor(.bottom)
+                        .frame(maxHeight: 96)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                        .accessibilityLabel("Transcript so far")
+                        .accessibilityValue(model.liveText)
+                    }
                     HStack {
                         Label(
                             model.microphoneName,

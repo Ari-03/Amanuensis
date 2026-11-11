@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Observation
+import os
 
 @MainActor
 @Observable
@@ -12,6 +13,8 @@ final class AudioCapture {
     private(set) var duration = 0.0
     private(set) var isRecording = false
     var onInterruption: (@MainActor (String) -> Void)?
+    /// The rate of the recorded file and of the samples `start` hands to its `samples` callback.
+    nonisolated static let sampleRate = 48_000.0
 
     @ObservationIgnored private let worker = AudioRecordingWorker()
     @ObservationIgnored private var deviceObservers: [NSObjectProtocol] = []
@@ -70,7 +73,13 @@ final class AudioCapture {
     }
 
     /// Chooses the first available included input without changing the system input device.
-    func start(preferences: [MicrophonePreference], outputURL: URL) async throws {
+    /// `samples` receives the recording's 16-bit PCM on the capture thread as it arrives, starting at the
+    /// file's first sample, and must return quickly. It stops at the first gap, so what it received is
+    /// always the start of the file unless the two disagree.
+    func start(
+        preferences: [MicrophonePreference], outputURL: URL,
+        samples: (@Sendable (UnsafeBufferPointer<Int16>) -> Void)? = nil
+    ) async throws {
         // Also serialize callers that use the synchronous cancel API before restarting.
         while let pending = cancellation {
             await pending.task.value
@@ -101,8 +110,9 @@ final class AudioCapture {
 
         let name = try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            return try await worker.start(requestID: requestID, inputIDs: inputIDs, outputURL: outputURL) {
-                [weak self] level, spectrum, duration in
+            return try await worker.start(
+                requestID: requestID, inputIDs: inputIDs, outputURL: outputURL, samples: samples
+            ) { [weak self] level, spectrum, duration in
                 Task { @MainActor [weak self] in
                     guard let self, self.operationID == requestID else { return }
                     self.level = level
@@ -184,6 +194,9 @@ private nonisolated enum AudioCaptureError: LocalizedError {
     }
 }
 
+/// Shows in Console without extra settings, with the live transcription log under the same subsystem.
+private nonisolated let captureLog = Logger(subsystem: "dev.amanuensis", category: "audio-capture")
+
 private nonisolated struct FinishedRecording: Sendable {
     let url: URL
     let duration: Double
@@ -198,6 +211,15 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
     private var session: AVCaptureSession?
     private var output: AVCaptureAudioFileOutput?
     private var analysisOutput: AVCaptureAudioDataOutput?
+    /// Taps the same PCM the file gets, for transcription while recording.
+    private var pcmOutput: AVCaptureAudioDataOutput?
+    private var samples: (@Sendable (UnsafeBufferPointer<Int16>) -> Void)?
+    /// When the file's first sample was captured, and the tap's buffers that arrived before that was known.
+    private var fileStart: CMTime?
+    /// Copies, so capture's own buffers go straight back to it.
+    private var earlyPCM: [(time: CMTime, samples: [Int16])] = []
+    /// Where the next tap buffer must start for the samples to stay continuous.
+    private var nextPCMTime: CMTime?
     private let spectrum = AudioSpectrum()
     private var timer: DispatchSourceTimer?
     private var observers: [NSObjectProtocol] = []
@@ -215,6 +237,7 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
 
     func start(
         requestID: UUID, inputIDs: [String], outputURL: URL,
+        samples: (@Sendable (UnsafeBufferPointer<Int16>) -> Void)?,
         metering: @escaping @Sendable (Double, [Double], Double) -> Void,
         interrupted: @escaping @Sendable (String) -> Void
     ) async throws -> String {
@@ -264,6 +287,15 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
                     ]
                     analysis.setSampleBufferDelegate(self, queue: queue)
                     analysisOutput = analysis
+                    if let samples {
+                        let tap = AVCaptureAudioDataOutput()
+                        guard newSession.canAddOutput(tap) else { throw AudioCaptureError.cannotRecord }
+                        newSession.addOutput(tap)
+                        tap.audioSettings = Self.pcm16Settings
+                        tap.setSampleBufferDelegate(self, queue: queue)
+                        pcmOutput = tap
+                        self.samples = samples
+                    }
                     spectrum.reset()
                     if fileType == .m4a {
                         newOutput.audioSettings = [
@@ -273,15 +305,7 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
                             AVEncoderBitRateKey: 96_000,
                         ]
                     } else {
-                        newOutput.audioSettings = [
-                            AVFormatIDKey: kAudioFormatLinearPCM,
-                            AVSampleRateKey: 48_000,
-                            AVNumberOfChannelsKey: 1,
-                            AVLinearPCMBitDepthKey: 16,
-                            AVLinearPCMIsFloatKey: false,
-                            AVLinearPCMIsBigEndianKey: false,
-                            AVLinearPCMIsNonInterleaved: false,
-                        ]
+                        newOutput.audioSettings = Self.pcm16Settings
                     }
                     try FileManager.default.createDirectory(
                         at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true
@@ -387,12 +411,29 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
         for continuation in waiters { continuation.resume() }
     }
 
+    /// Mono 16-bit 48 kHz, for the WAV file and the transcription tap alike.
+    private static var pcm16Settings: [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: AudioCapture.sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+    }
+
     func fileOutput(
-        _ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL,
+        _ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL, startPTS: CMTime,
         from connections: [AVCaptureConnection]
     ) {
         queue.async { [self] in
             guard recordingURL == fileURL else { return }
+            fileStart = startPTS
+            let early = earlyPCM
+            earlyPCM.removeAll()
+            for (time, pcm) in early { pcm.withUnsafeBufferPointer { deliverPCM($0, at: time) } }
             startContinuation?.resume(returning: deviceName)
             startContinuation = nil
             if stopRequested {
@@ -468,8 +509,69 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
         _ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        guard output === analysisOutput, !stopRequested else { return }
-        spectrum.append(sampleBuffer)
+        guard !stopRequested else { return }
+        if output === pcmOutput {
+            receivePCM(sampleBuffer)
+        } else if output === analysisOutput {
+            spectrum.append(sampleBuffer)
+        }
+    }
+
+    /// Hands the tap's samples on from the file's first sample, by capture time. Buffers that arrive
+    /// before that time is known wait as copies. A format change ends the hand-off.
+    private func receivePCM(_ buffer: CMSampleBuffer) {
+        guard samples != nil else { return }
+        let count = buffer.numSamples
+        guard buffer.isValid, CMSampleBufferDataIsReady(buffer), count > 0,
+            let description = buffer.formatDescription
+        else { return stopPCM("a buffer had no audio") }
+        let format = AVAudioFormat(cmAudioFormatDescription: description)
+        guard format.commonFormat == .pcmFormatInt16, format.channelCount == 1,
+            format.sampleRate == AudioCapture.sampleRate
+        else { return stopPCM("a buffer was not 16-bit mono at 48 kHz") }
+        do {
+            try buffer.withAudioBufferList { list, _ in
+                guard let data = list.first?.mData, Int(list.first?.mDataByteSize ?? 0) >= count * 2 else {
+                    return stopPCM("a buffer held fewer bytes than samples")
+                }
+                let pcm = UnsafeBufferPointer(start: data.assumingMemoryBound(to: Int16.self), count: count)
+                if fileStart != nil {
+                    deliverPCM(pcm, at: buffer.presentationTimeStamp)
+                } else if earlyPCM.count < 100 {
+                    earlyPCM.append((buffer.presentationTimeStamp, Array(pcm)))
+                } else {
+                    stopPCM("the file's start time did not arrive within 100 buffers")
+                }
+            }
+        } catch { stopPCM("a buffer could not be read") }
+    }
+
+    /// Any gap, overlap or late start ends the hand-off rather than shifting the samples against the file.
+    private func deliverPCM(_ pcm: UnsafeBufferPointer<Int16>, at time: CMTime) {
+        guard let samples, let fileStart else { return }
+        guard fileStart.isNumeric, time.isNumeric else { return stopPCM("a capture time was not a number") }
+        let rate = AudioCapture.sampleRate
+        let offset = ((fileStart - time).seconds * rate).rounded()
+        if nextPCMTime == nil, offset < 0 {
+            return stopPCM("the tap's first buffer began \(Int(-offset)) samples after the file")
+        }
+        let first = Int(max(0, offset))
+        guard first < pcm.count else { return }
+        if let expected = nextPCMTime, abs((time - expected).seconds) * rate > 0.5 {
+            return stopPCM("the tap skipped or repeated audio")
+        }
+        nextPCMTime = time + CMTime(value: CMTimeValue(pcm.count), timescale: CMTimeScale(rate))
+        samples(UnsafeBufferPointer(rebasing: pcm[first...]))
+    }
+
+    /// Ends the hand-off. A reason means live transcription stops early, and is logged; everything not yet
+    /// transcribed is transcribed from the file after Stop.
+    private func stopPCM(_ reason: String? = nil) {
+        if let reason, samples != nil {
+            captureLog.notice("Transcription tap stopped: \(reason, privacy: .public)")
+        }
+        samples = nil
+        earlyPCM.removeAll()
     }
 
     private func observeInterruptions(device: AVCaptureDevice, session: AVCaptureSession) {
@@ -500,6 +602,11 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
         observers.removeAll()
         analysisOutput?.setSampleBufferDelegate(nil, queue: nil)
         analysisOutput = nil
+        pcmOutput?.setSampleBufferDelegate(nil, queue: nil)
+        pcmOutput = nil
+        stopPCM()
+        fileStart = nil
+        nextPCMTime = nil
         spectrum.reset()
         session?.stopRunning()
         session = nil

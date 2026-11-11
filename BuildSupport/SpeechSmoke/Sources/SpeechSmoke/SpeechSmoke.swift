@@ -19,7 +19,7 @@ struct SpeechSmoke {
             modelDirectory: URL(fileURLWithPath: arguments[2]),
             family: arguments[1],
             language: language
-        )
+        ).text
         print("LANGUAGE: \(language ?? "auto")")
         print("TRANSCRIPT: \(transcript)")
         print("ELAPSED: \(started.duration(to: .now))")
