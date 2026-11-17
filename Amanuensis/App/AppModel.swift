@@ -1222,7 +1222,7 @@ final class AppModel {
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty {
             try CredentialStore.set(key, for: .openAICompatible, server: address)
-        } else if address.absoluteString != settings.compatibleBaseURL {
+        } else if address != (try? APIBaseURL.parse(settings.compatibleBaseURL ?? "").get()) {
             try CredentialStore.remove(for: .openAICompatible)
         }
         settings.compatibleBaseURL = address.absoluteString

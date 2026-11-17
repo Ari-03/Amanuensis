@@ -2,8 +2,8 @@ import Foundation
 import Security
 
 /// API credentials live in the login Keychain, never in saved app configuration.
-/// An OpenAI-compatible key is saved in one item with the base URL it belongs to, normalized by
-/// `APIBaseURL`, and `get` returns it only for that exact address. The fixed providers take no address.
+/// An OpenAI-compatible key is saved with the base URL it belongs to, normalized by `APIBaseURL`, in the
+/// item's one value, and `get` returns it only for that exact address. The fixed providers take no address.
 enum CredentialStore {
     private static let service = "dev.amanuensis.api-credentials"
 
@@ -16,8 +16,7 @@ enum CredentialStore {
         guard (provider == .openAICompatible) == (server != nil) else {
             throw CredentialError.unsupportedProvider
         }
-        var attributes: [String: Any] = [kSecValueData as String: Data(value.utf8)]
-        if let server { attributes[kSecAttrGeneric as String] = Data(server.absoluteString.utf8) }
+        let attributes: [String: Any] = [kSecValueData as String: encode(value, server: server)]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var item = query
@@ -37,19 +36,28 @@ enum CredentialStore {
             throw CredentialError.unsupportedProvider
         }
         query[kSecReturnData as String] = true
-        query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw CredentialError.keychain(status) }
-        guard let item = result as? [String: Any], let data = item[kSecValueData as String] as? Data,
-            let value = String(data: data, encoding: .utf8)
-        else { throw CredentialError.invalidValue }
-        if let server, item[kSecAttrGeneric as String] as? Data != Data(server.absoluteString.utf8) {
-            return nil
+        guard let data = result as? Data, let stored = String(data: data, encoding: .utf8) else {
+            throw CredentialError.invalidValue
         }
-        return value
+        return key(in: stored, server: server)
+    }
+
+    /// An item's value: the key, after a line holding the compatible server's address. Key and address
+    /// are one value, so they are always read and written together. Neither can contain a line break.
+    static func encode(_ key: String, server: URL?) -> Data {
+        Data(((server.map { $0.absoluteString + "\n" } ?? "") + key).utf8)
+    }
+
+    /// The key in an item's value, or nil when it was not saved for `server`.
+    static func key(in stored: String, server: URL?) -> String? {
+        guard let server else { return stored }
+        let address = server.absoluteString + "\n"
+        return stored.hasPrefix(address) ? String(stored.dropFirst(address.count)) : nil
     }
 
     static func remove(for provider: ModelFamily) throws {

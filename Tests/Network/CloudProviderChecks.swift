@@ -437,6 +437,14 @@ struct CloudProviderChecks {
         permission.compatibleKeyServer = loopback
         checks += 1
 
+        // The value the Keychain holds ties a compatible key to its address. No Keychain access here.
+        let stored = String(decoding: CredentialStore.encode("placeholder", server: loopback), as: UTF8.self)
+        precondition(CredentialStore.key(in: stored, server: loopback) == "placeholder")
+        precondition(CredentialStore.key(in: stored, server: other) == nil)
+        precondition(CredentialStore.key(in: "placeholder", server: loopback) == nil)
+        precondition(CredentialStore.key(in: "placeholder", server: nil) == "placeholder")
+        checks += 1
+
         // Validation names what it checked: the server's list, not inference.
         fixture.reset { request in
             precondition(request.url?.path == "/v1/models")
