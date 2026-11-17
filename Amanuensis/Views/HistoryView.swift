@@ -106,9 +106,8 @@ struct HistoryView: View {
     /// History keeps a recording's models but not the compatible server it used, so a retry with an
     /// OpenAI-compatible model goes to the server saved now. The confirmation names that host.
     private func retryMessage(for entry: RecordingEntry?) -> String {
-        let usesCompatible = [entry?.speechSnapshot, entry?.cleanupSnapshot].contains {
-            $0?.resolved(against: model.library.models)?.engine == .openAICompatible
-        }
+        let models = entry.map(model.retryModels(for:))
+        let usesCompatible = [models?.speech, models?.cleanup].contains { $0?.engine == .openAICompatible }
         if usesCompatible,
             let host = (try? APIBaseURL.parse(model.settings.compatibleBaseURL ?? "").get())?.host()
         {

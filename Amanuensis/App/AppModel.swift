@@ -811,6 +811,17 @@ final class AppModel {
         }
     }
 
+    /// The models a retry of `entry` runs: the ones it recorded with, or where History has none, the
+    /// ones its mode names. History's confirmation reads this too, so it describes the retry that runs.
+    func retryModels(for entry: RecordingEntry) -> (speech: ModelDescriptor?, cleanup: ModelDescriptor?) {
+        (
+            entry.speechSnapshot?.resolved(against: library.models)
+                ?? effectiveModel(entry.mode.speechModelID),
+            entry.cleanupSnapshot?.resolved(against: library.models)
+                ?? entry.mode.cleanupModelID.flatMap(effectiveModel)
+        )
+    }
+
     func retryRecording(_ original: RecordingEntry) async {
         guard !phase.isBusy, activeID == nil, cancellingID == nil, modelReleaseCount == 0, let store else {
             return
@@ -824,12 +835,7 @@ final class AppModel {
             return
         }
         var entry = original.retryAttempt()
-        entry.speechSnapshot =
-            original.speechSnapshot?.resolved(against: library.models)
-            ?? effectiveModel(original.mode.speechModelID)
-        entry.cleanupSnapshot =
-            original.cleanupSnapshot?.resolved(against: library.models)
-            ?? original.mode.cleanupModelID.flatMap(effectiveModel)
+        (entry.speechSnapshot, entry.cleanupSnapshot) = retryModels(for: original)
         let id = entry.id
         let attemptURL = store.recordingsURL.appendingPathComponent("\(id.uuidString).wav")
         activeID = entry.id
