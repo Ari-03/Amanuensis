@@ -73,6 +73,8 @@ private final class ProtocolFixture: @unchecked Sendable {
 private final class CloudPermission {
     var enabled = false
     var compatibleBaseURL: String?
+    /// The address the stand-in Keychain holds the compatible server's key for.
+    var compatibleKeyServer: URL?
 }
 
 @main
@@ -84,7 +86,11 @@ struct CloudProviderChecks {
         let permission = CloudPermission()
         let provider = CloudProviders(
             allowCloud: { permission.enabled }, configuration: configuration,
-            credential: { _ in "placeholder-credential" },
+            // Like `CredentialStore`, a compatible key comes back only for the address it was saved for.
+            credential: { provider, server in
+                provider != .openAICompatible || server == permission.compatibleKeyServer
+                    ? "placeholder-credential" : nil
+            },
             compatibleBaseURL: { permission.compatibleBaseURL }
         )
         let fixture = ProviderProtocol.fixture
@@ -303,6 +309,8 @@ struct CloudProviderChecks {
         }
 
         permission.compatibleBaseURL = "http://127.0.0.1:11434/v1"
+        let loopback = try APIBaseURL.parse("http://127.0.0.1:11434/v1").get()
+        permission.compatibleKeyServer = loopback
         permission.enabled = false
         do {
             _ = try await provider.listModels(provider: .openAICompatible)
@@ -369,7 +377,7 @@ struct CloudProviderChecks {
             }
         }
 
-        // The model list feeds the picker. The saved key goes only to the saved address.
+        // The model list feeds the picker, with the key saved for its address.
         fixture.reset { request in
             precondition(request.httpMethod == "GET" && request.httpBody == nil)
             precondition(request.url?.absoluteString == "http://127.0.0.1:11434/v1/models")
@@ -398,6 +406,27 @@ struct CloudProviderChecks {
             return .json(200, #"{"data":[{"id":"m"}]}"#)
         }
         _ = try await provider.listModels(provider: .openAICompatible, server: other, key: " typed-key ")
+        checks += 1
+
+        // A key saved for another address is never sent to the address in settings, however the two
+        // came apart. It still goes to its own address.
+        permission.compatibleKeyServer = other
+        fixture.reset { request in
+            precondition(request.url?.host == "127.0.0.1")
+            precondition(
+                request.value(forHTTPHeaderField: "Authorization") == nil,
+                "A key went to an address it was not saved for")
+            return .json(200, #"{"data":[]}"#)
+        }
+        _ = try await provider.listModels(provider: .openAICompatible)
+        fixture.reset { request in
+            precondition(request.url?.host == "router.example.com")
+            precondition(
+                request.value(forHTTPHeaderField: "Authorization") == "Bearer placeholder-credential")
+            return .json(200, #"{"data":[]}"#)
+        }
+        _ = try await provider.listModels(provider: .openAICompatible, server: other)
+        permission.compatibleKeyServer = loopback
         checks += 1
 
         // Validation names what it checked: the server's list, not inference.
@@ -486,6 +515,7 @@ struct CloudProviderChecks {
             checks += 1
         }
         permission.compatibleBaseURL = nil
+        permission.compatibleKeyServer = nil
         return checks
     }
 

@@ -5,7 +5,9 @@ import Foundation
 @MainActor
 final class CloudProviders {
     private let allowCloud: @MainActor () -> Bool
-    private let credential: @MainActor (ModelFamily) throws -> String?
+    /// The saved key for a provider. A compatible server's key is asked for by the request's address
+    /// and comes back only if it was saved for that address; the fixed providers pass nil.
+    private let credential: @MainActor (ModelFamily, URL?) throws -> String?
     /// The saved OpenAI-compatible base URL text, read when each request is built.
     private let compatibleBaseURL: @MainActor () -> String?
     private let session: URLSession
@@ -15,8 +17,8 @@ final class CloudProviders {
     init(
         allowCloud: @escaping @MainActor () -> Bool,
         configuration: URLSessionConfiguration = .ephemeral,
-        credential: @escaping @MainActor (ModelFamily) throws -> String? = {
-            try CredentialStore.get(for: $0)
+        credential: @escaping @MainActor (ModelFamily, URL?) throws -> String? = {
+            try CredentialStore.get(for: $0, server: $1)
         },
         compatibleBaseURL: @escaping @MainActor () -> String? = { nil }
     ) {
@@ -189,11 +191,11 @@ final class CloudProviders {
         guard allowCloud() else { throw ProviderError.localOnly }
     }
 
-    /// Builds a request to the provider's endpoint with its key. The address and the saved key are read
-    /// together here, on the main actor, so a request never pairs a key with an address it was not saved
-    /// for. `server` and `key` let the configuration sheet try entries it has not saved: a typed key is
-    /// used as is, and the saved key goes only to the saved address. A compatible server's key is
-    /// optional; the base URL rules (https, or http on loopback) come from `APIBaseURL`.
+    /// Builds a request to the provider's endpoint with its key. A compatible server's saved key is
+    /// looked up by the request's address, so it only ever goes to the address it was saved for, whatever
+    /// the settings say. `server` and `key` let the configuration sheet try entries it has not saved: a
+    /// typed key is used as is. A compatible server's key is optional; the base URL rules (https, or
+    /// http on loopback) come from `APIBaseURL`.
     private func makeRequest(
         provider: ModelFamily, path: String, server: URL? = nil, key typedKey: String? = nil
     ) throws -> URLRequest {
@@ -206,7 +208,7 @@ final class CloudProviders {
             let saved = try? APIBaseURL.parse(compatibleBaseURL() ?? "").get()
             guard let address = server ?? saved else { throw ProviderError.notConfigured }
             base = address
-            key = try typedKey ?? (address == saved ? credential(provider)?.nilIfEmpty : nil)
+            key = try typedKey ?? credential(provider, address)?.nilIfEmpty
         case .openAI, .groq, .anthropic:
             base = URL(
                 string: [
@@ -214,7 +216,7 @@ final class CloudProviders {
                     .groq: "https://api.groq.com/openai/v1/",
                     .anthropic: "https://api.anthropic.com/v1/",
                 ][provider]!)!
-            guard let found = try typedKey ?? credential(provider)?.nilIfEmpty else {
+            guard let found = try typedKey ?? credential(provider, nil)?.nilIfEmpty else {
                 throw ProviderError.missingKey
             }
             key = found

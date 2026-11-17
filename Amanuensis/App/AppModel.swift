@@ -1209,13 +1209,13 @@ final class AppModel {
         try CredentialStore.remove(for: provider)
     }
     /// Saves the OpenAI-compatible server's address, already normalized by `APIBaseURL`, and its key.
-    /// A new address drops the saved key unless a key is entered with it, so a key only ever goes to
-    /// the server it was saved for. Address and key change together on the main actor, between requests.
+    /// The key is stored with that address and is only ever sent there (see `CredentialStore`). A new
+    /// address drops the saved key unless a key is entered with it.
     func saveCompatibleServer(_ address: URL, key: String) throws {
         defer { refreshConnectedProviders() }
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty {
-            try CredentialStore.set(key, for: .openAICompatible)
+            try CredentialStore.set(key, for: .openAICompatible, server: address)
         } else if address.absoluteString != settings.compatibleBaseURL {
             try CredentialStore.remove(for: .openAICompatible)
         }
