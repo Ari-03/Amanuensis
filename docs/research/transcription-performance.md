@@ -27,11 +27,11 @@ November 10, 2026, same M1 with 16 GiB. Local models cut recordings with `Speech
 
 - **Old**: the engine at 57af15f (30-second windows), built from `git archive` of that commit, transcribing the file.
 - **New whole-file**: this engine transcribing the file with 20-second minimum segments, as History retry, meeting mode and a recording with nothing transcribed live do.
-- **Live**: the fixture's 16-bit samples fed to `LiveTranscription` at real-time pace in 1024-sample buffers, then the time from the last buffer to the final transcript. The same process then transcribed the file with the live segments and no reuse; "Live = whole-file" says the two texts were identical.
+- **Live**: the fixture's 16-bit samples fed to `LiveTranscription` at real-time pace in 1024-sample buffers, then the time from the last buffer to the final transcript. The same process then transcribed the file with the live segments and no reuse; "Live = file pass" says the two texts were identical. That is the guarantee: the result equals the saved file transcribed with the same cuts, so nothing heard only during capture can reach it. It need not equal the new whole-file pass, whose longer segments can give different words, as the WER columns show.
 
 Fixtures are synthesized Samantha speech at 48 kHz 16-bit mono: the short (3.2 s), medium (18.3 s) and long (64.2 s) clips from the [transcribe.cpp spike](transcribe-cpp-spike.md); `long-pauses`, the long text with 0.8 s of silence after each sentence (71.1 s); and `long-nopause`, the long text without punctuation over a constant noise bed at about -26 dBFS, so no frame is ever quiet (58.5 s). WER is against the reference text after lowercasing and removing punctuation; it splits hyphenated words, so "co-ordinate" counts as an error. Peak is `/usr/bin/time -l`'s peak memory footprint for the old run and the live run, which includes its extra check pass. Runs were sequential in the order old, whole-file, live.
 
-| Model | Fixture | Old Stop→text s | New whole-file s | Live Stop→text s | Segments live/total | Live = whole-file | WER old | WER whole-file | WER live | Peak GB old / live |
+| Model | Fixture | Old Stop→text s | New whole-file s | Live Stop→text s | Segments live/total | Live = file pass | WER old | WER whole-file | WER live | Peak GB old / live |
 |---|---|--:|--:|--:|--:|:-:|--:|--:|--:|--:|
 | whisper | short | 0.100 | 0.100 | 0.134 | 0/1 | yes | 0.0% | 0.0% | 0.0% | 0.38 / 0.38 |
 | whisper | medium | 0.298 | 0.288 | 0.198 | 1/2 | yes | 0.0% | 0.0% | 0.0% | 0.38 / 0.38 |
@@ -69,7 +69,7 @@ Fixtures are synthesized Samantha speech at 48 kHz 16-bit mono: the short (3.2 s
 | nemotron | long-pauses | 4.773 | 4.915 | 0.254 | 8/9 | yes | 0.5% | 0.5% | 0.0% | 1.37 / 1.17 |
 | nemotron | long-nopause | 4.079 | 4.298 | 1.143 | 2/3 | yes | 1.0% | 0.0% | 0.0% | 1.36 / 1.32 |
 
-- Every live transcript equalled its file pass. On the long fixtures the wait after Stop fell from 0.7 to 4.8 s to 0.13 to 0.40 s; with no pauses, to 0.33 to 1.18 s, because the last segment is longer. Short clips close no segment while recording, so live is the whole-file path plus up to 50 ms.
+- Every live transcript equalled its file pass with the same cuts. On the long fixtures the wait after Stop fell from 0.7 to 4.8 s to 0.13 to 0.40 s; with no pauses, to 0.33 to 1.18 s, because the last segment is longer. Short clips close no segment while recording, so live is the whole-file path plus up to 50 ms.
 - With 20-second minimum segments the new whole-file path is within about 10% of the old engine (Cohere 4.32 against 4.24 s on the long clip, Parakeet 1.62 against 1.55 s) and faster for Moonshine, except Whisper on `long-pauses` (1.20 against 0.74 s), where the old engine was faster because it skipped a passage. With the 6-second segments of the first version it was up to 25% slower.
 - Old windows split or dropped words at 30 and 60 seconds: Nemotron wrote "kee" and "ques" for "keep" and "questions" on `long-nopause`; Whisper dropped "add them", Parakeet inserted "it", Cohere and Moonshine Base dropped "a", and Cohere and Whisper dropped "I suggest that we keep". On `long-pauses` they lost a whole passage with Whisper (40.8%) and Cohere (9.7%).
 - The new cuts are not free: on `long-nopause` Whisper Tiny wrote "5.15%" and "genuiting" at forced cuts, and the 20-second whole-file pass gave Qwen3-ASR "releases", "discounts" and "expire" for singulars on the long clip (1.9% against 0.5%).
@@ -81,7 +81,7 @@ Whisper large-v3-turbo, installed through the app's model library into a scratch
 
 A reviewer found that the first version closed segments with no speech: 8 s of quiet room before speaking, a key click after the last pause, or a 30-second pause became segments of their own, and models invented text for them (Cohere 46.6% WER on the lead-in, 1157% on the long pause; Whisper and Moonshine added "you"). A pause now closes a segment only when the segment holds sound and the sound after the pause lasts 0.16 s, and a segment with no sound, which only the 24-second forced cut or the end of the recording can close, is never sent to a model. The reviewer's fixtures, quiet room at about -68 dBFS, with digital silence and room-tail controls:
 
-| Model | Fixture | Old Stop→text s | New whole-file s | Live Stop→text s | Segments live/total | Live = whole-file | WER old | WER whole-file | WER live | Peak GB old / live |
+| Model | Fixture | Old Stop→text s | New whole-file s | Live Stop→text s | Segments live/total | Live = file pass | WER old | WER whole-file | WER live | Peak GB old / live |
 |---|---|--:|--:|--:|--:|:-:|--:|--:|--:|--:|
 | whisper | lead8-short | 0.103 | 0.106 | 0.140 | 0/1 | yes | 0.0% | 0.0% | 0.0% | 0.38 / 0.38 |
 | whisper | zero8-short | 0.103 | 0.104 | 0.100 | 0/1 | yes | 0.0% | 0.0% | 0.0% | 0.38 / 0.38 |
@@ -132,7 +132,7 @@ Every row is 0% except one word from Moonshine Tiny live on the 30-second pause 
 
 Review fixtures with dense speech (German 47.0 s and French 40.7 s at 16 kHz; Spanish and Italian 47.2 s at 48 kHz), fed at four times real time while other work ran, so only the accuracy and equality columns are meaningful:
 
-| Model | Language | Old Stop→text s | New whole-file s | Live Stop→text s | Segments live/total | Live = whole-file | WER old | WER whole-file | WER live | Peak GB old / live |
+| Model | Language | Old Stop→text s | New whole-file s | Live Stop→text s | Segments live/total | Live = file pass | WER old | WER whole-file | WER live | Peak GB old / live |
 |---|---|--:|--:|--:|--:|:-:|--:|--:|--:|--:|
 | cohere | de | 3.285 | 3.494 | 0.474 | 6/7 | yes | 4.0% | 3.2% | 4.0% | 2.28 / 1.93 |
 | qwen3asr | de | 3.532 | 3.661 | 0.406 | 6/7 | yes | 5.6% | 4.0% | 4.8% | 1.56 / 1.46 |
@@ -157,9 +157,9 @@ Each segment is padded with 0.5 s of silence. Without it, Cohere invented whole 
 
 ### Failures
 
-Long clip at real-time pace; the final text must equal the file pass:
+Long clip at real-time pace; the final text must equal the file pass with the cuts it used:
 
-| Model | Failure | Segments reused | Live = whole-file | Stop→text s | Old engine s |
+| Model | Failure | Segments reused | Live = file pass | Stop→text s | Old engine s |
 |---|---|--:|:-:|--:|--:|
 | Parakeet | model released after the second segment | 0 of 3 | yes | 2.15 | 1.55 |
 | Cohere | model released after the second segment | 0 of 3 | yes | 4.61 | 4.24 |

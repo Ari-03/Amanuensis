@@ -9,8 +9,10 @@ let liveLog = Logger(subsystem: "dev.amanuensis", category: "live-transcription"
 /// `SpeechSegmenter` cuts; each closed segment is transcribed in order on the model
 /// `LocalSpeechEngine.prepare` loaded. `finish` then transcribes the recorded file, which stays the source
 /// of truth: it walks the file with the same segmenter and reuses a segment's text only where the file holds
-/// exactly the samples that were transcribed. So the result always equals transcribing the file, and
-/// anything that went wrong while recording only means more is transcribed after Stop.
+/// exactly the samples that were transcribed. So the result equals transcribing the saved file with the same
+/// cuts, and nothing heard only during capture can end up in the text. A file never transcribed live, such as
+/// a History retry, is cut into longer segments (`SpeechSegmenter.wholeFileMinimumSeconds`), which can give
+/// different words. Anything that went wrong while recording only means more is transcribed after Stop.
 ///
 /// Use: create before capture starts, pass `append` to the capture thread, call `begin` once preparation
 /// has started, then `finish` after Stop, or `cancel` and `wait`.
