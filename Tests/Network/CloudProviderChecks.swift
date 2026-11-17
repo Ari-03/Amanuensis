@@ -409,7 +409,8 @@ struct CloudProviderChecks {
         checks += 1
 
         // A key saved for another address is never sent to the address in settings, however the two
-        // came apart. It still goes to its own address.
+        // came apart. Its own address gets it only once that is the saved address, which is when the
+        // configuration sheet would keep it.
         permission.compatibleKeyServer = other
         fixture.reset { request in
             precondition(request.url?.host == "127.0.0.1")
@@ -421,11 +422,18 @@ struct CloudProviderChecks {
         _ = try await provider.listModels(provider: .openAICompatible)
         fixture.reset { request in
             precondition(request.url?.host == "router.example.com")
+            precondition(request.value(forHTTPHeaderField: "Authorization") == nil)
+            return .json(200, #"{"data":[]}"#)
+        }
+        _ = try await provider.listModels(provider: .openAICompatible, server: other)
+        permission.compatibleBaseURL = "https://router.example.com/api/v1"
+        fixture.reset { request in
             precondition(
                 request.value(forHTTPHeaderField: "Authorization") == "Bearer placeholder-credential")
             return .json(200, #"{"data":[]}"#)
         }
-        _ = try await provider.listModels(provider: .openAICompatible, server: other)
+        _ = try await provider.listModels(provider: .openAICompatible)
+        permission.compatibleBaseURL = "http://127.0.0.1:11434/v1"
         permission.compatibleKeyServer = loopback
         checks += 1
 

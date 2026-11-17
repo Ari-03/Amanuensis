@@ -191,11 +191,11 @@ final class CloudProviders {
         guard allowCloud() else { throw ProviderError.localOnly }
     }
 
-    /// Builds a request to the provider's endpoint with its key. A compatible server's saved key is
-    /// looked up by the request's address, so it only ever goes to the address it was saved for, whatever
-    /// the settings say. `server` and `key` let the configuration sheet try entries it has not saved: a
-    /// typed key is used as is. A compatible server's key is optional; the base URL rules (https, or
-    /// http on loopback) come from `APIBaseURL`.
+    /// Builds a request to the provider's endpoint with its key. A compatible server's saved key goes
+    /// only to the saved address, and only if the Keychain holds it for that address, so it never
+    /// reaches another one, whatever the settings say. `server` and `key` let the configuration sheet
+    /// try entries it has not saved: a typed key is used as is. A compatible server's key is optional;
+    /// the base URL rules (https, or http on loopback) come from `APIBaseURL`.
     private func makeRequest(
         provider: ModelFamily, path: String, server: URL? = nil, key typedKey: String? = nil
     ) throws -> URLRequest {
@@ -208,7 +208,7 @@ final class CloudProviders {
             let saved = try? APIBaseURL.parse(compatibleBaseURL() ?? "").get()
             guard let address = server ?? saved else { throw ProviderError.notConfigured }
             base = address
-            key = try typedKey ?? credential(provider, address)?.nilIfEmpty
+            key = try typedKey ?? (address == saved ? credential(provider, address)?.nilIfEmpty : nil)
         case .openAI, .groq, .anthropic:
             base = URL(
                 string: [
