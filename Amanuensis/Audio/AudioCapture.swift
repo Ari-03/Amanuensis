@@ -75,7 +75,8 @@ final class AudioCapture {
     /// Chooses the first available included input without changing the system input device.
     /// `samples` receives the recording's 16-bit PCM on the capture thread as it arrives, starting at the
     /// file's first sample, and must return quickly. It stops at the first gap, so what it received is
-    /// always the start of the file unless the two disagree.
+    /// always the start of the file unless the two disagree. If the capture session cannot add the tap,
+    /// the recording goes on and `samples` is never called.
     func start(
         preferences: [MicrophonePreference], outputURL: URL,
         samples: (@Sendable (UnsafeBufferPointer<Int16>) -> Void)? = nil
@@ -289,12 +290,17 @@ private nonisolated final class AudioRecordingWorker: NSObject, AVCaptureFileOut
                     analysisOutput = analysis
                     if let samples {
                         let tap = AVCaptureAudioDataOutput()
-                        guard newSession.canAddOutput(tap) else { throw AudioCaptureError.cannotRecord }
-                        newSession.addOutput(tap)
-                        tap.audioSettings = Self.pcm16Settings
-                        tap.setSampleBufferDelegate(self, queue: queue)
-                        pcmOutput = tap
-                        self.samples = samples
+                        if newSession.canAddOutput(tap) {
+                            newSession.addOutput(tap)
+                            tap.audioSettings = Self.pcm16Settings
+                            tap.setSampleBufferDelegate(self, queue: queue)
+                            pcmOutput = tap
+                            self.samples = samples
+                        } else {
+                            // The tap is optional. Without it nothing reaches `samples`; the file is complete.
+                            captureLog.notice(
+                                "The capture session refused the transcription tap; recording without it")
+                        }
                     }
                     spectrum.reset()
                     if fileType == .m4a {
