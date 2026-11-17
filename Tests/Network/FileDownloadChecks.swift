@@ -96,7 +96,7 @@ struct FileDownloadChecks {
         }
     }
 
-    static func run(_ file: URL, expectedSize: Int64? = Int64(body.count)) async throws {
+    static func run(_ file: URL, expectedSize: Int64 = Int64(body.count)) async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [DownloadProtocol.self]
         try await FileDownload.fetch(
@@ -158,7 +158,7 @@ struct FileDownloadChecks {
             index == 0 ? Reply(status: 416) : honoring(index, range)
         }
         file = newFile(body.prefix(50_000))
-        try await run(file, expectedSize: nil)
+        try await run(file)
         check(Server.shared.ranges == ["bytes=50000-", nil], "416 asked for \(Server.shared.ranges)")
         check(try Data(contentsOf: file) == body, "416 left the wrong bytes")
 

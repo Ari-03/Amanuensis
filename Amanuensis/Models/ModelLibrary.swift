@@ -84,18 +84,18 @@ final class ModelLibrary {
             }
             let files = try ModelFiles.selectedFiles(metadata.siblings, model: model)
             try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
-            let total = files.reduce(Int64(0)) { $0 + ($1.size ?? 0) }
+            let total = files.reduce(Int64(0)) { $0 + $1.size }
             partials[model.id]?.totalBytes = total
             // A Retry starts from the finished files and the partial one, not from zero.
             progress[model.id] = DownloadProgress(
                 stage: .downloading, completedBytes: (try? ModelFiles.byteCount(stage)) ?? 0,
                 totalBytes: total)
             var completed: Int64 = 0
-            for file in files {
+            for (file, size) in files {
                 try Task.checkCancellation()
                 let destination = stage.appendingPathComponent(file.rfilename)
                 // A file with its final name passed its checks before an earlier attempt failed.
-                if let size = file.size, (try? ModelFiles.fileSize(destination)) == size {
+                if (try? ModelFiles.fileSize(destination)) == size {
                     completed += size
                     continue
                 }
@@ -104,7 +104,7 @@ final class ModelLibrary {
                 let url = URL(
                     string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(file.rfilename)")!
                 try await FileDownload.fetch(
-                    url, to: part, expectedSize: file.size,
+                    url, to: part, expectedSize: size,
                     checkResponse: { try ModelFiles.checkResponse($0) }
                 ) { [weak self] bytes in
                     Task { @MainActor in
@@ -116,7 +116,7 @@ final class ModelLibrary {
                 }
                 do {
                     try await ModelFiles.runOffMain {
-                        try ModelFiles.validateFile(part, expectedSize: file.size, sha256: file.lfs?.sha256)
+                        try ModelFiles.validateFile(part, expectedSize: size, sha256: file.lfs?.sha256)
                     }
                 } catch {
                     // A resumed file that fails its check is never kept, so Retry fetches it again.
@@ -125,7 +125,7 @@ final class ModelLibrary {
                 }
                 try Task.checkCancellation()
                 try FileManager.default.moveItem(at: part, to: destination)
-                completed += file.size ?? 0
+                completed += size
             }
             progress[model.id] = DownloadProgress(
                 stage: .validating, completedBytes: total, totalBytes: total)
@@ -357,7 +357,11 @@ private enum ModelFiles {
         }
     }
 
-    static func selectedFiles(_ files: [HubFile], model: ModelDescriptor) throws -> [HubFile] {
+    /// The files a download keeps, with their sizes. The metadata is requested with `blobs=true`, which
+    /// lists every size; a kept file without one ends the install before anything is downloaded.
+    static func selectedFiles(
+        _ files: [HubFile], model: ModelDescriptor
+    ) throws -> [(file: HubFile, size: Int64)] {
         let selected = files.filter { file in
             let name = file.rfilename
             guard !name.contains("/"), !name.hasPrefix(".") else { return false }
@@ -370,7 +374,13 @@ private enum ModelFiles {
         guard !selected.isEmpty else {
             throw ModelLibraryError.invalid("This artifact has no compatible model files.")
         }
-        return selected.sorted { $0.rfilename < $1.rfilename }
+        return try selected.sorted { $0.rfilename < $1.rfilename }.map { file in
+            guard let size = file.size else {
+                throw ModelLibraryError.invalid(
+                    "The model repository did not list the size of \(file.rfilename). Try again later.")
+            }
+            return (file, size)
+        }
     }
 
     static func copyImport(_ source: URL, into directory: URL, model: ModelDescriptor) throws {
@@ -512,9 +522,9 @@ private enum ModelFiles {
         Int64(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
     }
 
-    static func validateFile(_ url: URL, expectedSize: Int64?, sha256: String?) throws {
+    static func validateFile(_ url: URL, expectedSize: Int64, sha256: String?) throws {
         let actual = try fileSize(url)
-        guard actual > 0, expectedSize == nil || actual == expectedSize else {
+        guard actual > 0, actual == expectedSize else {
             throw ModelLibraryError.invalid("A model file is incomplete. Download it again.")
         }
         if let sha256 {

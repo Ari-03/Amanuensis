@@ -9,23 +9,23 @@ enum FileDownload {
     /// The first request and three resumes.
     static let attempts = 4
 
-    /// Returns once `file` holds the whole body. With `expectedSize`, a partial file of that size is
-    /// already complete and one larger starts over; a negative size is refused. `checkResponse` turns an HTTP error status into the
-    /// caller's error. `progress` receives the bytes in `file`, a few times a second.
+    /// Returns once `file` holds `expectedSize` bytes. A partial file of that size is already complete
+    /// and one larger starts over; a negative size is refused. `checkResponse` turns an HTTP error status
+    /// into the caller's error. `progress` receives the bytes in `file`, a few times a second.
     static func fetch(
-        _ url: URL, to file: URL, expectedSize: Int64?,
+        _ url: URL, to file: URL, expectedSize: Int64,
         configuration: URLSessionConfiguration = .default,
         checkResponse: @escaping @Sendable (URLResponse) throws -> Void,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws {
-        if let expectedSize, expectedSize < 0 { throw InvalidSize() }
+        guard expectedSize >= 0 else { throw InvalidSize() }
         var attempt = 1
         while true {
             do {
                 let size = try await fetchOnce(
                     url, to: file, expectedSize: expectedSize, configuration: configuration,
                     checkResponse: checkResponse, progress: progress)
-                if let expectedSize, size < UInt64(expectedSize) { throw Interrupted() }
+                if size < UInt64(expectedSize) { throw Interrupted() }
                 return
             } catch  where isTransient(error) && attempt < attempts {
                 // Waits 1, 2 and 3 seconds; cancellation ends the wait.
@@ -59,7 +59,7 @@ enum FileDownload {
     /// One request. Returns the bytes now in the file, counted while writing: a `URL` caches the file
     /// size it last read, so asking the file system again could return a stale answer.
     private static func fetchOnce(
-        _ url: URL, to file: URL, expectedSize: Int64?, configuration: URLSessionConfiguration,
+        _ url: URL, to file: URL, expectedSize: Int64, configuration: URLSessionConfiguration,
         checkResponse: @escaping @Sendable (URLResponse) throws -> Void,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws -> UInt64 {
@@ -71,7 +71,7 @@ enum FileDownload {
         }
         let handle = try FileHandle(forWritingTo: file)
         var offset = try handle.seekToEnd()
-        if let expectedSize, offset >= UInt64(expectedSize) {
+        if offset >= UInt64(expectedSize) {
             if offset == UInt64(expectedSize) {
                 try handle.close()
                 return offset
