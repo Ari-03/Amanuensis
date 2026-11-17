@@ -9,9 +9,10 @@ enum FileDownload {
     /// The first request and three resumes.
     static let attempts = 4
 
-    /// Returns once `file` holds `expectedSize` bytes. A partial file of that size is already complete
-    /// and one larger starts over; a negative size is refused. `checkResponse` turns an HTTP error status
-    /// into the caller's error. `progress` receives the bytes in `file`, a few times a second.
+    /// Returns once `file` holds at least `expectedSize` bytes; a body that sends more is the caller's
+    /// size check to refuse. A partial file of that size is already complete and one larger starts over;
+    /// a negative size is refused. `checkResponse` turns an HTTP error status into the caller's error.
+    /// `progress` receives the bytes in `file`, a few times a second.
     static func fetch(
         _ url: URL, to file: URL, expectedSize: Int64,
         configuration: URLSessionConfiguration = .default,
