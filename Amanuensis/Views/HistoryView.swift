@@ -99,10 +99,24 @@ struct HistoryView: View {
             }
             Button("Cancel", role: .cancel) { pendingRetry = nil }
         } message: {
-            Text(
-                "The saved audio will use this recording's original model settings. API models send audio or transcript text to their provider. Your local-processing setting still applies. The new result stays in History and is not pasted."
-            )
+            Text(retryMessage(for: pendingRetry))
         }
+    }
+
+    /// History keeps a recording's models but not the compatible server it used, so a retry with an
+    /// OpenAI-compatible model goes to the server saved now. The confirmation names that host.
+    private func retryMessage(for entry: RecordingEntry?) -> String {
+        let usesCompatible = [entry?.speechSnapshot, entry?.cleanupSnapshot].contains {
+            $0?.resolved(against: model.library.models)?.engine == .openAICompatible
+        }
+        if usesCompatible,
+            let host = (try? APIBaseURL.parse(model.settings.compatibleBaseURL ?? "").get())?.host()
+        {
+            return
+                "The saved audio will use this recording's original models. Its OpenAI-compatible model sends audio or transcript text to the server saved now, \(host), which may not be the one this recording first used. Your local-processing setting still applies. The new result stays in History and is not pasted."
+        }
+        return
+            "The saved audio will use this recording's original model settings. API models send audio or transcript text to their provider. Your local-processing setting still applies. The new result stays in History and is not pasted."
     }
 
     private var recordingList: some View {
