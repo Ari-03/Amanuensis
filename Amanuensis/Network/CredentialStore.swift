@@ -2,16 +2,21 @@ import Foundation
 import Security
 
 /// API credentials live in the login Keychain, never in saved app configuration.
+/// An OpenAI-compatible key is saved with the base URL it belongs to, normalized by `APIBaseURL`, in the
+/// item's one value, and `get` returns it only for that exact address. The fixed providers take no address.
 enum CredentialStore {
     private static let service = "dev.amanuensis.api-credentials"
 
-    static func set(_ value: String, for provider: ModelFamily) throws {
+    static func set(_ value: String, for provider: ModelFamily, server: URL? = nil) throws {
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, !value.contains(where: { $0.isWhitespace }) else {
             throw CredentialError.invalidValue
         }
         let query = try query(for: provider)
-        let attributes: [String: Any] = [kSecValueData as String: Data(value.utf8)]
+        guard (provider == .openAICompatible) == (server != nil) else {
+            throw CredentialError.unsupportedProvider
+        }
+        let attributes: [String: Any] = [kSecValueData as String: encode(value, server: server)]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var item = query
@@ -24,18 +29,35 @@ enum CredentialStore {
         }
     }
 
-    static func get(for provider: ModelFamily) throws -> String? {
+    /// Returns nil when no key is saved, or when a compatible key was saved for another address.
+    static func get(for provider: ModelFamily, server: URL? = nil) throws -> String? {
         var query = try query(for: provider)
+        guard (provider == .openAICompatible) == (server != nil) else {
+            throw CredentialError.unsupportedProvider
+        }
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw CredentialError.keychain(status) }
-        guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
+        guard let data = result as? Data, let stored = String(data: data, encoding: .utf8) else {
             throw CredentialError.invalidValue
         }
-        return value
+        return key(in: stored, server: server)
+    }
+
+    /// An item's value: the key, after a line holding the compatible server's address. Key and address
+    /// are one value, so they are always read and written together. Neither can contain a line break.
+    static func encode(_ key: String, server: URL?) -> Data {
+        Data(((server.map { $0.absoluteString + "\n" } ?? "") + key).utf8)
+    }
+
+    /// The key in an item's value, or nil when it was not saved for `server`.
+    static func key(in stored: String, server: URL?) -> String? {
+        guard let server else { return stored }
+        let address = server.absoluteString + "\n"
+        return stored.hasPrefix(address) ? String(stored.dropFirst(address.count)) : nil
     }
 
     static func remove(for provider: ModelFamily) throws {
@@ -46,7 +68,7 @@ enum CredentialStore {
     }
 
     private static func query(for provider: ModelFamily) throws -> [String: Any] {
-        guard [.openAI, .groq, .anthropic].contains(provider) else {
+        guard [.openAI, .groq, .anthropic, .openAICompatible].contains(provider) else {
             throw CredentialError.unsupportedProvider
         }
         return [

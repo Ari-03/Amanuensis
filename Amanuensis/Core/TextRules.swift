@@ -1,6 +1,8 @@
 import Foundation
 
-/// Applies literal vocabulary corrections to the original transcript in one pass.
+/// Applies literal vocabulary corrections to the original transcript in one pass, then capitalizes
+/// the first letter. Works across scripts: caseless scripts are left alone, and in scripts written
+/// without spaces, such as Chinese, Japanese and Thai, a phrase matches wherever it appears.
 enum TextRules: Sendable {
     static func apply(_ text: String, vocabulary: [VocabularyEntry], capitalize: Bool) -> String {
         let rules = vocabulary.enumerated().compactMap { offset, entry -> ReplacementRule? in
@@ -40,9 +42,14 @@ enum TextRules: Sendable {
             }
         }
 
+        // Title case, not upper case: Georgian keeps its letters, and "ǆ" becomes "ǅ" rather than "Ǆ".
         if capitalize, let firstLetter = result.firstIndex(where: { $0.isLetter }) {
             let end = result.index(after: firstLetter)
-            result.replaceSubrange(firstLetter..<end, with: result[firstLetter].uppercased())
+            let scalars = result[firstLetter].unicodeScalars
+            let titled =
+                (scalars.first?.properties.titlecaseMapping ?? "")
+                + String(String.UnicodeScalarView(scalars.dropFirst()))
+            result.replaceSubrange(firstLetter..<end, with: titled)
         }
         return result
     }
@@ -75,6 +82,7 @@ enum TextRules: Sendable {
     private static func startsWholeWord(at index: String.Index, in text: String) -> Bool {
         guard index > text.startIndex else { return true }
         let previous = text.index(before: index)
+        if isUnspaced(text[previous]) || isUnspaced(text[index]) { return true }
         if isWordCharacter(text[previous]) { return false }
         if isApostrophe(text[previous]), previous > text.startIndex {
             return !isWordCharacter(text[text.index(before: previous)])
@@ -84,6 +92,10 @@ enum TextRules: Sendable {
 
     private static func endsWholeWord(at index: String.Index, in text: String) -> Bool {
         guard index < text.endIndex else { return true }
+        if isUnspaced(text[index]) || (index > text.startIndex && isUnspaced(text[text.index(before: index)]))
+        {
+            return true
+        }
         if isWordCharacter(text[index]) { return false }
         let next = text.index(after: index)
         if isApostrophe(text[index]), next < text.endIndex {
@@ -99,6 +111,21 @@ enum TextRules: Sendable {
                     || $0.properties.generalCategory == .spacingMark
                     || $0.properties.generalCategory == .enclosingMark
             }
+    }
+
+    /// Han, kana, Thai, Lao, Myanmar and Khmer are written without spaces between words, so a word
+    /// boundary cannot be found from the characters around a match.
+    private static func isUnspaced(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first else { return false }
+        if scalar.properties.isIdeographic { return true }
+        switch scalar.value {
+        case 0x3040...0x30FF, 0x31F0...0x31FF, 0xFF66...0xFF9F,  // Hiragana and Katakana
+            0x0E00...0x0EFF,  // Thai and Lao
+            0x1000...0x109F,  // Myanmar
+            0x1780...0x17FF:  // Khmer
+            return true
+        default: return false
+        }
     }
 
     private static func isApostrophe(_ character: Character) -> Bool {

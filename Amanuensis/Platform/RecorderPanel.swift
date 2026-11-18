@@ -2,12 +2,18 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
-/// Shows recording controls without taking keyboard focus from the destination.
+/// Shows recording controls without taking keyboard focus from the destination. In Mini style a second
+/// panel can show live text beside them; it follows the controls and ignores the mouse.
 @MainActor
 final class RecorderPanelController {
     private let panel: RecorderPanel
     private let hostingView: RecorderHostingView
     private let targetsPanel: RecorderPanel
+    private let previewPanel = RecorderPanel()
+    private let previewHost = NSHostingView(rootView: RecorderLivePreview(text: ""))
+    private var previewText: String?
+    private var previewSize = CGSize.zero
+    private var frameObservers: [NSObjectProtocol] = []
     private var placement: RecorderPlacement = .bottom
     private var style: RecorderStyle = .mini
     /// Dragged placement survives style changes; each recording can choose a different display.
@@ -33,6 +39,10 @@ final class RecorderPanelController {
         panel.setAccessibilityLabel("Amanuensis recording controls")
         targetsPanel.ignoresMouseEvents = true
         targetsPanel.hasShadow = false
+        previewHost.sizingOptions = []
+        previewPanel.contentView = previewHost
+        previewPanel.ignoresMouseEvents = true
+        previewPanel.setAccessibilityLabel("Amanuensis transcript so far")
 
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -42,11 +52,20 @@ final class RecorderPanelController {
                 self?.placePanel(animated: false)
             }
         }
+        // Every move and resize of the controls, animated or dragged, carries the preview along.
+        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+            frameObservers.append(
+                NotificationCenter.default.addObserver(forName: name, object: panel, queue: .main) {
+                    [weak self] _ in
+                    MainActor.assumeIsolated { self?.placePreview() }
+                })
+        }
     }
 
     isolated deinit {
         animation?.cancel()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        frameObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
     func show(content: AnyView, style: RecorderStyle, placement: RecorderPlacement?) {
@@ -78,6 +97,7 @@ final class RecorderPanelController {
         isVisible = true
         placePanel(animated: wasVisible && !changedStyle)
         panel.orderFrontRegardless()
+        placePreview()
     }
 
     func resize(to size: NSSize) {
@@ -91,6 +111,32 @@ final class RecorderPanelController {
         animation?.cancel()
         isVisible = false
         panel.orderOut(nil)
+        placePreview()
+    }
+
+    /// Shows text beside the Mini controls, or removes it for nil. Other styles never show it.
+    func showPreview(_ text: String?) {
+        previewText = text
+        placePreview()
+    }
+
+    private func placePreview() {
+        guard let text = previewText, isVisible, style == .mini, let screen = panel.screen ?? recorderScreen
+        else {
+            previewPanel.orderOut(nil)
+            return
+        }
+        if previewHost.rootView.text != text {
+            previewHost.rootView = RecorderLivePreview(text: text)
+            // The panel's host has no sizing of its own, so the text is measured once per change.
+            previewSize = NSHostingController(rootView: previewHost.rootView)
+                .sizeThatFits(in: CGSize(width: RecorderLivePreview.maxWidth, height: 200))
+        }
+        previewPanel.setFrame(
+            RecorderLayout.previewFrame(
+                size: previewSize, beside: panel.frame, in: availableFrame(on: screen)),
+            display: true)
+        if !previewPanel.isVisible { previewPanel.orderFrontRegardless() }
     }
 
     /// Capture the invocation display once, before preparation or later pointer movement.

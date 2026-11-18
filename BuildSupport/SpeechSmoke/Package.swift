@@ -8,6 +8,7 @@ let package = Package(
         .executable(name: "SpeechSmoke", targets: ["SpeechSmoke"]),
         .executable(name: "SpeechBench", targets: ["SpeechBench"]),
         .executable(name: "SpeechLifecycle", targets: ["SpeechLifecycle"]),
+        .executable(name: "SpeechStream", targets: ["SpeechStream"]),
     ],
     dependencies: [
         .package(path: "../../Packages/LocalSpeech"),
@@ -19,6 +20,7 @@ let package = Package(
     targets: [
         .executableTarget(name: "SpeechSmoke", dependencies: ["LocalSpeech"]),
         .executableTarget(name: "SpeechLifecycle", dependencies: ["LocalSpeech"]),
+        .executableTarget(name: "SpeechStream", dependencies: ["LocalSpeech"]),
         .executableTarget(
             name: "SpeechBench",
             dependencies: [

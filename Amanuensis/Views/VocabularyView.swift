@@ -29,7 +29,7 @@ struct VocabularyView: View {
                         .disabled(word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }.textFieldStyle(.roundedBorder).onSubmit(add)
                 Text(
-                    "Words guide supported API speech models. Local speech models do not use vocabulary hints yet. Replacements work with every model and match whole words and phrases."
+                    "Words guide supported API speech models. Local speech models do not use vocabulary hints yet. Replacements work with every model and match whole words and phrases. In languages written without spaces, such as Chinese, Japanese and Thai, a replacement matches anywhere in the text, so a short entry can match inside a longer word."
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }

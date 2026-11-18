@@ -10,6 +10,8 @@ struct ConfigurationView: View {
                 ScreenHeader(
                     title: "Make yourself at home.",
                     subtitle: "Small preferences that make dictation feel familiar.")
+                SectionCaption(title: "Dictation")
+                languageCard
                 SectionCaption(title: "Appearance")
                 SettingsCard {
                     Picker("Appearance", selection: $model.settings.appearance) {
@@ -36,6 +38,12 @@ struct ConfigurationView: View {
                             Spacer()
                             recorderPositionPicker
                         }
+                        Divider()
+                        Toggle("Show text while recording", isOn: $model.settings.showsLivePreview)
+                        Text(
+                            "Local models show what they have heard beside the recorder. Nothing is inserted until you stop, and cleanup may change the text."
+                        )
+                        .font(.caption).foregroundStyle(.secondary)
                     } else if model.settings.recorderStyle == .notch {
                         Text(
                             "Notch stays in the menu bar, beside the camera or centered on displays without one."
@@ -123,6 +131,59 @@ struct ConfigurationView: View {
             "Reset all usage statistics?", isPresented: $resetUsage, titleVisibility: .visible
         ) {
             Button("Reset statistics", role: .destructive, action: model.resetStatistics)
+        }
+    }
+
+    /// The language modes record in unless they set their own. Detection is offered when the current
+    /// mode's speech model can detect. Modes that follow this language but cannot record in it are named,
+    /// from the same rules recording uses.
+    private var languageCard: some View {
+        let language = model.settings.language
+        var codes = model.languageChoices(for: nil)
+        if let saved = language.languageCode, !codes.contains(saved) { codes.insert(saved, at: 0) }
+        let speech = model.currentSpeechModel
+        let offersDetection = speech.map { model.readiness.canTranscribe(.automatic, with: $0) } == true
+        let blockers = model.modeBlockers
+        let stuck = model.modes.filter { mode in
+            guard mode.language == nil, case .unsupportedLanguage = blockers[mode.id] else { return false }
+            return true
+        }
+        return SettingsCard {
+            Picker(
+                "Dictation language",
+                selection: Binding(
+                    get: { language }, set: { model.settings.dictationLanguage = $0 })
+            ) {
+                if offersDetection || language == .automatic {
+                    Text(SpeechLanguage.automatic.name).tag(SpeechLanguage.automatic)
+                    Divider()
+                }
+                ForEach(codes, id: \.self) { Text(SpeechLanguage.name(of: $0)).tag(SpeechLanguage.code($0)) }
+            }
+            Text(
+                "Modes record in this language unless they choose their own."
+                    + (speech?.engine == .apple
+                        ? " Detection isn't offered: \(model.currentMode.name) uses Apple Speech, which can't detect the language."
+                        : "")
+            )
+            .font(.caption).foregroundStyle(.secondary)
+            if !stuck.isEmpty {
+                HStack(spacing: 8) {
+                    Label(
+                        "\(stuck.map(\.name).formatted(.list(type: .and))) can't "
+                            + (language == .automatic ? "detect the language" : "record in \(language.name)")
+                            + " with " + (stuck.count == 1 ? "its" : "their") + " speech model.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Button("Open Modes") {
+                        model.modeToEdit = stuck.first?.id
+                        model.selectedSection = .modes
+                    }
+                    .controlSize(.small)
+                }
+            }
         }
     }
 

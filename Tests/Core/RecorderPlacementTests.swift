@@ -116,6 +116,48 @@ struct RecorderPlacementTests {
         #expect(restored.recorderStyle == .mini)
     }
 
+    @Test func livePreviewIsOnUnlessTurnedOffAndEarlierSettingsDecodeAsOn() throws {
+        let earlier = try JSONSerialization.jsonObject(with: JSONEncoder().encode(AppSettings()))
+        #expect((earlier as? [String: Any])?["livePreview"] == nil)
+        var settings = try JSONDecoder().decode(
+            AppSettings.self, from: JSONSerialization.data(withJSONObject: earlier))
+        #expect(settings.showsLivePreview)
+        settings.showsLivePreview = false
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(!restored.showsLivePreview)
+    }
+
+    /// The live text sits beside the pill at every preset and pill size, toward the screen's middle,
+    /// without overlapping it or leaving the screen sideways.
+    @Test func livePreviewSitsBesideThePillTowardTheMiddle() {
+        let bounds = CGRect(x: -1500, y: 80, width: 1400, height: 900)
+        let preview = CGSize(width: 320, height: 46)
+        for preset in RecorderPlacement.presets {
+            for size in [RecorderLayout.activeSize(for: .mini), CGSize(width: 280, height: 44)] {
+                let pill = preset.frame(size: size, in: bounds)
+                let frame = RecorderLayout.previewFrame(size: preview, beside: pill, in: bounds)
+                #expect(!frame.intersects(pill))
+                #expect(frame.minX >= bounds.minX && frame.maxX <= bounds.maxX)
+                #expect(frame.size == preview)
+                if preset.y == 0 { #expect(frame.minY == pill.maxY + 6) }
+                if preset.y == 1 { #expect(frame.maxY == pill.minY - 6) }
+                if preset.x == 0.5 { #expect(frame.midX == pill.midX) }
+            }
+        }
+    }
+
+    @Test func livePreviewKeepsTheNewestWordsFromAWordStart() {
+        #expect(RecorderLayout.previewTail(of: "Short text.") == "Short text.")
+        let text = "Please send the notes to Sarah by Thursday afternoon. We should review the timeline"
+        // 39 characters start inside "afternoon", which is dropped; 40 start on it, which is kept.
+        let dropped = RecorderLayout.previewTail(of: text, characters: 39)
+        #expect(dropped == "…We should review the timeline")
+        let kept = RecorderLayout.previewTail(of: text, characters: 40)
+        #expect(kept == "…afternoon. We should review the timeline")
+        let unbroken = RecorderLayout.previewTail(of: String(repeating: "x", count: 50), characters: 10)
+        #expect(unbroken == "…xxxxxxxxxx")
+    }
+
     @Test func draggedPositionSurvivesSaving() throws {
         var settings = AppSettings()
         settings.recorderPlacement = RecorderPlacement(x: 0.3, y: 0.8, displayID: 42)

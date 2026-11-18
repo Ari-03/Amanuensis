@@ -4,12 +4,12 @@ import Foundation
 /// when a caller replaces weights or tokenizer files in an existing directory.
 struct LocalModelIdentity: Equatable {
     let directory: URL
-    let family: ModelFamily
+    let family: String
     private let files: [FileIdentity]
 
-    init(directory: URL, family: ModelFamily) throws {
+    init(directory: URL, family: LocalSpeechFamily) throws {
         self.directory = directory.resolvingSymlinksInPath().standardizedFileURL
-        self.family = family
+        self.family = family.name
         files = try LocalModelFiles.validate(directory: directory, family: family)
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
             .map { file in

@@ -5,7 +5,7 @@ import Foundation
 struct LocalModelFiles {
     let directory: URL
 
-    static func validate(directory: URL, family: ModelFamily) throws -> [URL] {
+    static func validate(directory: URL, family: LocalSpeechFamily) throws -> [URL] {
         guard directory.isFileURL,
             (try? directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
         else {
@@ -25,7 +25,7 @@ struct LocalModelFiles {
                 && FileManager.default.isReadableFile(atPath: file.path)
         }
 
-        for filename in family.requiredMetadata {
+        for filename in family.requiredFiles {
             guard readableFiles.contains(where: { $0.lastPathComponent == filename }) else {
                 throw LocalSpeechError.missingModelFile(filename)
             }
@@ -36,7 +36,7 @@ struct LocalModelFiles {
         return readableFiles
     }
 
-    init(source: URL, family: ModelFamily) throws {
+    init(source: URL, family: LocalSpeechFamily) throws {
         let files = try Self.validate(directory: source, family: family)
         let destination = FileManager.default.temporaryDirectory
             .appendingPathComponent("Amanuensis-local-speech-\(UUID().uuidString)", isDirectory: true)
@@ -51,7 +51,7 @@ struct LocalModelFiles {
                     try FileManager.default.createSymbolicLink(
                         at: target, withDestinationURL: file.resolvingSymlinksInPath()
                     )
-                } else if ["json", "model", "txt"].contains(file.pathExtension) {
+                } else if LocalSpeechFamily.isModelFile(file.lastPathComponent) {
                     try FileManager.default.copyItem(at: file.resolvingSymlinksInPath(), to: target)
                 }
             }

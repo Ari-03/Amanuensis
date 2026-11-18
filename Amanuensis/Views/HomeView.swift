@@ -3,11 +3,19 @@ import SwiftUI
 struct HomeView: View {
     @Bindable var model: AppModel
     var body: some View {
+        let settingUp = !model.settings.hasCompletedSetup
+        let blockers = model.modeBlockers
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 ScreenHeader(
                     title: "Make room for your words.",
                     subtitle: "Speak naturally. Keep your train of thought.")
+                if settingUp {
+                    SetupChecklistView(model: model)
+                        .onChange(of: model.setupChecklist.isComplete, initial: true) { _, complete in
+                            if complete { model.settings.hasCompletedSetup = true }
+                        }
+                }
                 HStack(spacing: 0) {
                     metric("\(model.statistics.wordsPerMinute)", unit: "WPM", label: "Average speed")
                     Divider().frame(height: 40)
@@ -27,7 +35,11 @@ struct HomeView: View {
                             }
                             Divider()
                             ForEach(model.modes) { mode in
-                                Button(mode.name, systemImage: mode.symbol) {
+                                // A mode that cannot record yet stays selectable and names what it needs.
+                                Button(
+                                    blockers[mode.id].map { "\(mode.name) · \($0.shortReason)" } ?? mode.name,
+                                    systemImage: mode.symbol
+                                ) {
                                     model.selectMode(mode.id)
                                 }
                             }
@@ -41,6 +53,17 @@ struct HomeView: View {
                         }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         .disabled(model.phase.isBusy).accessibilityLabel("Change active mode")
+                        // The checklist or the Apple Speech card below already explains these.
+                        if !model.phase.isBusy, let blocker = blockers[model.currentMode.id],
+                            appleSpeechLanguage(blocker) == nil,
+                            !settingUp || blocker != model.setupChecklist.speechBlocker
+                        {
+                            Label(
+                                blocker.errorDescription ?? blocker.shortReason,
+                                systemImage: "exclamationmark.triangle"
+                            )
+                            .font(.callout).foregroundStyle(.orange)
+                        }
                         Text(
                             model.isCancellationPending
                                 ? "Cancel transcription? Press Esc again to discard." : model.statusMessage
@@ -73,6 +96,21 @@ struct HomeView: View {
                         }
                     }
                     AudioLevelView(level: model.recordingLevel, active: model.phase == .recording)
+                    // Raw text from a local model, while recording only. It is never inserted.
+                    // It keeps the newest words in view and can be scrolled back.
+                    if model.phase == .recording && !model.liveText.isEmpty {
+                        ScrollView {
+                            Text(model.liveText)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                        }
+                        .defaultScrollAnchor(.bottom)
+                        .frame(maxHeight: 96)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                        .accessibilityLabel("Transcript so far")
+                        .accessibilityValue(model.liveText)
+                    }
                     HStack {
                         Label(
                             model.microphoneName,
@@ -102,11 +140,14 @@ struct HomeView: View {
                         }
                     }
                 }
-                if !model.appleSpeechReady && model.currentMode.speechModelID == "apple-speech" {
+                // The checklist covers these two while setup is open. Afterwards they catch revoked access
+                // and a mode switched to a language whose assets are missing.
+                if !settingUp, let code = blockers[model.currentMode.id].flatMap(appleSpeechLanguage) {
+                    let name = SpeechLanguage.name(of: code)
                     SettingsCard {
                         Label("Set up Apple speech", systemImage: "arrow.down.circle").font(.headline)
                         Text(
-                            "Prepare English speech recognition on this Mac. macOS may need to download language assets."
+                            "Prepare \(name) speech recognition on this Mac. macOS may need to download language assets."
                         )
                         .foregroundStyle(.secondary)
                         if model.appleSpeech.isPreparing {
@@ -116,12 +157,17 @@ struct HomeView: View {
                                     .secondary)
                             }
                         } else {
-                            Button("Prepare speech recognition") { Task { await model.prepareAppleSpeech() } }
-                                .disabled(model.phase.isBusy)
+                            Button("Prepare \(name) speech recognition") {
+                                Task { await model.prepareAppleSpeech(language: code) }
+                            }
+                            .disabled(model.phase.isBusy)
                         }
                     }
                 }
-                if !model.accessibilityGranted {
+                // Skipping text insertion in setup also dismisses this card; the pill still offers Allow paste.
+                if !settingUp && !model.accessibilityGranted
+                    && model.settings.skippedTextInsertionSetup != true
+                {
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: "keyboard").font(.title2).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 6) {
@@ -145,6 +191,11 @@ struct HomeView: View {
                 }
             }.padding(28).frame(maxWidth: 960).frame(maxWidth: .infinity)
         }
+    }
+
+    /// The language whose Apple Speech assets a blocker asks for, if that is what it is.
+    private func appleSpeechLanguage(_ blocker: RecordingFailure) -> String? {
+        if case .appleSpeechNotReady(let code) = blocker { code } else { nil }
     }
 
     private func metric(_ value: String, unit: String, label: String) -> some View {

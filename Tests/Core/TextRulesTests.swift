@@ -3,6 +3,42 @@ import Testing
 @testable import AmanuensisCore
 
 struct TextRulesTests {
+    @Test func capitalizationFollowsEachScriptsOwnRules() {
+        #expect(TextRules.apply("привет, мир", vocabulary: [], capitalize: true) == "Привет, мир")
+        #expect(TextRules.apply("ελάτε αύριο", vocabulary: [], capitalize: true) == "Ελάτε αύριο")
+        // Georgian has no sentence capitals; upper-casing would switch to the Mtavruli alphabet.
+        #expect(TextRules.apply("გამარჯობა", vocabulary: [], capitalize: true) == "გამარჯობა")
+        // Caseless scripts pass through unchanged.
+        #expect(TextRules.apply("مرحبا بالعالم", vocabulary: [], capitalize: true) == "مرحبا بالعالم")
+        #expect(TextRules.apply("「会議は木曜です」", vocabulary: [], capitalize: true) == "「会議は木曜です」")
+        // A digraph letter takes its title form.
+        #expect(TextRules.apply("ǆungla", vocabulary: [], capitalize: true) == "ǅungla")
+    }
+
+    @Test func phrasesMatchInsideScriptsWrittenWithoutSpaces() {
+        let vocabulary = [
+            VocabularyEntry(word: "东京", replacement: "Tokyo"),
+            VocabularyEntry(word: "さら", replacement: "サラ"),
+        ]
+        #expect(TextRules.apply("我在东京工作。", vocabulary: vocabulary, capitalize: true) == "我在Tokyo工作。")
+        #expect(
+            TextRules.apply("メモをさらさんに送って", vocabulary: vocabulary, capitalize: false)
+                == "メモをサラさんに送って")
+    }
+
+    @Test func spacedNonLatinScriptsKeepWholeWordMatching() {
+        let vocabulary = [
+            VocabularyEntry(word: "мир", replacement: "Mir"),
+            VocabularyEntry(word: "नमस्ते", replacement: "Namaste"),
+        ]
+        #expect(
+            TextRules.apply("Мир и мирный мир", vocabulary: vocabulary, capitalize: false)
+                == "Mir и мирный Mir")
+        // Devanagari vowel signs are part of the word, so a longer word is not split.
+        #expect(
+            TextRules.apply("नमस्ते नमस्तेजी", vocabulary: vocabulary, capitalize: false) == "Namaste नमस्तेजी")
+    }
+
     @Test func replacementsUseLongestPhraseAndDoNotCascade() {
         let vocabulary = [
             VocabularyEntry(word: "super", replacement: "great"),
@@ -68,7 +104,8 @@ struct TextRulesTests {
         #expect(
             TextRules.apply("  \"éclair and NASA\"", vocabulary: [], capitalize: true)
                 == "  \"Éclair and NASA\"")
-        #expect(TextRules.apply("123... ßeta", vocabulary: [], capitalize: true) == "123... SSeta")
+        // Title case: a word-initial ß becomes "Ss", not the all-caps "SS".
+        #expect(TextRules.apply("123... ßeta", vocabulary: [], capitalize: true) == "123... Sseta")
         #expect(TextRules.apply("42 🎉", vocabulary: [], capitalize: true) == "42 🎉")
     }
 

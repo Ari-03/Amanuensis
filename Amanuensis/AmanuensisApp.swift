@@ -13,7 +13,7 @@ struct AmanuensisApp: App {
                 .onReceive(
                     NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
                 ) { _ in
-                    model.refreshAccessibility()
+                    model.refreshPermissions()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .amanuensisStorageError)) { note in
                     model.errorMessage = note.object as? String
@@ -38,11 +38,7 @@ struct AmanuensisApp: App {
         }
     }
 
-    private func showSettings() {
-        model.selectedSection = .configuration
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
-    }
+    private func showSettings() { model.showMainWindow(.configuration) }
 }
 
 private struct MenuBarContent: View {
@@ -64,15 +60,21 @@ private struct MenuBarContent: View {
                 model.requestCancelRecording()
             }.disabled(model.phase == .delivering)
         }
+        Button("Copy last transcript") {
+            if let text = model.lastTranscript { model.copyText(text) }
+        }.disabled(model.lastTranscript == nil)
         Divider()
+        let blockers = model.modeBlockers
         ForEach(model.modes) { mode in
+            // A mode that cannot record yet stays selectable and names what it needs.
+            let title = blockers[mode.id].map { "\(mode.name) · \($0.shortReason)" } ?? mode.name
             Button {
                 model.selectMode(mode.id)
             } label: {
                 if mode.id == model.currentMode.id {
-                    Label(mode.name, systemImage: "checkmark")
+                    Label(title, systemImage: "checkmark")
                 } else {
-                    Text(mode.name)
+                    Text(title)
                 }
             }.disabled(model.phase.isBusy)
         }

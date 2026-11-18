@@ -5,22 +5,38 @@ struct RecorderView: View {
     @Bindable var model: AppModel
     @State private var hovering = false
     @State private var showingModes = false
-    @State private var showingPermission = false
     @GestureState private var dragging = false
     @State private var revealControls = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var controlsSize = CGSize(width: 62, height: 26)
     @State private var activitySize = CGSize(width: 156, height: 26)
+    @State private var outcomeSize = CGSize(width: 156, height: 26)
     @State private var collapseTask: Task<Void, Never>?
 
-    private var isOpen: Bool {
-        model.isCancellationPending || revealControls || showingModes || showingPermission
+    /// `revealControls` starts the view in the state hovering produces. Native checks use it because
+    /// events they post cannot trigger SwiftUI hover.
+    init(model: AppModel, revealControls: Bool = false) {
+        _model = Bindable(model)
+        _revealControls = State(initialValue: revealControls)
     }
 
-    private var isMinimized: Bool { !isOpen && !model.phase.isBusy }
+    /// A finished job's outcome replaces the hover controls until it closes. Cleaning keeps one layout,
+    /// so Skip and cancel stay where the pointer found them.
+    private var isOpen: Bool {
+        model.isCancellationPending
+            || (model.recorderOutcome == nil && model.phase != .cleaning
+                && (revealControls || showingModes))
+    }
+
+    private var isMinimized: Bool { !isOpen && !model.phase.isBusy && model.recorderOutcome == nil }
+    private var showsOutcome: Bool { !isOpen && model.recorderOutcome != nil }
+    private var isCompact: Bool { !isOpen && !isMinimized && !showsOutcome }
     private var style: RecorderStyle {
-        // Confirmation needs more room than the camera-side menu bar can guarantee.
-        model.isCancellationPending ? .mini : model.settings.recorderStyle
+        // Confirmation and failures need more room than the camera-side menu bar can guarantee.
+        RecorderLayout.presentedStyle(
+            saved: model.settings.recorderStyle, alwaysShow: model.settings.alwaysShowRecorder,
+            busy: model.phase.isBusy, cancellationPending: model.isCancellationPending,
+            outcome: model.recorderOutcome) ?? model.settings.recorderStyle
     }
     private var idleSize: CGSize { RecorderLayout.idleSize(for: style) }
     private var activeSize: CGSize { RecorderLayout.activeSize(for: style) }
@@ -45,9 +61,16 @@ struct RecorderView: View {
                     .accessibilityHidden(!isOpen)
                 compactContents
                     .frame(width: geometry.size.width, height: geometry.size.height)
-                    .opacity(!isOpen && !isMinimized ? 1 : 0)
-                    .allowsHitTesting(!isOpen && !isMinimized)
-                    .accessibilityHidden(isOpen || isMinimized)
+                    .opacity(isCompact ? 1 : 0)
+                    .allowsHitTesting(isCompact)
+                    .accessibilityHidden(!isCompact)
+                if let outcome = model.recorderOutcome {
+                    outcomeContents(outcome)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .opacity(showsOutcome ? 1 : 0)
+                        .allowsHitTesting(showsOutcome)
+                        .accessibilityHidden(!showsOutcome)
+                }
                 minimizedContents
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .opacity(isMinimized ? 1 : 0)
@@ -56,6 +79,12 @@ struct RecorderView: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .background(.black, in: silhouette)
+            .overlay {
+                if showsOutcome && [.failure, .warning].contains(model.recorderOutcome?.kind) {
+                    // The clip below keeps the inner half of this stroke.
+                    silhouette.stroke(.orange.opacity(0.85), lineWidth: 2)
+                }
+            }
             .clipShape(silhouette)
         }
         .foregroundStyle(.white)
@@ -71,10 +100,12 @@ struct RecorderView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: isOpen)
         .onHover { inside in
             hovering = inside
+            model.setRecorderHovering(inside)
             if inside {
                 model.refreshAccessibility()
                 collapseTask?.cancel()
-                revealControls = true
+                // Hovering an outcome keeps it on screen instead of swapping in the controls.
+                if model.recorderOutcome == nil { revealControls = true }
             } else {
                 scheduleCollapse()
             }
@@ -83,22 +114,17 @@ struct RecorderView: View {
         .onChange(of: isOpen) { _, _ in updateSize() }
         .onChange(of: controlsSize) { _, _ in updateSize() }
         .onChange(of: activitySize) { _, _ in updateSize() }
+        .onChange(of: outcomeSize) { _, _ in updateSize() }
+        .onChange(of: model.recorderOutcome) { _, _ in updateSize() }
         .onChange(of: model.phase) { _, _ in updateSize() }
         .onChange(of: style) { _, _ in updateSize() }
         .onChange(of: showingModes) { _, showing in
             if !showing { scheduleCollapse() }
         }
-        .onChange(of: showingPermission) { _, showing in
-            if !showing { scheduleCollapse() }
-        }
-        .onChange(of: model.accessibilityGranted) { _, granted in
-            if granted { showingPermission = false }
-        }
         .onChange(of: model.isMovingRecorder) { _, moving in
             if moving {
                 collapseTask?.cancel()
                 showingModes = false
-                showingPermission = false
             } else {
                 scheduleCollapse()
             }
@@ -109,7 +135,6 @@ struct RecorderView: View {
         .onChange(of: model.phase.isBusy) { _, busy in
             if busy {
                 showingModes = false
-                showingPermission = false
             } else {
                 scheduleCollapse()
             }
@@ -124,11 +149,11 @@ struct RecorderView: View {
         if isMinimized {
             model.resizeRecorder(to: idleSize)
         } else {
-            let content = isOpen ? controlsSize : activitySize
+            let content = isOpen ? controlsSize : showsOutcome ? outcomeSize : activitySize
             model.resizeRecorder(
                 to: CGSize(
                     width: max(
-                        model.phase.isBusy ? activeSize.width : idleSize.width,
+                        model.phase.isBusy || showsOutcome ? activeSize.width : idleSize.width,
                         ceil(content.width) + (isOpen ? 24 : 0)),
                     height: max(activeSize.height, ceil(content.height) + 12)))
         }
@@ -137,71 +162,145 @@ struct RecorderView: View {
     private var minimizedContents: some View {
         Button(action: model.toggleRecording) {
             Capsule()
-                .fill(model.pasteNeedsAccessibility ? Color.orange : .white.opacity(0.8))
+                .fill(.white.opacity(0.8))
                 .frame(width: 24, height: 2)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(silhouette)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Start recording")
-        .accessibilityHint(
-            model.pasteNeedsAccessibility
-                ? "Automatic paste needs Accessibility access. Show recorder controls for options."
-                : "Hover or use actions to show recorder controls."
-        )
+        .accessibilityHint("Hover or use actions to show recorder controls.")
         .accessibilityActions {
             Button("Show recorder controls") { revealControls = true }
         }
         .help("Click to record. Hover for controls.")
     }
 
+    /// Recording shows the active recording's mode and elapsed time; processing shows its phase.
+    /// Cleaning also holds Skip and cancel, since hover does not open the controls then.
+    /// Only recording is clickable as a whole, to finish.
     private var compactContents: some View {
-        Button(action: model.toggleRecording) {
-            HStack(spacing: 12) {
-                Image(systemName: model.phase == .recording ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 19, weight: .semibold))
-                    .frame(width: 24)
-                Spacer(minLength: 4)
-                if model.phase.isBusy && model.phase != .recording {
-                    ProgressView().controlSize(.mini)
-                    Text(model.phase.rawValue).font(.system(size: 11)).fixedSize()
-                } else {
-                    RecorderWaveform(bands: model.recordingSpectrum, active: model.phase == .recording)
-                }
+        Group {
+            if model.phase == .recording {
+                Button(action: model.toggleRecording) { compactRow.contentShape(silhouette) }
+                    .buttonStyle(.plain)
+            } else {
+                compactRow.accessibilityElement(children: .ignore)
             }
-            .padding(.horizontal, style == .notch ? 20 : 16)
-            .fixedSize()
-            .onGeometryChange(for: CGSize.self) {
-                $0.size
-            } action: {
-                activitySize = $0
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(silhouette)
         }
-        .buttonStyle(.plain)
-        .disabled(model.phase.isBusy && model.phase != .recording)
-        .accessibilityLabel(
-            model.phase.isBusy && model.phase != .recording ? model.phase.rawValue : recordingLabel
+        .accessibilityLabel(model.phase == .recording ? recordingLabel : model.phase.rawValue)
+        .accessibilityValue(
+            model.phase == .recording
+                ? "\(model.currentMode.name), \(durationLabel(model.recordingDuration))" : ""
         )
-        .accessibilityValue(model.phase == .recording ? durationLabel(model.recordingDuration) : "")
         .accessibilityHint(
             style == .mini
                 ? "Use actions for more recorder controls. Drag to reposition."
                 : "Use actions for more recorder controls."
         )
         .accessibilityActions {
-            Button("Show recorder controls") { revealControls = true }
+            if model.phase == .cleaning {
+                Button("Skip cleanup", action: model.skipCleanup)
+            } else {
+                Button("Show recorder controls") { revealControls = true }
+            }
             if model.phase.isBusy && model.phase != .delivering {
                 Button("Cancel recording", action: model.requestCancelRecording)
             }
         }
         .help(
             model.phase == .recording
-                ? "Click to finish recording. Hover for controls."
-                : style == .mini
-                    ? "Click to record. Hover for controls. Drag to reposition."
-                    : "Click to record. Hover for controls.")
+                ? "Click to finish recording. Hover for controls." : "Hover for controls.")
+    }
+
+    private var compactRow: some View {
+        HStack(spacing: 10) {
+            if model.phase == .recording {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 18)
+                modeBadge
+                RecorderWaveform(bands: model.recordingSpectrum, active: true)
+                Text(durationLabel(model.recordingDuration))
+                    .font(.system(size: 11)).monospacedDigit().fixedSize()
+            } else {
+                ProgressView().controlSize(.mini)
+                Text(model.phase.rawValue).font(.system(size: 11)).fixedSize()
+                if model.phase == .cleaning {
+                    RecorderChipButton(title: "Skip", action: model.skipCleanup)
+                        .help("Skip cleanup and use the original transcript")
+                    Button(action: model.requestCancelRecording) {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                            .frame(width: 18, height: 22).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .help("Cancel recording")
+                }
+            }
+        }
+        .padding(.leading, style == .notch ? 20 : 14)
+        .padding(.trailing, style == .notch ? 20 : model.phase == .cleaning ? 8 : 14)
+        .fixedSize()
+        .onGeometryChange(for: CGSize.self) {
+            $0.size
+        } action: {
+            activitySize = $0
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The mode of the active recording, which automatic app modes may have chosen.
+    /// Notch has little room beside the camera, so it shows only the icon.
+    private var modeBadge: some View {
+        let mode = model.currentMode
+        return HStack(spacing: 4) {
+            Image(systemName: mode.symbol).font(.system(size: 11, weight: .medium))
+            if style != .notch {
+                Text(mode.name.count > 16 ? mode.name.prefix(15) + "…" : mode.name)
+                    .font(.system(size: 11, weight: .medium)).lineLimit(1).fixedSize()
+            }
+        }
+        .foregroundStyle(.white.opacity(0.7))
+    }
+
+    /// How the last job ended, with its one action. Failures also offer a dismiss control.
+    private func outcomeContents(_ outcome: RecorderOutcome) -> some View {
+        let (symbol, tint): (String, Color) =
+            switch outcome.kind {
+            case .success: ("checkmark", .green)
+            case .notice: ("info.circle", .white.opacity(0.7))
+            case .warning, .failure: ("exclamationmark.triangle.fill", .orange)
+            }
+        return HStack(spacing: 8) {
+            Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint)
+                .accessibilityHidden(true)
+            Text(outcome.label).font(.system(size: 12, weight: .medium)).lineLimit(1).fixedSize()
+            if let action = outcome.action {
+                RecorderChipButton(title: action.title, action: model.performOutcomeAction)
+            }
+            if outcome.kind == .failure {
+                Button(action: model.dismissOutcome) {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                        .frame(width: 18, height: 22).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white.opacity(0.6))
+                .accessibilityLabel("Dismiss")
+                .help("Dismiss")
+            }
+        }
+        .padding(.leading, style == .notch ? 20 : 14)
+        .padding(.trailing, style == .notch ? 20 : outcome.kind == .failure ? 8 : 14)
+        .fixedSize()
+        .onGeometryChange(for: CGSize.self) {
+            $0.size
+        } action: {
+            outcomeSize = $0
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(outcome.label)
     }
 
     @ViewBuilder
@@ -229,7 +328,6 @@ struct RecorderView: View {
     private var controls: some View {
         HStack(spacing: 8) {
             Button {
-                showingPermission = false
                 showingModes.toggle()
             } label: {
                 HStack(spacing: 3) {
@@ -243,7 +341,7 @@ struct RecorderView: View {
             .accessibilityLabel("Change mode, current mode: \(model.currentMode.name)")
             .help("Change mode")
             .popover(isPresented: $showingModes, arrowEdge: popoverEdge) {
-                modeMenu
+                RecorderModeMenu(model: model) { showingModes = false }
             }
 
             Button(action: model.toggleRecording) {
@@ -256,46 +354,18 @@ struct RecorderView: View {
             .accessibilityLabel(recordingLabel)
             .help(recordingLabel)
 
-            if !model.phase.isBusy
-                && (model.pasteNeedsAccessibility
-                    || (!model.accessibilityGranted && model.currentMode.autoPaste))
-            {
+            if !model.phase.isBusy && !model.accessibilityGranted && model.currentMode.autoPaste {
                 Button {
                     showingModes = false
-                    showingPermission.toggle()
+                    model.requestAccessibility()
                 } label: {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 12)).foregroundStyle(.orange)
                         .frame(width: 22, height: 26).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Allow Accessibility access for automatic paste")
-                .help("Automatic paste needs Accessibility access")
-                .popover(isPresented: $showingPermission, arrowEdge: popoverEdge) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Allow automatic paste").font(.headline)
-                        Text(
-                            "Enable Amanuensis in System Settings → Privacy & Security → Accessibility. Then return to your text field and record again."
-                        )
-                        .font(.callout)
-                        Button("Open Accessibility Settings") {
-                            showingPermission = false
-                            model.requestAccessibility()
-                        }
-                        if model.pasteNeedsAccessibility, let entry = model.history.first {
-                            Button("Copy last transcript") {
-                                model.copyText(entry.finalText)
-                                model.pasteNeedsAccessibility = false
-                                showingPermission = false
-                            }
-                        }
-                        Button("Not now") {
-                            model.pasteNeedsAccessibility = false
-                            showingPermission = false
-                        }.buttonStyle(.link)
-                    }
-                    .padding(16).frame(width: 290)
-                }
+                .accessibilityLabel("Allow automatic paste in Accessibility settings")
+                .help("Automatic paste needs Accessibility access. Click to open Accessibility settings.")
             }
 
             if model.phase.isBusy {
@@ -327,42 +397,37 @@ struct RecorderView: View {
         style == .notch || (model.settings.recorderPlacement ?? .bottom).y > 0.5 ? .bottom : .top
     }
 
-    private var modeMenu: some View {
-        VStack(spacing: 4) {
-            ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(model.modes) { mode in
-                        RecorderModeRow(
-                            title: mode.name, symbol: mode.symbol,
-                            selected: model.currentMode.id == mode.id
-                        ) {
-                            model.selectMode(mode.id)
-                            showingModes = false
-                        }
-                    }
-                }
-            }
-            .frame(height: min(CGFloat(model.modes.count) * 36, 288))
-            Divider().padding(.vertical, 3)
-            RecorderModeRow(
-                title: "Automatic app modes", symbol: "arrow.triangle.branch",
-                selected: model.settings.automaticModeSelection
-            ) {
-                model.settings.automaticModeSelection.toggle()
-                showingModes = false
-            }
-        }
-        .padding(6).frame(width: 240)
-    }
-
     private func scheduleCollapse() {
         collapseTask?.cancel()
         collapseTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled, !hovering, !showingModes, !showingPermission, !model.isMovingRecorder
+            guard !Task.isCancelled, !hovering, !showingModes, !model.isMovingRecorder
             else { return }
             revealControls = false
         }
+    }
+}
+
+/// The Mini recorder's live text: the end of what a local model has transcribed so far, in at most two
+/// lines. Display only; its panel ignores the mouse and never takes focus.
+struct RecorderLivePreview: View {
+    static let maxWidth: CGFloat = 320
+    let text: String
+
+    var body: some View {
+        // The panel is sized to what this measures at `maxWidth`, so short text gets a narrow box.
+        Text(RecorderLayout.previewTail(of: text))
+            .font(.system(size: 12))
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .foregroundStyle(.white.opacity(0.9))
+            .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .environment(\.colorScheme, .dark)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Transcript so far")
+            .accessibilityValue(text)
     }
 }
 
@@ -426,9 +491,61 @@ struct RecorderWaveform: View {
     }
 }
 
+/// A small outlined button for the pill's one action, such as Skip or Open Models.
+private struct RecorderChipButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 11, weight: .medium)).lineLimit(1).fixedSize()
+                .padding(.horizontal, 8).frame(height: 20)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.4)))
+                .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// The recorder's mode popover. A mode that cannot record yet stays selectable and names what it needs.
+struct RecorderModeMenu: View {
+    @Bindable var model: AppModel
+    let dismiss: () -> Void
+
+    var body: some View {
+        let blockers = model.modeBlockers
+        VStack(spacing: 4) {
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(model.modes) { mode in
+                        RecorderModeRow(
+                            title: mode.name, symbol: mode.symbol, reason: blockers[mode.id]?.shortReason,
+                            selected: model.currentMode.id == mode.id
+                        ) {
+                            model.selectMode(mode.id)
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .frame(height: min(CGFloat(model.modes.count) * 36, 288))
+            Divider().padding(.vertical, 3)
+            RecorderModeRow(
+                title: "Automatic app modes", symbol: "arrow.triangle.branch",
+                selected: model.settings.automaticModeSelection
+            ) {
+                model.settings.automaticModeSelection.toggle()
+                dismiss()
+            }
+        }
+        .padding(6).frame(width: 240)
+    }
+}
+
 private struct RecorderModeRow: View {
     let title: String
     let symbol: String
+    var reason: String? = nil
     let selected: Bool
     let action: () -> Void
     @State private var hovering = false
@@ -437,7 +554,14 @@ private struct RecorderModeRow: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 20)
-                Text(title).lineLimit(1)
+                // Both lines fit the row's fixed height, so rows with and without a reason line up.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).lineLimit(1)
+                    if let reason {
+                        Text(reason).font(.system(size: 11)).foregroundStyle(.orange).lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
                 Spacer(minLength: 8)
                 if selected { Image(systemName: "checkmark").fontWeight(.semibold) }
             }
@@ -451,6 +575,7 @@ private struct RecorderModeRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .accessibilityValue(reason ?? "")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

@@ -12,7 +12,9 @@ cleanup() {
 }
 trap cleanup EXIT
 codesign --verify --deep --strict "$1"
-sandbox-exec -p '(version 1) (allow default) (deny network*)' \
+# The app must never open the owner's data folder, where startup cleans up model staging.
+mkdir "$smoke_root/data"
+AMANUENSIS_DATA_DIRECTORY="$smoke_root/data" sandbox-exec -p '(version 1) (allow default) (deny network*)' \
     "$1/Contents/MacOS/Amanuensis" --speech-smoke "$2" "$3" "$4" "$5" \
     "$smoke_root/result.json" > "$smoke_root/app.log" 2>&1 &
 smoke_pid=$!
