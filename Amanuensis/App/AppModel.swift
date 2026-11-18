@@ -1216,13 +1216,19 @@ final class AppModel {
     }
     /// Saves the OpenAI-compatible server's address, already normalized by `APIBaseURL`, and its key.
     /// The key is stored with that address and is only ever sent there (see `CredentialStore`). A new
-    /// address drops the saved key unless a key is entered with it.
+    /// address drops the saved key unless a key is entered with it. The address cannot change while a
+    /// recording is in progress, so a recording is sent to the server it started with, which for a
+    /// retry is the one History's confirmation named.
     func saveCompatibleServer(_ address: URL, key: String) throws {
         defer { refreshConnectedProviders() }
+        let saved = try? APIBaseURL.parse(settings.compatibleBaseURL ?? "").get()
+        guard address == saved || !phase.isBusy else {
+            throw AppFailure("Wait for the current recording to finish before changing the server.")
+        }
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty {
             try CredentialStore.set(key, for: .openAICompatible, server: address)
-        } else if address != (try? APIBaseURL.parse(settings.compatibleBaseURL ?? "").get()) {
+        } else if address != saved {
             try CredentialStore.remove(for: .openAICompatible)
         }
         settings.compatibleBaseURL = address.absoluteString

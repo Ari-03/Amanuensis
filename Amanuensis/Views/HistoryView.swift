@@ -104,15 +104,16 @@ struct HistoryView: View {
     }
 
     /// History keeps a recording's models but not the compatible server it used, so a retry with an
-    /// OpenAI-compatible model goes to the server saved now. The confirmation names that host.
+    /// OpenAI-compatible model goes to the server saved now. The confirmation shows that address in
+    /// full, since two servers can share a host, and the address cannot change while the retry runs.
     private func retryMessage(for entry: RecordingEntry?) -> String {
         let models = entry.map(model.retryModels(for:))
         let usesCompatible = [models?.speech, models?.cleanup].contains { $0?.engine == .openAICompatible }
         if usesCompatible,
-            let host = (try? APIBaseURL.parse(model.settings.compatibleBaseURL ?? "").get())?.host()
+            let server = try? APIBaseURL.parse(model.settings.compatibleBaseURL ?? "").get()
         {
             return
-                "The saved audio will use this recording's original models. Its OpenAI-compatible model sends audio or transcript text to the server saved now, \(host), which may not be the one this recording first used. Your local-processing setting still applies. The new result stays in History and is not pasted."
+                "The saved audio will use this recording's original models. Its OpenAI-compatible model sends audio or transcript text to the server saved now, \(server.absoluteString), which may not be the one this recording first used. Your local-processing setting still applies. The new result stays in History and is not pasted."
         }
         return
             "The saved audio will use this recording's original model settings. API models send audio or transcript text to their provider. Your local-processing setting still applies. The new result stays in History and is not pasted."
