@@ -92,7 +92,6 @@ struct HomeView: View {
                                 model.isCancellationPending ? "Discard" : "Cancel",
                                 action: model.requestCancelRecording
                             ).buttonStyle(.borderless)
-                                .disabled(model.phase == .delivering)
                         }
                     }
                     AudioLevelView(level: model.recordingLevel, active: model.phase == .recording)

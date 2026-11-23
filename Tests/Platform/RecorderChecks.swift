@@ -216,7 +216,7 @@ struct RecorderChecks {
             for style in [RecorderStyle.mini, .notch] {
                 model.settings.recorderStyle = style
                 recorder.show(content: AnyView(RecorderView(model: model)), style: style, placement: .top)
-                for phase in [DictationPhase.preparing, .transcribing, .cleaning, .delivering] {
+                for phase in [DictationPhase.preparing, .transcribing, .cleaning] {
                     model.phase = phase
                     await pause(350)
                     // Spinner, spacing, and padding sit beside the label; cleaning adds Skip and cancel.

@@ -88,7 +88,6 @@ final class AppModel {
     @ObservationIgnored private var activeID: UUID?
     @ObservationIgnored private var cancellingID: UUID?
     @ObservationIgnored private var activeEntry: RecordingEntry?
-    @ObservationIgnored private var destination: InsertionTarget?
     @ObservationIgnored private var startupComplete = false
     @ObservationIgnored private var changingConfiguration = false
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
@@ -99,10 +98,9 @@ final class AppModel {
     /// and Skip is accepted only while the phase is cleaning, which `process()` leaves without
     /// suspending once the await returns. So exactly one of them delivers.
     @ObservationIgnored private var cleanupSkipped = false
-    /// A cleanup failure keeps its rule-applied raw text and the destination captured when recording
-    /// began, until the user pastes it, dismisses the offer, or starts other work.
-    @ObservationIgnored private var originalOffer:
-        (id: UUID, text: String, app: String?, destination: InsertionTarget?)?
+    /// A cleanup failure keeps its rule-applied raw text until the user pastes it, dismisses the offer,
+    /// or starts other work.
+    @ObservationIgnored private var originalOffer: (id: UUID, text: String)?
 
     var currentMode: DictationMode {
         if phase.isBusy, let activeEntry { return activeEntry.mode }
@@ -263,7 +261,6 @@ final class AppModel {
         entry.language = language(for: chosen)
         activeID = id
         activeEntry = entry
-        destination = delivery.captureDestination()
         phase = .preparing
         statusMessage = "Checking microphone and models…"
         errorMessage = nil
@@ -374,7 +371,7 @@ final class AppModel {
 
     /// User cancellation is separate from teardown, which must never wait for confirmation.
     func requestCancelRecording() {
-        guard activeID != nil, phase.isBusy, phase != .delivering else { return }
+        guard activeID != nil, phase.isBusy else { return }
         if cancellationConfirmation.request() {
             cancelRecording()
             return
@@ -395,11 +392,6 @@ final class AppModel {
     private func cancelRecording() {
         dismissCancellation()
         guard let id = activeID else { return }
-        // The paste has already been posted. Finish delivery and preserve History.
-        guard phase != .delivering else {
-            statusMessage = "Finishing text insertion…"
-            return
-        }
         let previousWork = work
         activeID = nil
         cancellingID = id
@@ -419,7 +411,6 @@ final class AppModel {
         restorePlayback()
         do { try store?.deleteRecording(id: id) } catch { errorMessage = error.localizedDescription }
         activeEntry = nil
-        destination = nil
         phase = .preparing
         statusMessage = "Stopping the current operation…"
         refreshHistory()
@@ -551,7 +542,7 @@ final class AppModel {
                     entry.rawText, vocabulary: entry.vocabularySnapshot ?? [],
                     capitalize: entry.mode.capitalize)
                 entry.status = .failed
-                originalOffer = (id, entry.finalText, entry.destinationApp, destination)
+                originalOffer = (id, entry.finalText)
                 try complete(
                     entry, message: "Cleanup failed. Your original transcript is saved in History.",
                     outcome: .cleanupFailed)
@@ -572,13 +563,11 @@ final class AppModel {
         }
         let outcome: RecorderOutcome.Cause
         if shouldDeliver && entry.mode.autoPaste {
-            phase = .delivering
-            statusMessage = "Inserting your text…"
-            let delivered = await delivery.deliver(text: entry.finalText, to: destination)
-            try ensureActive(id)
+            // Nothing suspends between the paste and its History entry, so a cancellation cannot land there.
+            let delivered = delivery.deliver(text: entry.finalText)
             refreshAccessibility()
-            entry.deliveryMessage = delivered.message
-            outcome = cause(of: delivered, app: entry.destinationApp)
+            entry.record(delivered)
+            outcome = cause(of: delivered)
         } else {
             entry.deliveryMessage = "Your transcript is ready to copy."
             outcome = .savedToHistory
@@ -601,9 +590,9 @@ final class AppModel {
         return try await normalizer.clean(text: text, modelURL: path, mode: mode)
     }
 
-    private func cause(of delivered: DeliveryOutcome, app: String?) -> RecorderOutcome.Cause {
+    private func cause(of delivered: DeliveryOutcome) -> RecorderOutcome.Cause {
         switch delivered {
-        case .commandPosted: .inserted(app: app)
+        case .commandPosted(let app): .inserted(app: app)
         case .copied: .copied
         case .accessibilityRequired: .needsAccessibility
         // Held text may not be on the clipboard, so point to History instead.
@@ -723,7 +712,6 @@ final class AppModel {
         try store?.countIfNeeded(recording: entry)
         activeID = nil
         activeEntry = nil
-        destination = nil
         library.inUseModelIDs = []
         shortcuts.setRecordingActive(false)
         // Showing the outcome while the phase is still busy lets the pill change in place instead of
@@ -750,7 +738,6 @@ final class AppModel {
         do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
         activeID = nil
         activeEntry = nil
-        destination = nil
         library.inUseModelIDs = []
         shortcuts.setRecordingActive(false)
         showOutcome(.failed(error as? RecordingFailure), for: entry.id)
@@ -840,7 +827,6 @@ final class AppModel {
         let attemptURL = store.recordingsURL.appendingPathComponent("\(id.uuidString).wav")
         activeID = entry.id
         activeEntry = entry
-        destination = nil
         phase = .preparing
         statusMessage = "Checking the original recording settings…"
         errorMessage = nil
@@ -1143,25 +1129,20 @@ final class AppModel {
         NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
     }
 
-    /// Delivers a failed cleanup's original text to the destination captured when recording began.
-    /// Delivery rechecks focus and falls back to the clipboard, then History records what happened.
+    /// Delivers a failed cleanup's original text with the same focus check and clipboard fallback as
+    /// automatic paste, then History records what happened.
     private func pasteOriginal() {
         guard let offer = originalOffer, !phase.isBusy, activeID == nil, cancellingID == nil else { return }
-        phase = .delivering
-        statusMessage = "Inserting your original transcript…"
-        work = Task { [weak self] in
-            guard let self else { return }
-            let delivered = await delivery.deliver(text: offer.text, to: offer.destination)
-            refreshAccessibility()
-            if var entry = history.first(where: { $0.id == offer.id }) {
-                entry.deliveryMessage = delivered.message
-                do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
-                refreshHistory()
-            }
-            showOutcome(cause(of: delivered, app: offer.app), for: offer.id)
-            phase = .complete
-            statusMessage = delivered.message
+        let delivered = delivery.deliver(text: offer.text)
+        refreshAccessibility()
+        if var entry = history.first(where: { $0.id == offer.id }) {
+            entry.record(delivered)
+            do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
+            refreshHistory()
         }
+        showOutcome(cause(of: delivered), for: offer.id)
+        phase = .complete
+        statusMessage = delivered.message
     }
 
     func setRecorderHovering(_ hovering: Bool) {
@@ -1276,11 +1257,6 @@ final class AppModel {
         modelReleaseCount += 1
         defer { modelReleaseCount -= 1 }
         let previousWork = work
-        if phase == .delivering {
-            await previousWork?.value
-            await unloadModels()
-            return
-        }
         guard var entry = activeEntry, let id = activeID else {
             await stopSpeechPreparation()
             await unloadModels()
@@ -1322,7 +1298,6 @@ final class AppModel {
         if let store, store.audioURL(for: entry) == nil { entry.audioFileName = nil }
         do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
         activeEntry = nil
-        destination = nil
         cancellingID = nil
         library.inUseModelIDs = []
         showOutcome(.interrupted, for: entry.id)
@@ -1488,4 +1463,12 @@ private struct AppFailure: LocalizedError {
 
 extension Notification.Name {
     static let amanuensisStorageError = Notification.Name("AmanuensisStorageError")
+}
+
+extension RecordingEntry {
+    /// Keeps where the text went, which can differ from the app recording started in.
+    fileprivate mutating func record(_ delivered: DeliveryOutcome) {
+        deliveryMessage = delivered.message
+        if case .commandPosted(let app) = delivered { destinationApp = app }
+    }
 }

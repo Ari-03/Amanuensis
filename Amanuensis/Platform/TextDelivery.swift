@@ -1,11 +1,9 @@
 import AppKit
 @preconcurrency import ApplicationServices
 
-/// The editable destination that was focused when recording began.
+/// The app whose focused field can receive a paste right now.
 struct InsertionTarget {
     fileprivate let processID: pid_t
-    fileprivate let field: AXUIElement
-    fileprivate let window: AXUIElement
     let applicationName: String
 }
 
@@ -32,7 +30,7 @@ struct TextDeliveryEnvironment {
 }
 
 enum DeliveryOutcome: Equatable {
-    case commandPosted
+    case commandPosted(app: String)
     case copied
     case accessibilityRequired
     case held(String)
@@ -51,13 +49,12 @@ enum DeliveryOutcome: Equatable {
     }
 }
 
-/// Serializes clipboard insertion and never changes the destination's focus.
+/// Pastes into whatever editable field has focus when the text is ready, and never moves focus.
 @MainActor
 final class TextDelivery {
     private let pasteboard: NSPasteboard
     private let hasAccessibilityAccess: () -> Bool
     private let environment: TextDeliveryEnvironment
-    private var isDelivering = false
 
     init(
         pasteboard: NSPasteboard = .general,
@@ -78,7 +75,8 @@ final class TextDelivery {
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 
-    func captureDestination() -> InsertionTarget? {
+    /// The focused editable field's app. Nil for Amanuensis itself, and for secure or read-only fields.
+    func currentDestination() -> InsertionTarget? {
         guard hasAccessibilityAccess(),
             let application = environment.frontmostApplication(),
             application.processID != ProcessInfo.processInfo.processIdentifier
@@ -86,26 +84,20 @@ final class TextDelivery {
 
         let appElement = AXUIElementCreateApplication(application.processID)
         guard let field = element(appElement, attribute: kAXFocusedUIElementAttribute),
-            let window = element(appElement, attribute: kAXFocusedWindowAttribute),
-            isEditable(field)
+            isEditable(field),
+            // Accessibility queries cross process boundaries; the app can lose foreground
+            // focus while still returning its previously focused field.
+            environment.frontmostApplication()?.processID == application.processID
         else { return nil }
 
-        return InsertionTarget(
-            processID: application.processID,
-            field: field,
-            window: window,
-            applicationName: application.name
-        )
+        return InsertionTarget(processID: application.processID, applicationName: application.name)
     }
 
-    func deliver(text: String, to target: InsertionTarget?) async -> DeliveryOutcome {
+    func deliver(text: String) -> DeliveryOutcome {
         guard !Task.isCancelled else {
             return .held("Insertion was cancelled. Your transcript remains in History.")
         }
         guard !text.isEmpty else { return .held("There is no text to insert.") }
-        guard !isDelivering else {
-            return .held("Another paste is finishing. Copy this transcript from History.")
-        }
         // Keep a manual fallback even when AX cannot describe the editor or it ignores Command-V.
         // A posted event is not proof of insertion, so never restore the previous clipboard.
         guard copy(text: text) else {
@@ -115,11 +107,6 @@ final class TextDelivery {
         guard hasAccessibilityAccess() else {
             return .accessibilityRequired
         }
-        guard let target, matchesCurrentDestination(target) else { return .copied }
-
-        isDelivering = true
-        defer { isDelivering = false }
-
         guard let source = CGEventSource(stateID: .privateState),
             let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
             let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
@@ -129,35 +116,19 @@ final class TextDelivery {
         up.flags = .maskCommand
         // Keep the check and posting synchronous. PID routing prevents a late app switch
         // from redirecting the transcript, but macOS does not make check-and-post atomic.
-        guard matchesCurrentDestination(target) else { return .copied }
+        guard let target = currentDestination() else { return .copied }
         guard pasteboard.changeCount == ownedChangeCount else {
             return .held("The clipboard changed before pasting. Copy your transcript from History.")
         }
         environment.post(down, target.processID)
         environment.post(up, target.processID)
-
-        // Serialize attempts while the editor handles the command. Leave the transcript available
-        // for slow editors and manual paste, without overwriting anything the user copies later.
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(750)) {
-                continuation.resume()
-            }
-        }
-        return .commandPosted
+        return .commandPosted(app: target.applicationName)
     }
 
     @discardableResult
     func copy(text: String) -> Bool {
         pasteboard.clearContents()
         return pasteboard.setString(text, forType: .string)
-    }
-
-    private func matchesCurrentDestination(_ target: InsertionTarget) -> Bool {
-        guard let current = captureDestination(), current.processID == target.processID else { return false }
-        // Accessibility queries cross process boundaries; the app can lose foreground
-        // focus while still returning its previously focused field and window.
-        return CFEqual(current.field, target.field) && CFEqual(current.window, target.window)
-            && environment.frontmostApplication()?.processID == target.processID
     }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
