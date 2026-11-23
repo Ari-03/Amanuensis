@@ -71,7 +71,12 @@ struct DeliveryChecks {
 
         // Recording may start in one field, or nowhere at all. Only the focus at delivery counts.
         editor.events = []
+        editor.selectedTextIsSettable = false
+        editor.valueIsSettable = false
+        precondition(delivery.deliver(text: "A completed transcript") == .copied)
+        precondition(editor.events.isEmpty)
         editor.field = AXUIElementCreateApplication(7004)
+        editor.selectedTextIsSettable = true
         precondition(
             delivery.deliver(text: "A completed transcript") == .commandPosted(app: "Test editor"),
             "Moving to another field must paste there")
