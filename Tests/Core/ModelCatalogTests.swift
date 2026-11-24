@@ -188,6 +188,7 @@ struct SavedFormatCompatibilityTests {
         #expect(saved.settings.dictationLanguage == nil)
         #expect(saved.settings.recorderStyle == .notch)
         #expect(saved.settings.pasteLastShortcut == nil)
+        #expect(!saved.settings.holdsToRecord)
         #expect(saved.modes.count == 6)
         #expect(saved.modes.allSatisfy { $0.language == nil })
         var modes = saved.modes

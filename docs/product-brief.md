@@ -68,7 +68,7 @@ The walkthrough says TTS, but the intended operation here is speech-to-text. Tex
 | Appearance | System, light, and dark themes are shown in the reference. |
 | Recording window | Classic, mini, hidden, and a notch-style indicator; an always-show preference. |
 | Shortcuts | Toggle recording, cancel recording, change mode, push-to-talk, and paste last transcript. |
-| Push-to-talk | Record while the shortcut is held; finish when released. |
+| Push-to-talk | Record while the shortcut is held; finish when released. The toggle shortcut can do the same when Hold to record is on. |
 | Mouse shortcut | Shown in the reference as tap to toggle or hold to record; proposed pending prioritization. |
 | Updates | Check for updates and automatically check for updates. Whether updates also install automatically needs definition. |
 | Startup | Launch on login. |

@@ -388,6 +388,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var livePreview: Bool? = nil
     var requireLocalProcessing = true
     var toggleShortcut: ShortcutBinding = .recording
+    /// Nil until changed, which means off. Optional so earlier saves still decode; read `holdsToRecord`.
+    var holdToRecord: Bool? = nil
     var pushToTalkShortcut: ShortcutBinding? = nil
     var modeShortcut: ShortcutBinding? = .mode
     var pasteLastShortcut: ShortcutBinding? = nil
@@ -417,6 +419,12 @@ struct AppSettings: Codable, Equatable, Sendable {
     var showsLivePreview: Bool {
         get { livePreview ?? true }
         set { livePreview = newValue }
+    }
+    /// Whether holding the recording shortcut records until it is released. Off unless chosen: a long
+    /// press otherwise starts a recording that keeps going after the release.
+    var holdsToRecord: Bool {
+        get { holdToRecord ?? false }
+        set { holdToRecord = newValue }
     }
 }
 

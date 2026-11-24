@@ -36,7 +36,7 @@ Busy states reject a second start with a short explanation. Do not queue surpris
 
 ## Shortcut contract
 
-Toggle responds once per physical press. Push-to-talk starts on down and stops on release, ignoring key repeat. A release received during preparation cancels preparation. Modifier loss, app suspension, sleep, and missing key-up detection must stop or interrupt capture rather than leave a microphone running indefinitely. Cancel applies only while a session is active; do not consume Escape system-wide while idle.
+Toggle responds once per physical press. Push-to-talk starts on down and stops on release, ignoring key repeat. A release received during preparation cancels preparation. With Hold to record on, a toggle press held for 300 ms or more follows the push-to-talk release rules. Modifier loss, app suspension, sleep, and missing key-up detection must stop or interrupt capture rather than leave a microphone running indefinitely. Cancel applies only while a session is active; do not consume Escape system-wide while idle.
 
 The same named shortcut setting powers Home and Configuration. Detect duplicate assignments; capture mode suppresses recording commands until shortcut editing finishes. Initially support ordinary key combinations. Modifier-only, Fn, and mouse shortcuts require separate event and permission testing, as noted in [macOS feasibility](macos-feasibility.md).
 

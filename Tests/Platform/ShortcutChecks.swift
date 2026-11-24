@@ -31,19 +31,31 @@ private final class HotKeys {
         )
     }
 
-    func press(_ binding: ShortcutBinding, repeating times: Int = 1) {
+    /// Presses, repeats, and releases. The events carry their own times, so holds need no waiting.
+    func press(_ binding: ShortcutBinding, repeating times: Int = 1, heldFor duration: EventTime = 0) {
+        down(binding, repeating: times)
+        up(binding, heldFor: duration)
+    }
+
+    func down(_ binding: ShortcutBinding, repeating times: Int = 1) {
+        for _ in 0..<times { send(kEventHotKeyPressed, binding, at: 100) }
+    }
+
+    func up(_ binding: ShortcutBinding, heldFor duration: EventTime) {
+        send(kEventHotKeyReleased, binding, at: 100 + duration)
+    }
+
+    private func send(_ kind: Int, _ binding: ShortcutBinding, at time: EventTime) {
         let reference = active.first(where: { $0.value == binding })!.key
         var identifier = EventHotKeyID(signature: 0x414D_414E, id: identifiers[reference]!)
-        for kind in Array(repeating: kEventHotKeyPressed, count: times) + [kEventHotKeyReleased] {
-            var event: EventRef?
-            precondition(CreateEvent(nil, OSType(kEventClassKeyboard), UInt32(kind), 0, 0, &event) == noErr)
-            precondition(
-                SetEventParameter(
-                    event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
-                    MemoryLayout<EventHotKeyID>.size, &identifier) == noErr)
-            precondition(SendEventToEventTarget(event, GetApplicationEventTarget()) == noErr)
-            ReleaseEvent(event)
-        }
+        var event: EventRef?
+        precondition(CreateEvent(nil, OSType(kEventClassKeyboard), UInt32(kind), time, 0, &event) == noErr)
+        precondition(
+            SetEventParameter(
+                event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                MemoryLayout<EventHotKeyID>.size, &identifier) == noErr)
+        precondition(SendEventToEventTarget(event, GetApplicationEventTarget()) == noErr)
+        ReleaseEvent(event)
     }
 }
 
@@ -202,11 +214,95 @@ struct ShortcutChecks {
         precondition(cancelRequests == 2 && cancellations == 1 && !confirmation.isPending)
         manager.setRecordingActive(false)
         print("PASS: Holding Escape only prompts; a second distinct press confirms cancellation")
+        try await tapOrHoldChecks()
         try await monitorReplacementChecks()
         try await modifierChecks()
         print(
-            "Shortcut checks passed: registration rollback, modes, paste last, Escape, modifier capture/persistence, chord suppression, hold-to-talk, interruption, monitor recovery"
+            "Shortcut checks passed: registration rollback, modes, paste last, Escape, modifier capture/persistence, chord suppression, hold-to-talk, tap or hold, interruption, monitor recovery"
         )
+    }
+
+    @MainActor
+    private static func tapOrHoldChecks() async throws {
+        let keys = HotKeys()
+        let modifiers = ModifierKeys()
+        let manager = GlobalShortcuts(backend: keys.backend, modifierMonitor: modifiers.monitor)
+        let chord = ShortcutBinding.recording
+        let commandOption = ShortcutBinding(
+            keyCode: nil, modifiers: UInt32(cmdKey | optionKey), display: "⌥⌘")
+        let controlOption = ShortcutBinding(
+            keyCode: nil, modifiers: UInt32(controlKey | optionKey), display: "⌃⌥")
+        var events: [String] = []
+        func apply(_ toggle: ShortcutBinding, holds: Bool = true) {
+            precondition(
+                manager.setBindings(
+                    toggle: toggle, holdsToRecord: holds, pushToTalk: controlOption, changeMode: nil,
+                    onToggle: { events.append("toggle") }, onToggleHoldEnd: { events.append("end") },
+                    onPushToTalk: { events.append($0 ? "talk" : "release") }, onChangeMode: {}, onCancel: {}))
+        }
+        func expect(_ expected: [String], _ message: String) {
+            precondition(events == expected, "\(message): \(events)")
+            events = []
+        }
+        apply(chord, holds: false)
+        keys.press(chord, heldFor: 5)
+        expect(["toggle"], "Off by default, a long press must only toggle")
+
+        apply(chord)
+        keys.press(chord, heldFor: 0.299)
+        expect(["toggle"], "A quick tap must only toggle")
+        keys.down(chord, repeating: 8)
+        expect(["toggle"], "The press must toggle at once, ignoring key repeat")
+        keys.up(chord, heldFor: 0.301)
+        expect(["end"], "Releasing a hold must end it once")
+        keys.up(chord, heldFor: 9)
+        expect([], "A stray release must do nothing")
+        keys.press(chord)
+        expect(["toggle"], "A tap after a hold must toggle again")
+        keys.down(chord)
+        manager.setRecordingActive(true)
+        keys.up(chord, heldFor: 1)
+        expect(["toggle", "end"], "Registering Escape must not lose the release")
+        manager.setRecordingActive(false)
+        keys.down(chord)
+        apply(chord)
+        keys.up(chord, heldFor: 1)
+        expect(["toggle", "end"], "Replacing bindings must end the hold, and its late release do nothing")
+
+        apply(commandOption)
+        modifiers.tap([.command, .option])
+        try await Task.sleep(for: .milliseconds(360))
+        expect(["toggle"], "A modifier tap must only toggle")
+        modifiers.flags([.command, .option])
+        modifiers.flags([.command, .option])
+        try await waitForHold { !events.isEmpty }
+        expect(["toggle"], "A modifier hold must start while the modifiers are down")
+        modifiers.flags(.option)
+        expect(["end"], "A modifier hold must end on the first release")
+        modifiers.flags([])
+        expect([], "Releasing the rest must not count as a tap")
+        modifiers.flags([.command, .option])
+        modifiers.key([.command, .option])
+        try await Task.sleep(for: .milliseconds(360))
+        modifiers.flags([])
+        expect([], "A key chord must cancel a pending hold")
+        modifiers.flags([.command, .option])
+        modifiers.flags([.command, .option, .shift])
+        try await Task.sleep(for: .milliseconds(360))
+        modifiers.flags([])
+        expect([], "A larger combination must not start a hold")
+        modifiers.flags([.control, .option])
+        try await waitForHold { !events.isEmpty }
+        modifiers.flags([.control, .option, .command])
+        modifiers.flags([])
+        expect(["talk", "release"], "Push-to-talk must stay separate")
+
+        apply(commandOption, holds: false)
+        modifiers.flags([.command, .option])
+        try await Task.sleep(for: .milliseconds(360))
+        expect([], "Off, modifiers must wait for the release")
+        modifiers.flags([])
+        expect(["toggle"], "Off, a long modifier press must toggle on release")
     }
 
     @MainActor

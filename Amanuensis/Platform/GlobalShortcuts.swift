@@ -114,6 +114,11 @@ final class GlobalShortcuts {
         }
     }
 
+    /// How long the recording shortcut is held before its release ends the recording it started. A
+    /// shorter press is a tap. Push-to-talk keeps its own shorter delay for modifier-only shortcuts.
+    private static let toggleHoldThreshold: EventTime = 0.3
+    private static let pushToTalkDelay: EventTime = 0.18
+
     nonisolated private static let signature: OSType = 0x414D_414E
     private let backend: Backend
     private let modifierMonitor: ModifierMonitor
@@ -133,7 +138,10 @@ final class GlobalShortcuts {
     private var nextEventID: UInt32 = 0
     private var modeActions: [UInt32: UUID] = [:]
     private var pressed: Set<UInt32> = []
+    private var holdsToRecord = false
+    private var togglePressedAt: EventTime = 0
     private var onToggle: () -> Void = {}
+    private var onToggleHoldEnd: () -> Void = {}
     private var onPushToTalk: (Bool) -> Void = { _ in }
     private var onChangeMode: () -> Void = {}
     private var onPasteLast: () -> Void = {}
@@ -200,13 +208,17 @@ final class GlobalShortcuts {
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
     }
 
+    /// `onToggle` fires on every press of `toggle`. With `holdsToRecord`, `onToggleHoldEnd` follows when a
+    /// press past the hold threshold is released.
     @discardableResult
     func setBindings(
         toggle: ShortcutBinding,
+        holdsToRecord: Bool = false,
         pushToTalk: ShortcutBinding?,
         changeMode: ShortcutBinding?,
         pasteLast: ShortcutBinding? = nil,
         onToggle: @escaping () -> Void,
+        onToggleHoldEnd: @escaping () -> Void = {},
         onPushToTalk: @escaping (Bool) -> Void,
         onChangeMode: @escaping () -> Void,
         onPasteLast: @escaping () -> Void = {},
@@ -230,9 +242,13 @@ final class GlobalShortcuts {
         guard applyBindings(desired) else { return false }
         resetModifierGesture()
         if pressed.contains(Action.pushToTalk.rawValue) { self.onPushToTalk(false) }
+        // Its release may no longer arrive, and must not leave the microphone on.
+        if pressed.contains(Action.toggle.rawValue), self.holdsToRecord { self.onToggleHoldEnd() }
         pressed.removeAll()
+        self.holdsToRecord = holdsToRecord
         modeActions = desiredModes
         self.onToggle = onToggle
+        self.onToggleHoldEnd = onToggleHoldEnd
         self.onPushToTalk = onPushToTalk
         self.onChangeMode = onChangeMode
         self.onPasteLast = onPasteLast
@@ -365,9 +381,20 @@ final class GlobalShortcuts {
     private func stopModifierHold() {
         modifierHoldTask?.cancel()
         modifierHoldTask = nil
-        if modifierHoldStarted, pressed.remove(Action.pushToTalk.rawValue) != nil {
-            onPushToTalk(false)
+        guard modifierHoldStarted else { return }
+        if pressed.remove(Action.pushToTalk.rawValue) != nil { onPushToTalk(false) }
+        if pressed.remove(Action.toggle.rawValue) != nil { onToggleHoldEnd() }
+    }
+
+    /// The modifier-only shortcut that starts when exactly these modifiers are held, and after how long.
+    private func modifierHold(_ modifiers: UInt32) -> (action: Action, delay: EventTime)? {
+        if modifierBindings[Action.pushToTalk.rawValue]?.modifiers == modifiers {
+            return (.pushToTalk, Self.pushToTalkDelay)
         }
+        if holdsToRecord, modifierBindings[Action.toggle.rawValue]?.modifiers == modifiers {
+            return (.toggle, Self.toggleHoldThreshold)
+        }
+        return nil
     }
 
     private func handleModifierEvent(_ event: NSEvent) {
@@ -378,10 +405,8 @@ final class GlobalShortcuts {
             return
         }
         let modifiers = ShortcutModifiers.carbonFlags(event.modifierFlags)
+        if modifiers != modifierGesture.modifiers { stopModifierHold() }
         let completed = modifierGesture.update(modifiers)
-        if modifierBindings[Action.pushToTalk.rawValue]?.modifiers != modifiers {
-            stopModifierHold()
-        }
         if let completed, !modifierHoldStarted,
             let action = modifierBindings.first(where: { $0.value.modifiers == completed })?.key
         {
@@ -390,19 +415,18 @@ final class GlobalShortcuts {
         if modifiers == 0 {
             modifierHoldStarted = false
         } else if !modifierGesture.interrupted, !modifierGesture.isReleasing, !modifierHoldStarted,
-            modifierHoldTask == nil,
-            modifierBindings[Action.pushToTalk.rawValue]?.modifiers == modifiers
+            modifierHoldTask == nil, let hold = modifierHold(modifiers)
         {
             // Give normal key chords time to arrive before starting a modifier-only hold.
             modifierHoldTask = Task { [weak self] in
-                do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+                do { try await Task.sleep(for: .seconds(hold.delay)) } catch { return }
                 guard let self, !modifierGesture.interrupted, !modifierGesture.isReleasing,
                     modifierGesture.modifiers == modifiers
                 else { return }
                 modifierHoldTask = nil
                 modifierHoldStarted = true
-                pressed.insert(Action.pushToTalk.rawValue)
-                invoke(Action.pushToTalk.rawValue, isDown: true)
+                pressed.insert(hold.action.rawValue)
+                invoke(hold.action.rawValue, isDown: true)
             }
         }
     }
@@ -425,6 +449,15 @@ final class GlobalShortcuts {
             guard pressed.insert(actionID).inserted else { return noErr }
         } else {
             guard pressed.remove(actionID) != nil else { return noErr }
+        }
+        if actionID == Action.toggle.rawValue {
+            // The events' own times, so a tap handled late by a busy main thread stays a tap.
+            let time = GetEventTime(event)
+            if isDown {
+                togglePressedAt = time
+            } else if holdsToRecord, time - togglePressedAt >= Self.toggleHoldThreshold {
+                onToggleHoldEnd()
+            }
         }
         invoke(actionID, isDown: isDown)
         return noErr

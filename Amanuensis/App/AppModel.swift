@@ -88,6 +88,8 @@ final class AppModel {
     @ObservationIgnored private var activeID: UUID?
     @ObservationIgnored private var cancellingID: UUID?
     @ObservationIgnored private var activeEntry: RecordingEntry?
+    /// The recording the toggle shortcut's latest press started, if any. Releasing a hold ends only that one.
+    @ObservationIgnored private var heldRecordingID: UUID?
     @ObservationIgnored private var startupComplete = false
     @ObservationIgnored private var changingConfiguration = false
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
@@ -220,6 +222,16 @@ final class AppModel {
             requestCancelRecording()
         } else if !phase.isBusy {
             beginRecording()
+        }
+    }
+
+    /// The release that ends a hold. One that arrives before recording starts cancels it, so the
+    /// microphone never opens after the keys are up.
+    private func endHeldRecording() {
+        if phase == .preparing {
+            cancelRecording()
+        } else if phase == .recording {
+            stopRecording()
         }
     }
 
@@ -1376,12 +1388,14 @@ final class AppModel {
         defer { changingConfiguration = false }
         if settings.requireLocalProcessing && !previous.requireLocalProcessing { cloud.cancel() }
         if settings.toggleShortcut != previous.toggleShortcut
+            || settings.holdsToRecord != previous.holdsToRecord
             || settings.pushToTalkShortcut != previous.pushToTalkShortcut
             || settings.modeShortcut != previous.modeShortcut
             || settings.pasteLastShortcut != previous.pasteLastShortcut
         {
             if !configureShortcuts() {
                 settings.toggleShortcut = previous.toggleShortcut
+                settings.holdToRecord = previous.holdToRecord
                 settings.pushToTalkShortcut = previous.pushToTalkShortcut
                 settings.modeShortcut = previous.modeShortcut
                 settings.pasteLastShortcut = previous.pasteLastShortcut
@@ -1407,20 +1421,25 @@ final class AppModel {
     @discardableResult
     private func configureShortcuts(modes proposedModes: [DictationMode]? = nil) -> Bool {
         let succeeded = shortcuts.setBindings(
-            toggle: settings.toggleShortcut, pushToTalk: settings.pushToTalkShortcut,
+            toggle: settings.toggleShortcut, holdsToRecord: settings.holdsToRecord,
+            pushToTalk: settings.pushToTalkShortcut,
             changeMode: settings.modeShortcut, pasteLast: settings.pasteLastShortcut,
             onToggle: { [weak self] in
                 guard let self, !isEditingShortcut else { return }
+                let starts = !phase.isBusy
                 toggleRecording()
+                heldRecordingID = starts ? activeID : nil
+            },
+            onToggleHoldEnd: { [weak self] in
+                guard let self, let id = heldRecordingID, id == activeID else { return }
+                endHeldRecording()
             },
             onPushToTalk: { [weak self] down in
                 guard let self, !isEditingShortcut else { return }
                 if down {
                     if !phase.isBusy { beginRecording() }
-                } else if phase == .preparing {
-                    cancelRecording()
-                } else if phase == .recording {
-                    stopRecording()
+                } else {
+                    endHeldRecording()
                 }
             },
             onChangeMode: { [weak self] in

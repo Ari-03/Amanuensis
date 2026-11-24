@@ -58,6 +58,11 @@ struct ConfigurationView: View {
                             binding: $model.settings.toggleShortcut, onChange: model.saveConfiguration,
                             onEditing: { model.isEditingShortcut = $0 })
                     }
+                    Toggle("Hold to record", isOn: $model.settings.holdsToRecord)
+                    Text(
+                        "Hold the shortcut above to record until you release it. A quick press still starts and finishes."
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
                     Divider()
                     shortcutRow("Push to talk", subtitle: "Hold to record. Release to finish.") {
                         OptionalShortcutRecorder(
