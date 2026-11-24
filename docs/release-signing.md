@@ -90,8 +90,6 @@ spctl --assess --type execute -vv /Applications/Amanuensis.app
 
 Both should report `source=Notarized Developer ID`. After two notarized nightlies, confirm that updating from the first to the second keeps Accessibility access.
 
-When it works, remove the sentences in the README that call releases ad-hoc signed.
-
 ## How it works
 
 [`Scripts/sign-release.sh`](../Scripts/sign-release.sh) runs after the ad-hoc build and replaces its output. The certificate is imported into a temporary keychain that the script deletes on exit, whether or not signing worked. [`Scripts/sign-app.sh`](../Scripts/sign-app.sh) signs the helper first and the app last. Only the app has an entitlement, microphone input. Speech and cleanup need no JIT or library exceptions because their code is statically linked and Metal compiles shaders outside the process. System audio capture is a macOS permission, not an entitlement.
