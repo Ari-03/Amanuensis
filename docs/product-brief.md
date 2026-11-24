@@ -42,6 +42,7 @@ Provide Voice to text, Message, Mail, Notes, Meeting, and Custom presets. Let th
 | Playback during recording | Offer keep playing, pause, lower volume, and mute where the implementation can support them. |
 | System audio | Allow meeting capture to include computer audio. |
 | Identify speakers | Desired if practical. Feasibility and model requirements remain open. |
+| Filler removal | Optionally leave um, uh and similar out of English results. The original transcript keeps them. |
 | Capitalize on insertion | Optionally capitalize the beginning of inserted text. |
 | Auto-paste | Control whether completed text is inserted into the destination. |
 | Delete | Delete the mode. The screenshot's Delete this mode is separate from recording retention. |

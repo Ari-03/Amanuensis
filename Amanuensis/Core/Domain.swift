@@ -160,6 +160,13 @@ struct DictationMode: Identifiable, Codable, Equatable, Sendable {
     /// Overrides the Settings language for this mode. Nil means "same as Settings", and is what
     /// configuration saved before languages existed decodes to.
     var language: SpeechLanguage? = nil
+    /// Nil until changed, which means off. Optional so earlier saves still decode; read `removesFillers`.
+    var fillerRemoval: Bool? = nil
+    /// Whether results in English leave out "um", "uh" and similar.
+    var removesFillers: Bool {
+        get { fillerRemoval ?? false }
+        set { fillerRemoval = newValue }
+    }
 
     var symbol: String { customSymbol ?? preset.symbol }
 

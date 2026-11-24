@@ -529,15 +529,17 @@ final class AppModel {
             return
         }
 
-        var selectedText = entry.rawText
-        if let cleanup = entry.cleanupSnapshot, entry.cleanupNotice == nil {
+        let transcript = entry.transcript
+        var selectedText = transcript
+        // A transcript of nothing but fillers leaves nothing to clean or insert.
+        if let cleanup = entry.cleanupSnapshot, entry.cleanupNotice == nil, !transcript.isEmpty {
             phase = .cleaning
             statusMessage = "Cleaning up with \(cleanup.name)…"
             entry.status = .cleaning
             try store?.upsertRecording(entry)
             cleanupSkipped = false
             let result: Result<String, any Error>
-            do { result = .success(try await clean(entry.rawText, with: cleanup, for: entry)) } catch {
+            do { result = .success(try await clean(transcript, with: cleanup, for: entry)) } catch {
                 result = .failure(error)
             }
             // Skip wins even if the model finished; its cancellation error is ignored.
@@ -554,7 +556,7 @@ final class AppModel {
             case (false, .failure(let error)):
                 entry.error = "Cleanup failed: \(error.localizedDescription)"
                 entry.finalText = TextRules.apply(
-                    entry.rawText, vocabulary: entry.vocabularySnapshot ?? [],
+                    transcript, vocabulary: entry.vocabularySnapshot ?? [],
                     capitalize: entry.mode.capitalize)
                 entry.status = .failed
                 originalOffer = (id, entry.finalText)
