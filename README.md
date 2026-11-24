@@ -2,7 +2,7 @@
 
 A native macOS dictation app with local speech recognition, optional transcript cleanup, and your own API keys. Compatible downloaded models have no subscription or usage quota.
 
-The Release app builds and its ad-hoc signature verifies. Packaged Whisper-to-S1-mini processing passed with network access denied. This remains a development build: live microphone capture, system audio, cross-app insertion, and real API calls still need validation. See [implementation status](docs/implementation-status.md) for the evidence and remaining work.
+The Release app builds and its signature verifies. Packaged Whisper-to-S1-mini processing passed with network access denied. This remains a development build: live microphone capture, system audio, cross-app insertion, and real API calls still need validation. See [implementation status](docs/implementation-status.md) for the evidence and remaining work.
 
 ## Download
 
@@ -10,7 +10,7 @@ Download an `Amanuensis-<version>-arm64.dmg` from [GitHub Releases](https://gith
 
 Nightlies are marked **Pre-release** and publish after each successful merge build on `main`. The newest 30 nightlies remain available. Stable releases appear when a maintainer tags a tested version; the [latest stable release](https://github.com/Ari-03/Amanuensis/releases/latest) link becomes available after the first stable is published. If the Releases list is empty, the first successful nightly has not published yet.
 
-The `.sig` beside each DMG lets the app verify automatic updates; you only need to download the DMG. Builds are currently ad-hoc signed and not notarized, so macOS may block a downloaded copy. Follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445) only for a build you trust.
+The `.sig` beside each DMG lets the app verify automatic updates; you only need to download the DMG. Releases from `0.2.0-nightly.39` on are signed with Developer ID and notarized by Apple. Earlier ones were ad-hoc signed, so macOS may block them.
 
 ## Build and run
 
@@ -56,7 +56,7 @@ CI uses an Apple Silicon `macos-26` runner with Xcode 26.6, checks the Metal com
 
 CI caches Xcode's `DerivedData` to reuse downloaded dependencies and compiled code. Each run still builds the app and verifies the DMG. Caches are isolated by runner image, architecture, and Xcode version. Restoration prefers matching dependency/build settings, then falls back to an earlier build with the same toolchain; Xcode rebuilds changed inputs and resolves the committed dependency versions. A cache miss performs a full build. The first build on `main` populates a cache that later PRs can reuse; GitHub prevents `main` from restoring PR caches. Older caches are automatically evicted under GitHub's [cache storage and access rules](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
 
-These are development builds with ad-hoc signatures, so macOS may block a downloaded copy. For a build you trust, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445). The release workflows can sign with Developer ID and notarize, but only once the repository has the certificate and notarization secrets described in [release signing](docs/release-signing.md). Until then releases stay ad-hoc signed.
+Nightly and stable releases are signed with Developer ID and notarized, using the secrets described in [release signing](docs/release-signing.md). Local, pull request, and manual builds stay ad-hoc signed, so macOS may block a downloaded copy. For one you trust, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445).
 
 The repository's `main` protection requires pull requests, the **Checks** and **Build DMG** jobs, an up-to-date branch, and resolved review conversations. It blocks force pushes and branch deletion and applies to administrators too. Required reviewer approvals stay at zero so a sole maintainer can merge their own PR after CI passes. GitHub stores these settings outside the repository, under **Settings → Branches**.
 
@@ -64,7 +64,7 @@ The repository's `main` protection requires pull requests, the **Checks** and **
 
 The app checks GitHub Releases for newer builds. **Settings → Updates** shows the installed version, a **Stable** or **Preview** channel picker, an automatic-check toggle, and **Check now**. The app menu also has **Check for Updates…**. Automatic checks run shortly after launch and every six hours. Stable receives only full releases. Preview receives nightlies, other prereleases, and stable releases, choosing the newest version. A fresh nightly install starts on Preview; existing saved channel choices are preserved. Select Preview on an existing `0.1.0` install to receive nightlies. Switching a newer nightly to Stable waits for a newer stable release and does not downgrade the app.
 
-When a newer version exists on the chosen channel, the app downloads its disk image, verifies the Ed25519 signature published beside it, and shows **Restart to update** on Home, in Settings, and in the menu-bar menu. Installing mounts the image, copies the app next to the running bundle, verifies its code signature and version, clears quarantine, swaps the bundles, and relaunches. Installing is blocked while recording, and it fails with an explanation if the app runs from a read-only or translocated location. A rejected signature discards the download. Because these builds are ad-hoc signed, macOS may ask you to grant Accessibility access again after an update. Updates between Developer ID builds are expected to keep it; see [release signing](docs/release-signing.md#updating-existing-installs).
+When a newer version exists on the chosen channel, the app downloads its disk image, verifies the Ed25519 signature published beside it, and shows **Restart to update** on Home, in Settings, and in the menu-bar menu. Installing mounts the image, copies the app next to the running bundle, verifies its code signature and version, clears quarantine, swaps the bundles, and relaunches. Installing is blocked while recording, and it fails with an explanation if the app runs from a read-only or translocated location. A rejected signature discards the download. Updating from an ad-hoc signed build may mean granting Accessibility access again. Updates between Developer ID builds are expected to keep it; see [release signing](docs/release-signing.md#updating-existing-installs).
 
 ## Publishing releases
 
