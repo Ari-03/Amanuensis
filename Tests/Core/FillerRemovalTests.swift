@@ -11,61 +11,43 @@ struct FillerRemovalTests {
     @Test(arguments: [
         ("I um think", "I think"),
         ("I uh uh think erm so", "I think so"),
-        ("Um, I think so.", "I think so."),
-        ("Um I think so", "I think so"),
         ("Um, uh, we should go", "We should go"),
-        ("um, we should go", "we should go"),
+        ("um we should go", "we should go"),
         ("Right. Uhm, let's go. Hmm... okay.", "Right. Let's go. Okay."),
-        ("Right. Um. Let's go.", "Right. Let's go."),
-        ("Is it? Uh, yes", "Is it? Yes"),
-        ("\"Um, yes,\" he said. Uh, \"no\"", "\"Yes,\" he said. \"No\""),
-        ("(um, maybe) (like this, um)", "(maybe) (like this)"),
-        ("Um — we left", "We left"),
-        ("Um, iPhone prices. Uh, 5 people. Hm, I'm in", "iPhone prices. 5 people. I'm in"),
-    ])
-    func sentencesOpenCleanly(text: String, expected: String) { #expect(clean(text) == expected) }
-
-    @Test(arguments: [
+        ("Right. Um. Let's go. Uh, iPhone prices", "Right. Let's go. iPhone prices"),
+        ("Is it? Uh, 5 people", "Is it? 5 people"),
         ("I was, um, going", "I was, going"),
         ("apples, um, oranges", "apples, oranges"),
         ("apples um, oranges", "apples, oranges"),
-        ("apples, um oranges", "apples, oranges"),
-        ("apples, um, uh, oranges", "apples, oranges"),
-        ("I think—um—we left", "I think—we left"),
-        ("I think — um — we left", "I think — we left"),
-        ("I think, um—we left", "I think, we left"),
+        ("apples, um uh oranges", "apples, oranges"),
         ("I was, um... going", "I was... going"),
         ("I think so, um.", "I think so."),
-        ("You mean, uh?", "You mean?"),
         ("I think so, um", "I think so"),
-        ("First line, um\nUh, second\n\nUm.\n\nThird um\n", "First line\nSecond\n\nThird\n"),
+        ("First line, um\nUh, second\nthird um\n", "First line\nSecond\nthird"),
+        ("Um.", ""), ("Uh, um...", ""), ("Um.\num", ""),
     ])
-    func onePauseAtMostSurvives(text: String, expected: String) { #expect(clean(text) == expected) }
-
-    @Test(arguments: ["Um", "Um.", "Uh, um...", "  um  ", "Um.\nUh"])
-    func onlyFillersLeaveNothing(text: String) { #expect(clean(text) == "") }
+    func fillersGo(text: String, expected: String) { #expect(clean(text) == expected) }
 
     @Test(arguments: [
         "I like it, you know, so we mean well, right?",
         "Uh-huh, uh-oh, mhm, mm, ah, er, the ER, umbrella, hummus, human, sum",
         "She attends UM and reads HMM papers. UM won.",
-        "I met Um Ki-joon and Mr. Um at Umm Qasr.",
-        "5 um and 10 hm", "um's um-hum _um um_ #um um.com um/uh 'um", "Hmm? Hmm!",
-        "The word \"um\" and (uh) and “um.”",
-        "  Leading and\n\n  inner   spacing, stays.  ", "ümlaut, 会um議, naïve um\u{301}", "",
+        "Umm Kulthum sang. Um and Ki-joon met Mr. Um, then Mrs. Um, at Umm Qasr.",
+        "5 um and 10 hm", "um's um-hum _um um_ #um um.com um/uh 'um", "Hmm? Hmm! You mean um?",
+        "The word \"um\" and (uh) and “um.”", "I think — um, we—um—left",
+        "Leading and\n\n  inner   spacing, stays.", "ümlaut, 会um議, naïve um\u{301}", "", "Um",
     ])
     func everythingElseIsKept(text: String) { #expect(clean(text) == text) }
 
     @Test func vocabularyPhrasesAreKept() {
-        #expect(clean("Umm Kulthum sang, um, well") == "Kulthum sang, well")
+        let vocabulary = [
+            VocabularyEntry(word: "umm"), VocabularyEntry(word: "oum uh (band)", replacement: "x"),
+        ]
         #expect(
-            clean(
-                "Umm Kulthum sang, um, well",
-                keeping: [
-                    VocabularyEntry(word: "umm"), VocabularyEntry(word: "umm kulthum", replacement: "x"),
-                ]) == "Umm Kulthum sang, well")
-        #expect(clean("Um, uh", keeping: [VocabularyEntry(word: "um")]) == "Um")
-        #expect(clean("Hm, um yes", keeping: [VocabularyEntry(word: "um")]) == "um yes")
+            clean("the Oum uh (band), umm, uh, and um so", keeping: vocabulary)
+                == "the Oum uh (band), umm, and so")
+        #expect(clean("Uh, umm, well", keeping: vocabulary) == "Umm, well")
+        #expect(clean("the Oum uh band", keeping: []) == "the Oum band")
     }
 
     @Test func appliesOnlyToEnglishWhenTheModeAsks() {

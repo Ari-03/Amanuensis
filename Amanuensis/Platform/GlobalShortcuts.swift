@@ -114,11 +114,9 @@ final class GlobalShortcuts {
         }
     }
 
-    /// How long the recording shortcut is held before its release ends the recording it started. A
-    /// shorter press is a tap. Push-to-talk keeps its own shorter delay for modifier-only shortcuts.
+    /// How long a key-chord recording shortcut is held before its release ends the recording it started.
+    /// A shorter press is a tap. Modifier-only shortcuts act on their release, so only push-to-talk holds them.
     private static let toggleHoldThreshold: EventTime = 0.3
-    private static let pushToTalkDelay: EventTime = 0.18
-
     nonisolated private static let signature: OSType = 0x414D_414E
     private let backend: Backend
     private let modifierMonitor: ModifierMonitor
@@ -381,20 +379,9 @@ final class GlobalShortcuts {
     private func stopModifierHold() {
         modifierHoldTask?.cancel()
         modifierHoldTask = nil
-        guard modifierHoldStarted else { return }
-        if pressed.remove(Action.pushToTalk.rawValue) != nil { onPushToTalk(false) }
-        if pressed.remove(Action.toggle.rawValue) != nil { onToggleHoldEnd() }
-    }
-
-    /// The modifier-only shortcut that starts when exactly these modifiers are held, and after how long.
-    private func modifierHold(_ modifiers: UInt32) -> (action: Action, delay: EventTime)? {
-        if modifierBindings[Action.pushToTalk.rawValue]?.modifiers == modifiers {
-            return (.pushToTalk, Self.pushToTalkDelay)
+        if modifierHoldStarted, pressed.remove(Action.pushToTalk.rawValue) != nil {
+            onPushToTalk(false)
         }
-        if holdsToRecord, modifierBindings[Action.toggle.rawValue]?.modifiers == modifiers {
-            return (.toggle, Self.toggleHoldThreshold)
-        }
-        return nil
     }
 
     private func handleModifierEvent(_ event: NSEvent) {
@@ -405,8 +392,10 @@ final class GlobalShortcuts {
             return
         }
         let modifiers = ShortcutModifiers.carbonFlags(event.modifierFlags)
-        if modifiers != modifierGesture.modifiers { stopModifierHold() }
         let completed = modifierGesture.update(modifiers)
+        if modifierBindings[Action.pushToTalk.rawValue]?.modifiers != modifiers {
+            stopModifierHold()
+        }
         if let completed, !modifierHoldStarted,
             let action = modifierBindings.first(where: { $0.value.modifiers == completed })?.key
         {
@@ -415,18 +404,19 @@ final class GlobalShortcuts {
         if modifiers == 0 {
             modifierHoldStarted = false
         } else if !modifierGesture.interrupted, !modifierGesture.isReleasing, !modifierHoldStarted,
-            modifierHoldTask == nil, let hold = modifierHold(modifiers)
+            modifierHoldTask == nil,
+            modifierBindings[Action.pushToTalk.rawValue]?.modifiers == modifiers
         {
             // Give normal key chords time to arrive before starting a modifier-only hold.
             modifierHoldTask = Task { [weak self] in
-                do { try await Task.sleep(for: .seconds(hold.delay)) } catch { return }
+                do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
                 guard let self, !modifierGesture.interrupted, !modifierGesture.isReleasing,
                     modifierGesture.modifiers == modifiers
                 else { return }
                 modifierHoldTask = nil
                 modifierHoldStarted = true
-                pressed.insert(hold.action.rawValue)
-                invoke(hold.action.rawValue, isDown: true)
+                pressed.insert(Action.pushToTalk.rawValue)
+                invoke(Action.pushToTalk.rawValue, isDown: true)
             }
         }
     }

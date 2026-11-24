@@ -59,8 +59,11 @@ struct ConfigurationView: View {
                             onEditing: { model.isEditingShortcut = $0 })
                     }
                     Toggle("Hold to record", isOn: $model.settings.holdsToRecord)
+                        .disabled(model.settings.toggleShortcut.isModifierOnly)
                     Text(
-                        "Hold the shortcut above to record until you release it. A quick press still starts and finishes."
+                        model.settings.toggleShortcut.isModifierOnly
+                            ? "Needs a shortcut with a key. To hold only modifiers, use Push to talk."
+                            : "Hold the shortcut above to record until you release it. A quick press still starts and finishes."
                     )
                     .font(.caption).foregroundStyle(.secondary)
                     Divider()

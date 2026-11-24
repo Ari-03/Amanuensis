@@ -1187,29 +1187,29 @@ final class AppModel {
     }
 
     private func pasteOriginal() {
-        if let offer = originalOffer { paste(offer.text, from: offer.id) }
+        guard let offer = originalOffer, let delivered = paste(offer.text, from: offer.id) else { return }
+        if var entry = history.first(where: { $0.id == offer.id }) {
+            entry.record(delivered)
+            do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
+            refreshHistory()
+        }
     }
 
-    /// Paste last transcript: the newest result in History, even one that mode settings or an unverified
-    /// field kept from pasting.
+    /// Paste last transcript: the newest result in History, which keeps how it was first delivered.
     private func pasteLastTranscript() {
         if let entry = history.newestFinished { paste(entry.finalText, from: entry.id) }
     }
 
     /// Delivers a History entry's text with the same focus check, clipboard fallback and pill outcome as
-    /// automatic paste, then History records what happened. Does nothing while a job is running.
-    private func paste(_ text: String, from id: UUID) {
-        guard !phase.isBusy, activeID == nil, cancellingID == nil else { return }
+    /// automatic paste. Nil, with nothing done, while a job is running.
+    @discardableResult private func paste(_ text: String, from id: UUID) -> DeliveryOutcome? {
+        guard !phase.isBusy, activeID == nil, cancellingID == nil else { return nil }
         let delivered = delivery.deliver(text: text)
         refreshAccessibility()
-        if var entry = history.first(where: { $0.id == id }) {
-            entry.record(delivered)
-            do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
-            refreshHistory()
-        }
         showOutcome(cause(of: delivered), for: id)
         phase = .complete
         statusMessage = delivered.message
+        return delivered
     }
 
     func setRecorderHovering(_ hovering: Bool) {

@@ -428,9 +428,10 @@ struct AppSettings: Codable, Equatable, Sendable {
         set { livePreview = newValue }
     }
     /// Whether holding the recording shortcut records until it is released. Off unless chosen: a long
-    /// press otherwise starts a recording that keeps going after the release.
+    /// press otherwise starts a recording that keeps going after the release. Never for a modifier-only
+    /// shortcut, which acts on release; push-to-talk covers it.
     var holdsToRecord: Bool {
-        get { holdToRecord ?? false }
+        get { holdToRecord == true && !toggleShortcut.isModifierOnly }
         set { holdToRecord = newValue }
     }
 }

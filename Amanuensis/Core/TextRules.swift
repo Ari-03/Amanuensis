@@ -1,8 +1,8 @@
 import Foundation
 
-/// `apply` makes literal vocabulary corrections in one pass, then capitalizes the first letter. It works
-/// across scripts: caseless scripts are left alone, and in scripts written without spaces, such as Chinese,
-/// Japanese and Thai, a phrase matches wherever it appears. `removingFillers` is for English alone.
+/// Applies literal vocabulary corrections to the original transcript in one pass, then capitalizes
+/// the first letter. Works across scripts: caseless scripts are left alone, and in scripts written
+/// without spaces, such as Chinese, Japanese and Thai, a phrase matches wherever it appears.
 enum TextRules: Sendable {
     static func apply(_ text: String, vocabulary: [VocabularyEntry], capitalize: Bool) -> String {
         let rules = vocabulary.enumerated().compactMap { offset, entry -> ReplacementRule? in
@@ -20,7 +20,14 @@ enum TextRules: Sendable {
             var replacement = ""
             if startsWholeWord(at: cursor, in: text) {
                 for rule in rules {
-                    guard let range = match(rule.source, at: cursor, in: text) else { continue }
+                    guard
+                        let range = text.range(
+                            of: rule.source,
+                            options: [.anchored, .caseInsensitive],
+                            range: cursor..<text.endIndex,
+                            locale: Locale(identifier: "en_US_POSIX")
+                        ), endsWholeWord(at: range.upperBound, in: text)
+                    else { continue }
                     matchedRange = range
                     replacement = rule.replacement
                     break
@@ -37,146 +44,76 @@ enum TextRules: Sendable {
 
         // Title case, not upper case: Georgian keeps its letters, and "ǆ" becomes "ǅ" rather than "Ǆ".
         if capitalize, let firstLetter = result.firstIndex(where: { $0.isLetter }) {
-            result.replaceSubrange(firstLetter...firstLetter, with: titleCased(result[firstLetter]))
+            let end = result.index(after: firstLetter)
+            let scalars = result[firstLetter].unicodeScalars
+            let titled =
+                (scalars.first?.properties.titlecaseMapping ?? "")
+                + String(String.UnicodeScalarView(scalars.dropFirst()))
+            result.replaceSubrange(firstLetter..<end, with: titled)
         }
         return result
     }
 
-    /// English hesitations that are never words. "Er" (an ER), "mm" (millimetres), "mhm" and "uh-huh" (yes)
-    /// are not here, nor is anything that can carry meaning, such as "like", "so" or "you know".
-    private static let fillers: Set<String> = [
-        "um", "umm", "ummm", "uh", "uhh", "uhhh", "uhm", "uhmm", "erm", "ermm", "hm", "hmm", "hmmm",
-    ]
+    /// A hesitation that is never a word, the punctuation that may be dropped with it, and the spaces after.
+    /// "Mr. Um" is a name; anything else touching the word makes it something other than a filler.
+    private static let filler =
+        #"(?<!\S)(?<!\b(?:Mr|Mrs|Ms|Dr|Prof)\. )([Uu]m{1,3}|[Uu]h{1,3}|[Uu]hm{1,2}|[Ee]rm{1,2}|[Hh]m{1,3})"#
+        + #"(\.\.\.|…|[,.])?(?!\S)[ \t]*"#
 
-    /// Leaves standalone fillers out of an English transcript, with the pause around each one. Between two
-    /// words, a comma or dash beside a filler stays once, so list items and clauses never run together.
-    /// Anything uncertain is kept: capitals inside a sentence (names, "UM"), words joined by a hyphen or
-    /// apostrophe, a filler quoted on its own, a possible unit after a number, "Hmm?", and every phrase in
-    /// the vocabulary.
+    /// Leaves standalone "um", "uh" and similar out of an English transcript. A comma beside one stays once
+    /// between two words, so list items never run together. Anything uncertain is kept: a capitalized one
+    /// inside a sentence or without punctuation (names), one beside a number, dash or quote, and every
+    /// vocabulary phrase.
     static func removingFillers(from text: String, keeping vocabulary: [VocabularyEntry]) -> String {
-        let kept = vocabulary.map(\.word).filter { !$0.isEmpty }
+        let phrases = vocabulary.map(\.word).filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+            .map(NSRegularExpression.escapedPattern).joined(separator: "|")
+        // A phrase matches first and whole, without the filler's capture group.
+        let kept = phrases.isEmpty ? "" : #"(?<!\w)(?i:\#(phrases))(?!\w)|"#
+        guard let pattern = try? NSRegularExpression(pattern: kept + filler) else { return text }
         var result = ""
         var cursor = text.startIndex
         // A capitalized filler was left out, so the next word starts its sentence.
         var capitalizeNext = false
-        while cursor < text.endIndex {
-            var end = text.index(after: cursor)
-            if startsWholeWord(at: cursor, in: text) {
-                if let phrase = kept.compactMap({ match($0, at: cursor, in: text)?.upperBound }).max() {
-                    end = phrase
-                    capitalizeNext = false
-                } else if let next = skipFiller(at: cursor, in: text, result: &result) {
-                    capitalizeNext = capitalizeNext || text[cursor].isUppercase
-                    cursor = next
-                    continue
-                } else if text[cursor].isLetter || text[cursor].isNumber {
-                    end = text[cursor...].firstIndex { !isWordCharacter($0) } ?? text.endIndex
-                    // A word with its own capitals, such as "iPhone", keeps them.
-                    if capitalizeNext, !text[cursor..<end].contains(where: \.isUppercase) {
-                        result += titleCased(text[cursor])
-                        cursor = text.index(after: cursor)
-                    }
-                    capitalizeNext = false
-                }
+        func copy(upTo end: String.Index) {
+            guard cursor < end else { return }
+            let word = text[cursor..<end].prefix(while: \.isLetter)
+            // A word with its own capitals, such as "iPhone", keeps them.
+            if capitalizeNext, let first = word.first, word == word.lowercased() {
+                result += first.uppercased()
+                cursor = text.index(after: cursor)
             }
             result += text[cursor..<end]
             cursor = end
+            capitalizeNext = false
         }
-        return result
-    }
-
-    /// Where copying resumes if a filler at `index` can be left out, after joining `result`, the text kept so
-    /// far, to what follows. Nil keeps the word.
-    private static func skipFiller(
-        at index: String.Index, in text: String, result: inout String
-    ) -> String.Index? {
-        let word = text[index...].prefix(while: \.isLetter)
-        guard fillers.contains(word.lowercased()), !word.dropFirst().contains(where: \.isUppercase)
-        else { return nil }
-        var rest = text[word.endIndex...]
-        // Punctuation follows the filler directly, except a dash, which may stand apart.
-        let spaced = rest.drop(while: isSpace)
-        let standsApart = spaced.first.map(isDash) == true
-        if standsApart { rest = spaced }
-        let punctuation = rest.prefix { isPause($0) || isSentenceEnd($0) }
-        rest = rest[punctuation.endIndex...]
-        let opened = result.last.map(isOpening) == true
-        let closed = rest.first.map(isClosing) == true
-        let startsClean = result.last.map { $0.isWhitespace || isDash($0) || isOpening($0) } ?? true
-        let endsClean = rest.first?.isWhitespace ?? true || closed || punctuation.last.map(isDash) == true
-        guard startsClean, endsClean, !(opened && closed) else { return nil }
-
-        let spoken = trimmed(result[...], while: isSpace)
-        let isLineStart = spoken.last?.isNewline ?? true
-        let startsSentence =
-            isLineStart || opened
-            || trimmed(spoken, while: isClosing).last.map(isSentenceEnd) == true
-        if startsSentence {
-            guard !punctuation.contains(where: { $0 == "?" || $0 == "!" }),
-                !["Mr.", "Mrs.", "Ms.", "Dr.", "Prof."].contains(where: spoken.hasSuffix)
-            else { return nil }
-            // The filler opens the sentence or is all of it, so its own punctuation goes too.
-            rest = rest.drop { isLineStart ? $0.isWhitespace : isSpace($0) }
-            if rest.isEmpty {
-                result = String(trimmed(spoken, while: \.isWhitespace))
-            } else if rest.first?.isNewline == true || closed {
-                result = String(spoken)
+        for match in pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard Range(match.range(at: 1), in: text) != nil, let range = Range(match.range, in: text)
+            else { continue }
+            copy(upTo: range.lowerBound)
+            let before = String(result.reversed().drop { $0 == " " || $0 == "\t" }.reversed())
+            let punctuation = Range(match.range(at: 2), in: text).map { text[$0] } ?? ""
+            let isCapital = text[cursor].isUppercase
+            let opensSentence = before.last.map { $0.isNewline || ".?!…".contains($0) } ?? true
+            let joins = before.last.map { $0.isLetter || $0 == "," } ?? false
+            guard opensSentence ? !isCapital || !punctuation.isEmpty : joins && !isCapital else { continue }
+            cursor = range.upperBound
+            let endsLine = cursor == text.endIndex || text[cursor].isNewline
+            result = before
+            if !opensSentence {
+                // One comma at most, and none before the end of a sentence or line.
+                if punctuation != "," && !punctuation.isEmpty || endsLine {
+                    while result.last == "," { result.removeLast() }
+                    result += punctuation == "," ? "" : punctuation
+                } else if result.last != "," {
+                    result += punctuation
+                }
             }
-            return rest.startIndex
+            if !endsLine, result.last?.isNewline == false { result += " " }
+            capitalizeNext = capitalizeNext || opensSentence && isCapital
         }
-        guard word.first?.isUppercase == false, spoken.last?.isNumber == false else { return nil }
-        let endsLine = rest.drop(while: isSpace).first?.isNewline ?? true
-        let end = punctuation.firstIndex(where: isSentenceEnd)
-        if end != nil || endsLine || closed {
-            // The sentence ends here, so the pause that led into the filler goes.
-            let sentence = trimmed(spoken) { isSpace($0) || isPause($0) }
-            result = String(sentence) + punctuation[(end ?? punctuation.endIndex)...]
-        } else if spoken.last.map(isPause) == true {
-            // A dash written against the words stays against them.
-            if result.last.map(isDash) == true { rest = rest.drop(while: isSpace) }
-            result = String(spoken)
-        } else {
-            result = String(spoken) + (standsApart ? " " : "") + punctuation
-        }
-        // A dropped dash may have been all that separated the words.
-        if let next = rest.first, isWordCharacter(next), result.last.map(isDash) != true { result += " " }
-        return rest.startIndex
+        copy(upTo: text.endIndex)
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-
-    private static func match(
-        _ phrase: String, at index: String.Index, in text: String
-    ) -> Range<String.Index>? {
-        guard
-            let range = text.range(
-                of: phrase, options: [.anchored, .caseInsensitive], range: index..<text.endIndex,
-                locale: Locale(identifier: "en_US_POSIX")),
-            endsWholeWord(at: range.upperBound, in: text)
-        else { return nil }
-        return range
-    }
-
-    private static func titleCased(_ character: Character) -> String {
-        let scalars = character.unicodeScalars
-        return (scalars.first?.properties.titlecaseMapping ?? "")
-            + String(String.UnicodeScalarView(scalars.dropFirst()))
-    }
-
-    private static func trimmed(
-        _ text: Substring, while matches: (Character) -> Bool
-    ) -> Substring {
-        var text = text
-        while let last = text.last, matches(last) { text.removeLast() }
-        return text
-    }
-
-    private static func isSpace(_ character: Character) -> Bool {
-        character.isWhitespace && !character.isNewline
-    }
-    private static func isDash(_ character: Character) -> Bool { "—–".contains(character) }
-    private static func isPause(_ character: Character) -> Bool { ",;:—–".contains(character) }
-    private static func isSentenceEnd(_ character: Character) -> Bool { ".?!…".contains(character) }
-    private static func isOpening(_ character: Character) -> Bool { "\"“‘([".contains(character) }
-    private static func isClosing(_ character: Character) -> Bool { "\"”)]".contains(character) }
 
     /// Counts letter/number runs, retaining internal apostrophes in contractions and names.
     static func wordCount(_ text: String) -> Int {
