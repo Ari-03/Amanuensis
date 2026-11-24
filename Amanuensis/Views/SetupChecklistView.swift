@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// First-run setup on Home: microphone, a speech model, and text insertion. Home shows it until
-/// `hasCompletedSetup` is set, when every step is done or skipped, or when the user hides it.
+/// First-run setup on Home: microphone, a speech model, text insertion, and optional cleanup. Home shows
+/// it until `hasCompletedSetup` is set, when the first three are done or skipped, or when the user hides
+/// it. Home then shows the cleanup step on its own card.
 struct SetupChecklistView: View {
     @Bindable var model: AppModel
+    /// Opens an API cleanup model's configuration.
+    let onConnect: (ModelDescriptor) -> Void
 
     var body: some View {
         let checklist = model.setupChecklist
@@ -22,6 +25,14 @@ struct SetupChecklistView: View {
             speechStep(checklist.speechBlocker)
             Divider()
             textInsertionStep(checklist)
+            if !model.modesAwaitingCleanup.isEmpty {
+                Divider()
+                SetupStep(number: 4, title: "Cleanup (optional)", state: .waiting) {
+                    CleanupSetup(model: model, onConnect: onConnect)
+                } actions: {
+                    Button("Not now") { model.settings.skippedCleanupSetup = true }
+                }
+            }
         }
     }
 
@@ -155,6 +166,59 @@ struct SetupChecklistView: View {
                     }
                     Button("Allow", action: model.requestAccessibility).buttonStyle(.borderedProminent)
                 }
+            }
+        }
+    }
+
+    private func detail(_ text: String) -> some View {
+        Text(text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// The optional cleanup step, in the checklist and then on Home: the modes a cleanup model unlocks, and
+/// the two ways to get one. Nothing is sent to an API until the user connects it and chooses it here.
+struct CleanupSetup: View {
+    let model: AppModel
+    let onConnect: (ModelDescriptor) -> Void
+
+    var body: some View {
+        let readiness = model.readiness
+        let names = model.modesAwaitingCleanup.map(\.name).formatted(.list(type: .and))
+        let choices = model.catalogModels(for: .cleanup)
+        let checklist = model.setupChecklist
+        let dictates = checklist.microphone == .granted && checklist.speechBlocker == nil
+        let ready = choices.filter { readiness.blocker(for: $0, language: .automatic) == nil }
+        VStack(alignment: .leading, spacing: 10) {
+            detail(
+                "Plain dictation \(dictates ? "works now" : "works without this"). \(names) can also shape what you say, with punctuation, tone and lists, once you add a cleanup model. Until then, you get the plain transcript."
+            )
+            ForEach(ready) { choice in
+                Button("Use \(choice.name) for \(names)") { model.useForAwaitingCleanup(choice) }
+            }
+            ForEach(choices.filter { readiness.availability(of: $0, language: .automatic) == .needsDownload })
+            {
+                choice in
+                ModelDownloadRow(
+                    descriptor: choice, progress: model.library.progress[choice.id],
+                    resumable: model.library.resumable(choice.id), error: model.library.errors[choice.id],
+                    note: "\(choice.summary) Runs on this Mac.",
+                    onDownload: { Task { await model.download(choice) } },
+                    onCancel: { model.library.cancelDownload(choice.id) })
+            }
+            if model.settings.requireLocalProcessing {
+                detail(
+                    "Or use an API, which sends transcript text to its provider. Turn off Require local processing first."
+                )
+                Button("Open Settings") { model.selectedSection = .configuration }
+                    .buttonStyle(.link).font(.callout)
+            } else {
+                detail("Or use an API, which sends transcript text to its provider.")
+                Menu("Set up an API") {
+                    ForEach(choices.filter { $0.location == .cloud && !ready.contains($0) }) { choice in
+                        Button(choice.name) { onConnect(choice) }
+                    }
+                }
+                .fixedSize()
             }
         }
     }

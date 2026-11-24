@@ -72,7 +72,7 @@ struct RecordingReadiness: Sendable {
     /// The first thing a recording with these choices still needs, or nil when it can start.
     /// A missing speech model means the mode names one the catalog no longer has; so does a nil
     /// `cleanup` while the mode still names a `cleanupModelID`. A cleanup model that does not know the
-    /// language only earns a warning in the mode editor, not a blocker.
+    /// language only earns a warning in the mode editor, and one that is not set up only a `CleanupGap`.
     func blocker(
         speech: ModelDescriptor?, cleanup: ModelDescriptor?, cleanupModelID: String?,
         language: SpeechLanguage,
@@ -81,11 +81,71 @@ struct RecordingReadiness: Sendable {
         guard let speech else { return .speechModelMissing }
         if let failure = blocker(for: speech, language: language)
             ?? (cleanup == nil && cleanupModelID != nil ? .cleanupModelMissing : nil)
-            ?? cleanup.flatMap({ blocker(for: $0, language: language) })
+            ?? cleanup.flatMap({ cleanupGap(for: $0) == nil ? blocker(for: $0, language: language) : nil })
         {
             return failure
         }
         return identifySpeakers ? .speakerIdentificationUnavailable : nil
+    }
+
+    /// What this cleanup model still needs, where a recording goes ahead without it. Nil when it can run,
+    /// and when something else is wrong, such as Require local processing refusing an API: that blocks.
+    func cleanupGap(for cleanup: ModelDescriptor) -> CleanupGap? {
+        // Only Apple Speech's readiness depends on the language.
+        CleanupGap(setupBlocker(for: cleanup, language: .automatic))
+    }
+
+    /// The modes a cleanup model would unlock, for setup's optional step. Empty once any mode has a
+    /// cleanup model that can run, because that person already knows about cleanup.
+    func modesAwaitingCleanup(
+        _ modes: [DictationMode], cleanup: (DictationMode) -> ModelDescriptor?
+    ) -> [DictationMode] {
+        let chosen = modes.map { (mode: $0, cleanup: cleanup($0)) }
+        guard
+            !chosen.contains(where: {
+                $0.cleanup.map { setupBlocker(for: $0, language: .automatic) == nil } == true
+            })
+        else { return [] }
+        return chosen.filter { $0.cleanup.flatMap(cleanupGap(for:)) != nil }.map(\.mode)
+    }
+}
+
+/// Cleanup a mode asks for but that nobody has set up. Such a mode still records and delivers the plain
+/// transcript, saying that cleanup was skipped. Nothing is sent anywhere instead.
+enum CleanupGap: Equatable, Sendable {
+    case notInstalled(String)
+    case keyMissing(provider: String)
+    case serverNotSetUp(provider: String)
+
+    init?(_ failure: RecordingFailure?) {
+        switch failure {
+        case .modelNotInstalled(let name): self = .notInstalled(name)
+        case .apiKeyMissing(let provider): self = .keyMissing(provider: provider)
+        case .providerNotSetUp(let provider): self = .serverNotSetUp(provider: provider)
+        default: return nil
+        }
+    }
+
+    /// The short label beside a mode that records without its cleanup.
+    var marker: String {
+        switch self {
+        case .notInstalled(let name): "Cleanup needs \(name)"
+        case .keyMissing(let provider): "Cleanup needs \(provider) key"
+        case .serverNotSetUp: "Cleanup needs server setup"
+        }
+    }
+
+    /// What Home says under the mode before recording.
+    var warning: String { "Records now, without cleanup: \(reason)." }
+    /// What a recording made without its cleanup says afterwards, on Home and in History.
+    var notice: String { "Cleanup was skipped because \(reason)." }
+
+    private var reason: String {
+        switch self {
+        case .notInstalled(let name): "\(name) is not installed"
+        case .keyMissing(let provider): "no \(provider) API key is saved"
+        case .serverNotSetUp(let provider): "the \(provider) server is not set up"
+        }
     }
 }
 
@@ -103,7 +163,8 @@ enum ModelAvailability: Equatable, Sendable {
 enum MicrophoneAccess: Sendable { case notDetermined, denied, restricted, granted }
 
 /// The three first-run steps on Home. Setup is complete when the microphone is allowed, the current
-/// mode's speech model can record, and text insertion is allowed or skipped.
+/// mode's speech model can record, and text insertion is allowed or skipped. The optional cleanup step
+/// (`RecordingReadiness.modesAwaitingCleanup`) is not part of it.
 struct SetupChecklist: Equatable, Sendable {
     var microphone: MicrophoneAccess
     /// Why the current mode's speech model cannot record yet, or nil when it can.

@@ -264,12 +264,14 @@ final class AppModel {
         phase = .preparing
         statusMessage = "Checking microphone and models…"
         errorMessage = nil
-        work = Task { [weak self] in
+        work = Task { [weak self, entry] in
             guard let self else { return }
+            var entry = entry
             do {
-                try await validate(entry)
+                entry.cleanupNotice = try await validate(entry)?.notice
                 try ensureActive(id)
-                library.inUseModelIDs = Set([chosen.speechModelID, chosen.cleanupModelID].compactMap { $0 })
+                activeEntry = entry
+                library.inUseModelIDs = modelIDsInUse(by: entry)
                 try store.upsertRecording(entry)
                 refreshHistory()
                 try playback.begin(chosen.playback)
@@ -290,7 +292,8 @@ final class AppModel {
                 prepareSpeechWhileRecording(entry)
                 liveTranscription?.begin(after: speechPreparation)
                 phase = .recording
-                statusMessage = "Listening in \(chosen.name)"
+                statusMessage =
+                    "Listening in \(chosen.name)" + (entry.cleanupNotice == nil ? "" : ", without cleanup")
                 shortcuts.setRecordingActive(true)
                 if settings.playSoundEffects { NSSound(named: "Tink")?.play() }
             } catch {
@@ -515,7 +518,7 @@ final class AppModel {
         }
 
         var selectedText = entry.rawText
-        if let cleanup = entry.cleanupSnapshot {
+        if let cleanup = entry.cleanupSnapshot, entry.cleanupNotice == nil {
             phase = .cleaning
             statusMessage = "Cleaning up with \(cleanup.name)…"
             entry.status = .cleaning
@@ -611,8 +614,9 @@ final class AppModel {
 
     /// Uses the same rules as the mode markers, after rechecking what they cache: model folders on disk,
     /// Apple Speech assets, and the Keychain for the API models this recording uses. A Keychain error
-    /// is thrown as itself rather than reported as a missing key.
-    private func validate(_ entry: RecordingEntry) async throws {
+    /// is thrown as itself rather than reported as a missing key. Returns the cleanup the recording
+    /// must go without because it is not set up, if any.
+    private func validate(_ entry: RecordingEntry) async throws -> CleanupGap? {
         if entry.speechSnapshot?.engine == .apple { try await appleSpeech.checkReadiness() }
         library.refreshInstalledModels()
         var facts = readiness
@@ -635,6 +639,14 @@ final class AppModel {
         {
             throw failure
         }
+        return entry.cleanupSnapshot.flatMap(facts.cleanupGap(for:))
+    }
+
+    /// The models a recording holds. Cleanup it goes without stays free to download meanwhile.
+    private func modelIDsInUse(by entry: RecordingEntry) -> Set<String> {
+        Set(
+            [entry.mode.speechModelID, entry.cleanupNotice == nil ? entry.mode.cleanupModelID : nil]
+                .compactMap { $0 })
     }
 
     /// What decides whether a mode can record, from state kept in memory, so views can read it freely.
@@ -694,6 +706,31 @@ final class AppModel {
         }
     }
 
+    /// The cleanup each mode records without because it is not set up. Views read it once per render.
+    var cleanupGaps: [UUID: CleanupGap] {
+        let readiness = readiness
+        return modes.reduce(into: [:]) { gaps, mode in
+            gaps[mode.id] = mode.cleanupModelID.flatMap(effectiveModel).flatMap(readiness.cleanupGap(for:))
+        }
+    }
+
+    /// The short label wherever a mode is chosen: why it cannot record, else what its cleanup needs.
+    var modeMarkers: [UUID: String] {
+        cleanupGaps.mapValues(\.marker).merging(modeBlockers.mapValues(\.shortReason)) { $1 }
+    }
+
+    /// The modes setup's optional cleanup step names, or none once it is done or put off.
+    var modesAwaitingCleanup: [DictationMode] {
+        guard settings.skippedCleanupSetup != true else { return [] }
+        return readiness.modesAwaitingCleanup(modes) { $0.cleanupModelID.flatMap(effectiveModel) }
+    }
+
+    /// Switches the modes that lack working cleanup to a model the user chose and that can run.
+    func useForAwaitingCleanup(_ cleanup: ModelDescriptor) {
+        guard readiness.blocker(for: cleanup, language: .automatic) == nil else { return }
+        for id in modesAwaitingCleanup.map(\.id) { use(cleanup, in: id) }
+    }
+
     /// The current mode's speech model, or nil if the catalog no longer has it.
     var currentSpeechModel: ModelDescriptor? { effectiveModel(currentMode.speechModelID) }
 
@@ -716,9 +753,10 @@ final class AppModel {
         shortcuts.setRecordingActive(false)
         // Showing the outcome while the phase is still busy lets the pill change in place instead of
         // hiding, when controls are not kept visible, and reappearing at idle size.
-        showOutcome(outcome, for: entry.id)
+        showOutcome(outcome, for: entry.id, withoutCleanup: entry.cleanupNotice != nil)
         phase = .complete
-        statusMessage = message
+        statusMessage = [entry.status == .complete ? entry.cleanupNotice : nil, message].compactMap { $0 }
+            .joined(separator: " ")
         refreshHistory()
         enforceRetention()
     }
@@ -830,11 +868,12 @@ final class AppModel {
         phase = .preparing
         statusMessage = "Checking the original recording settings…"
         errorMessage = nil
-        let task = Task { [weak self] in
+        let task = Task { [weak self, entry] in
             guard let self else {
                 try? store.releaseAudioLease(for: original)
                 return
             }
+            var entry = entry
             defer {
                 do { try store.releaseAudioLease(for: original) } catch {
                     errorMessage = "Could not finish audio cleanup: \(error.localizedDescription)"
@@ -849,10 +888,10 @@ final class AppModel {
                     try FileManager.default.copyItem(at: sourceURL, to: attemptURL)
                 }.value
                 try ensureActive(id)
-                try await validate(entry)
+                entry.cleanupNotice = try await validate(entry)?.notice
                 try ensureActive(id)
-                library.inUseModelIDs = Set(
-                    [entry.mode.speechModelID, entry.mode.cleanupModelID].compactMap { $0 })
+                activeEntry = entry
+                library.inUseModelIDs = modelIDsInUse(by: entry)
                 prepareSpeechWhileRecording(entry)
                 try await process(entry, audioURL: attemptURL, shouldDeliver: false)
             } catch {
@@ -1091,8 +1130,10 @@ final class AppModel {
         if accessibilityGranted && recorderOutcome?.action == .allowPaste { recorderOutcome = nil }
     }
 
-    private func showOutcome(_ cause: RecorderOutcome.Cause, for id: UUID) {
-        let outcome = RecorderOutcome(cause, recordingID: id)
+    private func showOutcome(
+        _ cause: RecorderOutcome.Cause, for id: UUID, withoutCleanup: Bool = false
+    ) {
+        let outcome = RecorderOutcome(cause, recordingID: id, withoutCleanup: withoutCleanup)
         recorderOutcome = outcome
         if outcome.kind == .failure || outcome.kind == .warning {
             AccessibilityNotification.Announcement(outcome.label).post()

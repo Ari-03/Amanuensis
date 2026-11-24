@@ -13,7 +13,7 @@ final class AppModel {
     var isMovingRecorder = false
     var accessibilityGranted = true
     var recorderOutcome: RecorderOutcome?
-    var modeBlockers: [UUID: RecordingFailure] = [:]
+    var modeMarkers: [UUID: String] = [:]
     var toggleCount = 0
     var skipCount = 0
     var outcomeActionCount = 0
@@ -382,6 +382,16 @@ struct RecorderChecks {
         present(model, with: recorder)
         await pause(350)
         precondition(panel.isVisible && panel.level == .floating, "Hidden floats failures as Mini")
+        let skipped = RecorderOutcome(
+            .inserted(app: "Mail"), recordingID: UUID(), withoutCleanup: true)
+        model.recorderOutcome = skipped
+        present(model, with: recorder)
+        await pause(350)
+        precondition(panel.isVisible && panel.level == .floating, "Hidden floats skipped cleanup as Mini")
+        precondition(
+            panel.frame.width >= textWidth(skipped.label, size: 12, weight: .medium) + 64
+                + textWidth(skipped.action!.title, size: 11, weight: .medium),
+            "The pill must fit the whole skipped-cleanup notice and its action")
         model.dismissOutcome()
         present(model, with: recorder)
         precondition(!panel.isVisible)
@@ -563,7 +573,7 @@ struct RecorderChecks {
     @MainActor private static func checkMarkedModeStaysSelectable() async {
         let model = AppModel()
         let mailIndex = model.modes.firstIndex { $0.preset == .mail }!
-        model.modeBlockers = [model.modes[mailIndex].id: .modelNotInstalled("S1-mini")]
+        model.modeMarkers = [model.modes[mailIndex].id: "Cleanup needs S1-mini"]
         var dismissed = 0
         let window = NSWindow(
             contentRect: NSRect(x: 200, y: 200, width: 252, height: 300), styleMask: [.borderless],

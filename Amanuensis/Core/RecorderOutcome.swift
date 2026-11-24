@@ -63,7 +63,8 @@ enum RecordingFailure: LocalizedError, Equatable, Sendable {
 
 /// What the recorder pill shows after a job ends. AppModel creates one from the job's typed cause.
 /// Successes, notices, and warnings close on their own; failures stay until the user acts, dismisses,
-/// or records again. A warning is a hint with an action, such as allowing automatic paste.
+/// or records again. A warning is a hint with an action, such as allowing automatic paste or setting up
+/// the cleanup that was skipped.
 struct RecorderOutcome: Equatable, Sendable {
     enum Kind: Sendable { case success, notice, warning, failure }
 
@@ -103,16 +104,18 @@ struct RecorderOutcome: Equatable, Sendable {
     let label: String
     let kind: Kind
     let action: Action?
+    /// Whether the mode's cleanup was skipped because it is not set up, which the label says.
+    let withoutCleanup: Bool
     /// The History entry this outcome describes.
     let recordingID: UUID?
     /// Monotonic close time for successes and notices. Failures have none.
     private(set) var deadline: TimeInterval?
 
     init(
-        _ cause: Cause, recordingID: UUID?, at time: TimeInterval = ProcessInfo.processInfo.systemUptime
+        _ cause: Cause, recordingID: UUID?, withoutCleanup: Bool = false,
+        at time: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
-        let kind: Kind
-        (label, kind, action) =
+        let result: (label: String, kind: Kind, action: Action?) =
             switch cause {
             case .inserted(let app): (app.map { "Inserted in \($0)" } ?? "Inserted", .success, nil)
             case .copied: ("Copied. Press ⌘V", .success, nil)
@@ -125,7 +128,12 @@ struct RecorderOutcome: Equatable, Sendable {
             case .failed(let failure?): (failure.shortReason, .failure, Self.action(for: failure))
             case .failed(nil): ("Couldn't finish", .failure, .showInHistory)
             }
-        self.kind = kind
+        // Text reached the user without its cleanup. The mode editor offers the missing model.
+        let withoutCleanup = withoutCleanup && [.success, .warning].contains(result.kind)
+        self.withoutCleanup = withoutCleanup
+        label = withoutCleanup ? "\(result.label) (no cleanup)" : result.label
+        kind = withoutCleanup ? .warning : result.kind
+        action = withoutCleanup ? result.action ?? .openModes : result.action
         self.recordingID = recordingID
         deadline = kind == .failure ? nil : time + Self.displayDuration
     }
@@ -155,12 +163,15 @@ struct RecorderOutcome: Equatable, Sendable {
 
 extension RecorderLayout {
     /// The recorder style to show, or nil to hide the panel. Prompts that need room float as Mini,
-    /// so Hidden and Notch still show cancellation and failures. Hidden shows nothing else.
+    /// so Hidden and Notch still show cancellation, failures and skipped cleanup, which must never be
+    /// silent. Hidden shows nothing else.
     static func presentedStyle(
         saved: RecorderStyle, alwaysShow: Bool, busy: Bool, cancellationPending: Bool,
         outcome: RecorderOutcome?
     ) -> RecorderStyle? {
-        if cancellationPending || outcome?.kind == .failure { return .mini }
+        if cancellationPending || outcome?.kind == .failure || outcome?.withoutCleanup == true {
+            return .mini
+        }
         guard saved != .hidden, alwaysShow || busy || outcome != nil else { return nil }
         return saved
     }

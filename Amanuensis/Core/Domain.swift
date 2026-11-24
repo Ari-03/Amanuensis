@@ -400,6 +400,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var hasCompletedSetup = false
     /// Set by Skip on the setup checklist's text insertion step. Optional so earlier saves still decode.
     var skippedTextInsertionSetup: Bool? = nil
+    /// Set by Not now on the optional cleanup step. Optional so earlier saves still decode.
+    var skippedCleanupSetup: Bool? = nil
     /// Model IDs the user chose for API rows, by catalog row ID.
     var apiModelOverrides: [String: String] = [:]
     /// The OpenAI-compatible server's base URL as saved, normalized by `APIBaseURL` when it was entered
@@ -593,6 +595,9 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
     var parentRecordingID: UUID? = nil
     /// True when the user pressed Skip during cleanup. Optional so rows saved before it existed still decode.
     var cleanupSkipped: Bool? = nil
+    /// Set when recording starts if the mode's cleanup model is not set up: the recording runs without
+    /// it, and this says why. Optional so rows saved before it existed still decode.
+    var cleanupNotice: String? = nil
     /// The language resolved when recording started, so a retry transcribes the same way.
     /// Nil in rows saved before languages existed; `transcriptionLanguage` reads those as English.
     var language: SpeechLanguage? = nil
@@ -619,6 +624,7 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
         attempt.transcriptionSeconds = nil
         attempt.cleanedText = nil
         attempt.cleanupSkipped = nil
+        attempt.cleanupNotice = nil
         attempt.finalText = ""
         attempt.error = nil
         attempt.destinationApp = nil

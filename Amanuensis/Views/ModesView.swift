@@ -13,7 +13,7 @@ struct ModesView: View {
     private var selected: DictationMode? { model.modes.first { $0.id == selectedID } }
 
     var body: some View {
-        let blockers = model.modeBlockers
+        let markers = model.modeMarkers
         HSplitView {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -31,9 +31,9 @@ struct ModesView: View {
                         Image(systemName: mode.symbol).frame(width: 20).foregroundStyle(.tint)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(mode.name).fontWeight(.medium)
-                            // A mode that cannot record yet names what it needs instead of its speech model.
-                            if let blocker = blockers[mode.id] {
-                                Label(blocker.shortReason, systemImage: "exclamationmark.triangle")
+                            // A mode that still needs something names it instead of its speech model.
+                            if let marker = markers[mode.id] {
+                                Label(marker, systemImage: "exclamationmark.triangle")
                                     .font(.caption).foregroundStyle(.orange).lineLimit(1)
                                     .truncationMode(.middle)
                             } else {
@@ -334,6 +334,12 @@ struct ModesView: View {
                     )
                     .font(.caption).foregroundStyle(.orange)
                 }
+            }
+            if purpose == .cleanup, let current, readiness.cleanupGap(for: current) != nil {
+                Text(
+                    "This mode records now and gives you the plain transcript. Set up \(current.name), or choose another cleanup model, to get its cleanup."
+                )
+                .font(.caption).foregroundStyle(.secondary)
             }
         }
     }

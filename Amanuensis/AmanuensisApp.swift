@@ -64,10 +64,10 @@ private struct MenuBarContent: View {
             if let text = model.lastTranscript { model.copyText(text) }
         }.disabled(model.lastTranscript == nil)
         Divider()
-        let blockers = model.modeBlockers
+        let markers = model.modeMarkers
         ForEach(model.modes) { mode in
-            // A mode that cannot record yet stays selectable and names what it needs.
-            let title = blockers[mode.id].map { "\(mode.name) · \($0.shortReason)" } ?? mode.name
+            // A mode that still needs something stays selectable and names it.
+            let title = markers[mode.id].map { "\(mode.name) · \($0)" } ?? mode.name
             Button {
                 model.selectMode(mode.id)
             } label: {
