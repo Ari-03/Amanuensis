@@ -65,9 +65,10 @@ keychain_password="$(openssl rand -hex 24)"
 security create-keychain -p "$keychain_password" "$keychain"
 security set-keychain-settings -lut 7200 "$keychain"
 security unlock-keychain -p "$keychain_password" "$keychain"
+# Read it on its own line, so a failed read stops here instead of replacing the list.
+current_list="$(security list-keychains -d user | sed 's/^ *"\(.*\)"$/\1/')"
 search_list=()
-while IFS= read -r line; do search_list+=("$line"); done \
-    < <(security list-keychains -d user | sed 's/^ *"\(.*\)"$/\1/')
+while IFS= read -r line; do if [[ -n "$line" ]]; then search_list+=("$line"); fi; done <<<"$current_list"
 security list-keychains -d user -s "$keychain" ${search_list[@]+"${search_list[@]}"}
 security import "$work/certificate.p12" -k "$keychain" -f pkcs12 -P "$certificate_password" \
     -T /usr/bin/codesign >/dev/null \
