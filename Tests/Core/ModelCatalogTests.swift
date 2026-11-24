@@ -107,6 +107,13 @@ struct ModelCatalogTests {
             readiness.blocker(for: resolved, language: .english) == .providerNotSetUp(provider: row.provider))
     }
 
+    /// Cleanup runs on every dictation, so its Claude default is the fast, cheap model the summary names.
+    @Test func claudeCleanupDefaultsToHaiku() throws {
+        let row = try #require(models.first { $0.id == "claude-cleanup" })
+        #expect(row.apiModelID == "claude-haiku-5-5")
+        #expect(row.summary.contains("Claude Haiku 5.5"))
+    }
+
     @Test func detectionIsClaimedOnlyWhereItWorks() {
         // The pinned MLX Whisper omits its language token for detection but has no detection pass, which
         // produced dots and stray letters for French and English clips. Apple Speech cannot detect.

@@ -149,7 +149,7 @@ struct ModesView: View {
                             == .s1mini
                         {
                             Text(
-                                "S1-mini uses tone, list formatting, and email context. Custom instructions require an OpenAI or Claude cleanup model."
+                                "S1-mini uses tone, list formatting, and email context. Custom instructions require an API cleanup model."
                             )
                             .font(.caption).foregroundStyle(.secondary)
                         } else if ModelCatalog.models.first(where: { $0.id == mode.cleanupModelID })?.location
@@ -160,7 +160,7 @@ struct ModesView: View {
                                 .padding(6).overlay(
                                     RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
                         } else {
-                            Text("Choose an OpenAI or Claude cleanup model to add custom instructions.")
+                            Text("Choose an API cleanup model to add custom instructions.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }

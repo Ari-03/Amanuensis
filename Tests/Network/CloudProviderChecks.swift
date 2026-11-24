@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// URLProtocol supplies every response, so these checks neither use Keychain nor contact providers.
@@ -131,7 +132,7 @@ struct CloudProviderChecks {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let audioURL = directory.appendingPathComponent("private-recording-name.wav")
-        try Data([0, 1, 2, 3]).write(to: audioURL)
+        try writeTone(to: audioURL, seconds: 1)
         var model = ModelDescriptor(
             id: "test", name: "test", provider: "test", purpose: .speech, location: .cloud,
             family: .openAI, summary: "", apiModelID: "gpt-transcribe"
@@ -183,6 +184,11 @@ struct CloudProviderChecks {
 
         model.purpose = .cleanup
         model.apiModelID = "gpt-test"
+        // Every cleanup provider gets the words, never the replacements, which are applied afterwards.
+        let vocabulary = [
+            VocabularyEntry(word: "Amanuensis"),
+            .init(word: "my address", replacement: "private-replacement"),
+        ]
         var mode = DictationMode(name: "test", preset: .message)
         mode.customPrompt = "hidden-custom-instruction"
         fixture.reset { request in
@@ -191,6 +197,7 @@ struct CloudProviderChecks {
             precondition(body.model == "gpt-test" && body.input == "um edited")
             precondition(!body.store)
             precondition(!body.instructions.contains("hidden-custom-instruction"))
+            precondition(hasVocabulary(body.instructions))
             // Cleanup keeps the transcript's language instead of assuming English.
             precondition(body.instructions.contains("same language as the transcript"))
             precondition(!body.instructions.contains("English"))
@@ -199,7 +206,8 @@ struct CloudProviderChecks {
                 #"{"status":"completed","output":[{"type":"reasoning"},{"content":[{"type":"output_text","text":"Edited."}]}]}"#
             )
         }
-        let result = try await provider.clean(text: "um edited", model: model, mode: mode)
+        let result = try await provider.clean(
+            text: "um edited", model: model, mode: mode, vocabulary: vocabulary)
         precondition(result == "Edited.")
         checks += 1
 
@@ -215,18 +223,34 @@ struct CloudProviderChecks {
             return .json(200, #"{"status":"incomplete","output":[]}"#)
         }
         do {
-            _ = try await provider.clean(text: "test", model: model, mode: mode)
+            _ = try await provider.clean(text: "test", model: model, mode: mode, vocabulary: vocabulary)
             preconditionFailure("Expected incomplete OpenAI output to be rejected")
         } catch CloudProviders.ProviderError.incompleteOutput {
             checks += 1
         }
 
         model.family = .anthropic
+        fixture.reset { request in
+            precondition(request.url?.absoluteString == "https://api.anthropic.com/v1/messages")
+            let body = try! JSONSerialization.jsonObject(with: requestBody(request)) as! [String: Any]
+            // Claude Haiku 5.5 rejects sampling parameters and thinking budgets, so nothing else is sent.
+            precondition(Set(body.keys) == ["model", "system", "messages", "max_tokens"])
+            precondition(hasVocabulary(body["system"] as! String))
+            // Haiku 5.5 thinks by default, so a reply can start with a thinking block without text.
+            return .json(
+                200,
+                #"{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":"","signature":"s"},{"type":"text","text":"Edited."}]}"#
+            )
+        }
+        let claude = try await provider.clean(
+            text: "um edited", model: model, mode: mode, vocabulary: vocabulary)
+        precondition(claude == "Edited.")
+        checks += 1
         fixture.reset { _ in
             .json(200, #"{"stop_reason":"max_tokens","content":[{"type":"text","text":"Incomplete"}]}"#)
         }
         do {
-            _ = try await provider.clean(text: "test", model: model, mode: mode)
+            _ = try await provider.clean(text: "test", model: model, mode: mode, vocabulary: vocabulary)
             preconditionFailure("Expected incomplete Claude output to be rejected")
         } catch CloudProviders.ProviderError.incompleteOutput {
             checks += 1
@@ -272,9 +296,123 @@ struct CloudProviderChecks {
             precondition(fixture.count == 1)
             checks += 1
         }
+        // Claude's model list fills the same picker as the other providers.
+        fixture.reset { request in
+            precondition(request.url?.absoluteString == "https://api.anthropic.com/v1/models?limit=1000")
+            precondition(request.value(forHTTPHeaderField: "x-api-key") == "placeholder-credential")
+            return .json(200, #"{"data":[{"type":"model","id":"claude-haiku-5-5"}],"has_more":false}"#)
+        }
+        let claudeModels = try await provider.listModels(provider: .anthropic)
+        precondition(claudeModels == ["claude-haiku-5-5"])
+        checks += 1
+
+        checks += try await uploadChecks(provider: provider, directory: directory)
         checks += try await compatibleServerChecks(
             provider: provider, permission: permission, audioURL: audioURL)
         print("Passed \(checks) cloud provider checks. No API calls or Keychain access.")
+    }
+
+    /// Recordings are 48 kHz; what is uploaded is 16 kHz, made without touching the recording.
+    @MainActor
+    private static func uploadChecks(provider: CloudProviders, directory: URL) async throws -> Int {
+        let fixture = ProviderProtocol.fixture
+        let model = ModelDescriptor(
+            id: "test", name: "test", provider: "test", purpose: .speech, location: .cloud,
+            family: .openAI, summary: "", apiModelID: "gpt-transcribe")
+        func transcribe(_ url: URL) async throws -> String {
+            try await provider.transcribe(audioURL: url, model: model, language: .english, vocabulary: [])
+        }
+
+        // Six and a half minutes is 37 MB as recorded, over the limit before conversion.
+        let long = directory.appendingPathComponent("long.wav")
+        try writeTone(to: long, seconds: 390)
+        let recorded = try Data(contentsOf: long)
+        precondition(recorded.count > UploadAudio.byteLimit)
+        let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        fixture.reset { request in
+            let body = requestBody(request)
+            let start = body.range(of: Data("RIFF".utf8))!.lowerBound
+            let end = body.range(of: Data("\r\n--Amanuensis-".utf8), in: start..<body.count)!.lowerBound
+            let wav = Data(body[start..<end])
+            precondition(wav.count <= UploadAudio.byteLimit)
+            func little(_ offset: Int, _ bytes: Int) -> Int {
+                (0..<bytes).reduce(0) { $0 | Int(wav[offset + $1]) << (8 * $1) }
+            }
+            precondition(little(22, 2) == 1 && little(24, 4) == 16_000 && little(34, 2) == 16)
+            precondition(little(4, 4) == wav.count - 8 && little(40, 4) == wav.count - 44)
+            // Every second of it, at the recorded pitch: a 500 Hz tone crosses zero 1,000 times a second.
+            let samples = wav[44...].withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+            precondition(abs(Double(samples.count) / 16_000 - 390) < 0.05)
+            let crossings = zip(samples, samples.dropFirst()).count { ($0 < 0) != ($1 < 0) }
+            precondition(abs(crossings - 390_000) < 100)
+            precondition((samples.max() ?? 0) > 15_000, "The audio was not silenced")
+            return .json(200, #"{"text":"Long."}"#)
+        }
+        let heard = try await transcribe(long)
+        precondition(heard == "Long.")
+        let after = try Data(contentsOf: long)
+        precondition(after == recorded, "The saved recording must not change")
+        let filesAfter = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        precondition(filesAfter == files, "Nothing may be left beside the recording")
+
+        // Cancelling the recording's task, or the provider as Skip and local-only do, sends nothing.
+        fixture.reset { _ in preconditionFailure("A cancelled upload was sent") }
+        for cancelsProvider in [false, true] {
+            let task = Task { try await transcribe(long) }
+            // Runs the task until it waits for the conversion, which cannot resume it before the cancel.
+            await Task.yield()
+            if cancelsProvider { provider.cancel() } else { task.cancel() }
+            do {
+                _ = try await task.value
+                preconditionFailure("Expected the conversion to be cancelled")
+            } catch is CancellationError {}
+        }
+
+        // The conversion itself stops, rather than finishing unseen.
+        let conversion = Task.detached {
+            while !Task.isCancelled { await Task.yield() }
+            return try UploadAudio.wav(from: long)
+        }
+        conversion.cancel()
+        do {
+            _ = try await conversion.value
+            preconditionFailure("Expected the conversion to stop")
+        } catch is CancellationError {}
+
+        let tooLong = directory.appendingPathComponent("too-long.wav")
+        try writeTone(to: tooLong, seconds: 800)
+        do {
+            _ = try await transcribe(tooLong)
+            preconditionFailure("Expected a recording over 13 minutes to be refused")
+        } catch CloudProviders.ProviderError.audioTooLarge {}
+        let broken = directory.appendingPathComponent("broken.wav")
+        try Data([0, 1, 2, 3]).write(to: broken)
+        do {
+            _ = try await transcribe(broken)
+            preconditionFailure("Expected an unreadable file to be refused")
+        } catch CloudProviders.ProviderError.invalidAudio {}
+        precondition(fixture.count == 0)
+        return 5
+    }
+
+    /// A 500 Hz tone in the format `AudioCapture` records: 48 kHz mono 16-bit WAV.
+    private static func writeTone(to url: URL, seconds: Int) throws {
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+            ], commonFormat: .pcmFormatInt16, interleaved: true)
+        let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000)!
+        buffer.frameLength = 48_000
+        for index in 0..<48_000 {
+            buffer.int16ChannelData![0][index] = Int16(16_000 * sin(Double(index) * 2 * .pi * 500 / 48_000))
+        }
+        for _ in 0..<seconds { try file.write(from: buffer) }
+    }
+
+    nonisolated private static func hasVocabulary(_ instructions: String) -> Bool {
+        instructions.contains("- Amanuensis\n- my address") && !instructions.contains("private-replacement")
     }
 
     /// The OpenAI-compatible provider: its two inference requests, model listing, address rules, key
@@ -340,6 +478,10 @@ struct CloudProviderChecks {
 
         speech.purpose = .cleanup
         speech.apiModelID = "llama3.2:3b"
+        let vocabulary = [
+            VocabularyEntry(word: "Amanuensis"),
+            .init(word: "my address", replacement: "private-replacement"),
+        ]
         var mode = DictationMode(name: "test", preset: .mail)
         mode.customPrompt = "hidden-custom-instruction"
         fixture.reset { request in
@@ -349,13 +491,15 @@ struct CloudProviderChecks {
             precondition(body.messages.map(\.role) == ["system", "user"])
             precondition(body.messages[0].content.contains("same language as the transcript"))
             precondition(!body.messages[0].content.contains("hidden-custom-instruction"))
+            precondition(hasVocabulary(body.messages[0].content))
             precondition(body.messages[1].content == "um hello")
             return .json(
                 200,
                 #"{"choices":[{"message":{"role":"assistant","content":" Hello. "},"finish_reason":"stop"}]}"#
             )
         }
-        let cleaned = try await provider.clean(text: "um hello", model: speech, mode: mode)
+        let cleaned = try await provider.clean(
+            text: "um hello", model: speech, mode: mode, vocabulary: vocabulary)
         precondition(cleaned == "Hello.")
         checks += 1
 
@@ -366,7 +510,8 @@ struct CloudProviderChecks {
         ] {
             fixture.reset { _ in .json(200, reply) }
             do {
-                _ = try await provider.clean(text: "um hello", model: speech, mode: mode)
+                _ = try await provider.clean(
+                    text: "um hello", model: speech, mode: mode, vocabulary: vocabulary)
                 preconditionFailure("Expected \(expected) output to be rejected")
             } catch let error as CloudProviders.ProviderError {
                 switch (error, expected) {
@@ -484,7 +629,7 @@ struct CloudProviderChecks {
             return .json(
                 200, #"{"choices":[{"message":{"content":"Hi.","refusal":""},"finish_reason":"eos"}]}"#)
         }
-        let finished = try await provider.clean(text: "hi", model: speech, mode: mode)
+        let finished = try await provider.clean(text: "hi", model: speech, mode: mode, vocabulary: vocabulary)
         precondition(finished == "Hi.")
         // A fixed provider's single-model lookup puts the ID in the path, so a slash stays refused there.
         fixture.reset { _ in preconditionFailure("A slash ID reached a URL path") }

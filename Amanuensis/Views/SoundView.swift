@@ -15,7 +15,7 @@ struct SoundView: View {
                 HStack {
                     Label(model.microphoneName, systemImage: "mic.fill").font(.headline)
                     Spacer()
-                    Text(model.phase == .recording ? "Recording" : "Input used for last recording")
+                    Text(model.phase == .recording ? "Recording" : "Input for the next recording")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 AudioLevelView(level: model.recordingLevel, active: model.phase == .recording)

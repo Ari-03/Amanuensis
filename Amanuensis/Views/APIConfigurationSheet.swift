@@ -36,8 +36,10 @@ struct APIConfigurationSheet: View {
     }
 
     private var isCompatible: Bool { descriptor.engine == .openAICompatible }
-    /// OpenAI, Groq and compatible servers share the OpenAI `/models` endpoint.
-    private var canList: Bool { [.openAI, .groq, .openAICompatible].contains(descriptor.engine) }
+    /// OpenAI, Groq, Anthropic and compatible servers all answer `GET /models`.
+    private var canList: Bool {
+        [.openAI, .groq, .anthropic, .openAICompatible].contains(descriptor.engine)
+    }
     private var connected: Bool { model.connectedProviders.contains(descriptor.engine) }
     private var defaultModelID: String? { descriptor.apiModelID }
     private var trimmedModelID: String { modelID.trimmingCharacters(in: .whitespacesAndNewlines) }

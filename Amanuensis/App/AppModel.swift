@@ -525,7 +525,7 @@ final class AppModel {
             try store?.upsertRecording(entry)
             cleanupSkipped = false
             let result: Result<String, any Error>
-            do { result = .success(try await clean(entry.rawText, with: cleanup, mode: entry.mode)) } catch {
+            do { result = .success(try await clean(entry.rawText, with: cleanup, for: entry)) } catch {
                 result = .failure(error)
             }
             // Skip wins even if the model finished; its cancellation error is ignored.
@@ -578,11 +578,13 @@ final class AppModel {
         try complete(entry, message: entry.deliveryMessage ?? "Your transcript is ready.", outcome: outcome)
     }
 
-    private func clean(_ text: String, with cleanup: ModelDescriptor, mode: DictationMode) async throws
+    /// Cloud models also get the recording's vocabulary. S1-mini takes none.
+    private func clean(_ text: String, with cleanup: ModelDescriptor, for entry: RecordingEntry) async throws
         -> String
     {
         if cleanup.location == .cloud {
-            return try await cloud.clean(text: text, model: cleanup, mode: mode)
+            return try await cloud.clean(
+                text: text, model: cleanup, mode: entry.mode, vocabulary: entry.vocabularySnapshot ?? [])
         }
         guard cleanup.engine == .s1mini else {
             throw AppFailure("This cleanup engine is not supported by this build.")
@@ -590,7 +592,7 @@ final class AppModel {
         guard let path = library.localURL(for: cleanup.id) else {
             throw AppFailure("Install S1-mini first.")
         }
-        return try await normalizer.clean(text: text, modelURL: path, mode: mode)
+        return try await normalizer.clean(text: text, modelURL: path, mode: entry.mode)
     }
 
     private func cause(of delivered: DeliveryOutcome) -> RecorderOutcome.Cause {
