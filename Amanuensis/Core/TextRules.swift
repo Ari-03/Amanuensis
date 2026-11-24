@@ -62,8 +62,8 @@ enum TextRules: Sendable {
 
     /// Leaves standalone "um", "uh" and similar out of an English transcript. A comma beside one stays once
     /// between two words, so list items never run together. Anything uncertain is kept: a capitalized one
-    /// inside a sentence or without punctuation (names), one beside a number, dash or quote, and every
-    /// vocabulary phrase.
+    /// inside a sentence or without punctuation (names), one touching a dash or quote, one after a
+    /// number, and every vocabulary phrase.
     static func removingFillers(from text: String, keeping vocabulary: [VocabularyEntry]) -> String {
         let phrases = vocabulary.map(\.word).filter { !$0.isEmpty }.sorted { $0.count > $1.count }
             .map(NSRegularExpression.escapedPattern).joined(separator: "|")
