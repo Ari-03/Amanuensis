@@ -58,7 +58,7 @@ private struct MenuBarContent: View {
             }
             Button(model.isCancellationPending ? "Discard" : "Cancel", role: .destructive) {
                 model.requestCancelRecording()
-            }.disabled(model.phase == .delivering)
+            }
         }
         Button("Copy last transcript") {
             if let text = model.lastTranscript { model.copyText(text) }

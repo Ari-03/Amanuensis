@@ -4,6 +4,8 @@ Checked September 19, 2026. Proposed behavior for the [product brief](../product
 
 ## One session, one destination
 
+> Superseded on November 23, 2026: only the mode is resolved at start. The destination is the field that has focus when the text is ready.
+
 At start, capture the destination app and focused editable element, then resolve the mode. Precedence is direct mode shortcut, deliberate manual selection, matching app rule, default mode. A manual selection remains active until the user returns to Automatic. Disallow duplicate app rules initially rather than inventing invisible priorities.
 
 Freeze mode settings, speech/cleanup models, vocabulary, replacement rules, microphone, and processing policy for that session. Edits apply next time. A new policy that forbids network processing cancels pending cloud work immediately. Mode switching during capture displays “Next recording: Mail.” Show the current mode beside the microphone indicator.

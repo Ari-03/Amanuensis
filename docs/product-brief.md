@@ -155,7 +155,7 @@ This sequence is a recommendation, not a reduction of the requested feature set 
 - Excluded microphones are never automatically selected. Rankings survive device removal, reconnection, and relaunch, and the active microphone is visible.
 - Updating the recording shortcut on Home immediately updates Configuration, and vice versa. Conflicting shortcuts produce a useful error.
 - A recording can be started, stopped, or canceled without opening the main window. Push-to-talk responds to release and ignores repeated key-down events.
-- Modes keep their own model and formatting preferences. Switching apps during processing does not paste into an unintended destination.
+- Modes keep their own model and formatting preferences. Text is pasted into the field that has focus when it is ready, including after switching apps. Fields that Accessibility reports as secure, and Amanuensis itself, get a clipboard copy instead.
 - Vocabulary words and replacement pairs survive relaunch. Replacements do not cascade unpredictably or damage unrelated words.
 - Failed cleanup does not destroy the original transcript. Failed insertion leaves an explicit copy action.
 - Recording indication accurately reflects microphone and processing state, including permission failures.

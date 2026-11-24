@@ -204,7 +204,7 @@ struct RecorderView: View {
             } else {
                 Button("Show recorder controls") { revealControls = true }
             }
-            if model.phase.isBusy && model.phase != .delivering {
+            if model.phase.isBusy {
                 Button("Cancel recording", action: model.requestCancelRecording)
             }
         }
@@ -387,7 +387,6 @@ struct RecorderView: View {
                 }
                 .buttonStyle(.plain).help("Cancel recording")
                 .accessibilityLabel("Cancel recording")
-                .disabled(model.phase == .delivering)
             }
 
         }

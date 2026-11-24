@@ -651,11 +651,10 @@ enum DictationPhase: String, Sendable {
     case recording = "Listening"
     case transcribing = "Transcribing"
     case cleaning = "Cleaning up"
-    case delivering = "Inserting"
     case complete = "Done"
     case failed = "Needs attention"
     case interrupted = "Recording interrupted"
-    var isBusy: Bool { [.preparing, .recording, .transcribing, .cleaning, .delivering].contains(self) }
+    var isBusy: Bool { [.preparing, .recording, .transcribing, .cleaning].contains(self) }
 }
 
 /// A destructive cancel needs a second press within a short window, measured with monotonic time.

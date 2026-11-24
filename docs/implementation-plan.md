@@ -50,13 +50,13 @@ Use native focus rings, visible labels, and state text. Meter animation represen
 
 ```mermaid
 flowchart LR
-    A[Shortcut or Record] --> B[Check readiness and capture destination]
+    A[Shortcut or Record] --> B[Check readiness]
     B --> C[Capture microphone]
     C --> D[Transcribe]
     D --> E[Save original]
     E --> F[Optional cleanup]
     F --> G[Apply text rules once]
-    G --> H{Same destination still focused?}
+    G --> H{Editable field focused now?}
     H -->|Yes, auto-paste enabled| I[Attempt insertion]
     H -->|No| J[Hold result with Copy]
     I --> K[Record delivery outcome]
@@ -83,7 +83,7 @@ A history retry is an explicit user action. Start from the entry's frozen settin
 | `SpeechRuntime` | Transcribe an audio asset with declared capabilities. Real adapters vary across local engines, Apple, OpenAI, and Groq. |
 | `CleanupRuntime` | Clean text with a validated format request; return text, valid empty, or error. S1-mini controls differ from general prompts. |
 | `ModelLibrary` | Catalog, install/import/remove, readiness, and runtime leases. Owns complete artifacts, checksum verification, and attribution. |
-| `TextDelivery` | Capture destination and attempt insertion. Owns Accessibility checks, focus revalidation, clipboard ownership, and delivery outcome. |
+| `TextDelivery` | Find the focused destination and attempt insertion. Owns Accessibility checks, focus checks, clipboard ownership, and delivery outcome. |
 | `LocalStore` | Persist settings/session results, query history, expire/delete records, and update usage aggregates. One GRDB queue; no per-screen repository framework. |
 | `CloudAccess` | Provider requests, credential lookup, cancellation, redaction, and current-policy checks immediately before dispatch. |
 
