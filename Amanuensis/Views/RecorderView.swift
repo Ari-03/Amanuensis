@@ -506,19 +506,19 @@ private struct RecorderChipButton: View {
     }
 }
 
-/// The recorder's mode popover. A mode that cannot record yet stays selectable and names what it needs.
+/// The recorder's mode popover. A mode that still needs something stays selectable and names it.
 struct RecorderModeMenu: View {
     @Bindable var model: AppModel
     let dismiss: () -> Void
 
     var body: some View {
-        let blockers = model.modeBlockers
+        let markers = model.modeMarkers
         VStack(spacing: 4) {
             ScrollView {
                 VStack(spacing: 2) {
                     ForEach(model.modes) { mode in
                         RecorderModeRow(
-                            title: mode.name, symbol: mode.symbol, reason: blockers[mode.id]?.shortReason,
+                            title: mode.name, symbol: mode.symbol, reason: markers[mode.id],
                             selected: model.currentMode.id == mode.id
                         ) {
                             model.selectMode(mode.id)

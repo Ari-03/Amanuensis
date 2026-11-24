@@ -36,10 +36,15 @@ struct APIConfigurationSheet: View {
     }
 
     private var isCompatible: Bool { descriptor.engine == .openAICompatible }
-    /// OpenAI, Groq and compatible servers share the OpenAI `/models` endpoint.
-    private var canList: Bool { [.openAI, .groq, .openAICompatible].contains(descriptor.engine) }
+    /// OpenAI, Groq, Anthropic and compatible servers all answer `GET /models`.
+    private var canList: Bool {
+        [.openAI, .groq, .anthropic, .openAICompatible].contains(descriptor.engine)
+    }
     private var connected: Bool { model.connectedProviders.contains(descriptor.engine) }
-    private var defaultModelID: String? { descriptor.apiModelID }
+    /// The catalog's own model. `descriptor` may already carry the saved choice in its place.
+    private var defaultModelID: String? {
+        model.library.models.first { $0.id == descriptor.id }?.apiModelID
+    }
     private var trimmedModelID: String { modelID.trimmingCharacters(in: .whitespacesAndNewlines) }
     /// The parsed base URL for a compatible server, or the problem with what is typed.
     private var server: Result<URL, APIBaseURL.Problem>? { isCompatible ? APIBaseURL.parse(baseURL) : nil }
@@ -217,7 +222,9 @@ struct APIConfigurationSheet: View {
                 let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !key.isEmpty { try model.saveAPIKey(key, provider: descriptor.engine) }
             }
-            model.settings.apiModelOverrides[descriptor.id] = trimmedModelID
+            // The default is not a choice, so it keeps following the catalog.
+            model.settings.apiModelOverrides[descriptor.id] =
+                trimmedModelID == defaultModelID ? nil : trimmedModelID
             model.saveConfiguration()
             apiKey = ""
             dismiss()

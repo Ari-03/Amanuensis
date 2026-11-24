@@ -121,8 +121,10 @@ struct ModelListOptionsTests {
     }
 
     @Test func purposeAndPlaceAreSeparateChoices() {
-        #expect(ids(ModelListOptions(place: .installed)) == ["parakeet-v2", "whisper-tiny"])
-        #expect(ids(ModelListOptions(purpose: .cleanup, place: .installed)) == ["s1-mini"])
+        // Apple Speech and APIs are ready without a download, so the filter names what it lists.
+        #expect(ModelListOptions.Place.downloaded.rawValue == "Downloaded")
+        #expect(ids(ModelListOptions(place: .downloaded)) == ["parakeet-v2", "whisper-tiny"])
+        #expect(ids(ModelListOptions(purpose: .cleanup, place: .downloaded)) == ["s1-mini"])
         let onThisMac = ids(ModelListOptions(place: .onThisMac))
         #expect(onThisMac.first == "apple-speech")
         #expect(!onThisMac.contains("openai-transcribe"))
@@ -159,7 +161,7 @@ struct ModelListOptionsTests {
 
     @Test func fastestFirstOrdersMeasuredModelsAndKeepsTheRestInCatalogOrder() {
         let order = ids(
-            ModelListOptions(place: .installed, order: .fastest),
+            ModelListOptions(place: .downloaded, order: .fastest),
             speeds: ["parakeet-v2": 0.8, "whisper-tiny": 2])
         #expect(order == ["parakeet-v2", "whisper-tiny"])
         let partly = ids(ModelListOptions(order: .fastest), speeds: ["moonshine-base": 1])
