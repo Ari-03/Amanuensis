@@ -13,6 +13,9 @@ mkdir -p "$checkout/Scripts" "$checkout/BuildSupport" "$app/Contents/MacOS" "$ap
     "$work/bin" "$work/runner"
 cp "$app_root"/Scripts/{sign-app,sign-release,package-dmg}.sh "$checkout/Scripts/"
 cp "$app_root/BuildSupport/Amanuensis.entitlements" "$checkout/BuildSupport/"
+# The keychain search list is stored under HOME. Use a private one, so this never edits the real list.
+export HOME="$work/home"
+mkdir -p "$HOME/Library/Preferences" "$HOME/Library/Keychains"
 keychains="$(security list-keychains -d user)"
 
 fail() {

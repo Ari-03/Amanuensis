@@ -58,12 +58,17 @@ notary_credentials=(--key "$work/notary-key.p8" --key-id "$AMANUENSIS_NOTARY_KEY
     --issuer "$AMANUENSIS_NOTARY_ISSUER_ID")
 unset "${secrets[@]}"
 
-# codesign finds the identity with --keychain, so the user's keychain search list stays untouched.
+# On macOS 26, codesign finds an identity only in a keychain on the search list, even with --keychain.
+# Deleting the keychain in cleanup also takes it off the list.
 # The runner's System keychain holds Apple's Developer ID G2 intermediate certificate.
 keychain_password="$(openssl rand -hex 24)"
 security create-keychain -p "$keychain_password" "$keychain"
 security set-keychain-settings -lut 7200 "$keychain"
 security unlock-keychain -p "$keychain_password" "$keychain"
+search_list=()
+while IFS= read -r line; do search_list+=("$line"); done \
+    < <(security list-keychains -d user | sed 's/^ *"\(.*\)"$/\1/')
+security list-keychains -d user -s "$keychain" ${search_list[@]+"${search_list[@]}"}
 security import "$work/certificate.p12" -k "$keychain" -f pkcs12 -P "$certificate_password" \
     -T /usr/bin/codesign >/dev/null \
     || fail "AMANUENSIS_SIGNING_CERTIFICATE could not be opened with AMANUENSIS_SIGNING_CERTIFICATE_PASSWORD"
