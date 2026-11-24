@@ -40,6 +40,8 @@ jobs:
     name: Build DMG
     needs: checks
     runs-on: macos-26
+    # Holds the Developer ID secrets. It admits only main and release tags; see docs/release-signing.md.
+    environment: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'release' || '' }}
     timeout-minutes: 90
     outputs:
       version: ${{ steps.version.outputs.version }}

@@ -40,7 +40,7 @@ version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/
 dmg="$app_root/artifacts/Amanuensis-$version-arm64.dmg"
 [[ -s "$dmg" ]] || fail "build $dmg first"
 
-umask 077
+# mktemp makes this directory private. A umask would also restrict the files packaged into the DMG.
 work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/amanuensis-release-signing.XXXXXX")"
 keychain="$work/signing.keychain-db"
 cleanup() {

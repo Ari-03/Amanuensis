@@ -1,6 +1,6 @@
 # Release signing
 
-Nightly and stable releases are ad-hoc signed until this repository has the five secrets below. After that, the release workflows sign the app and its helper with Developer ID and the hardened runtime, notarize and staple the app and the DMG, and then sign the DMG for the in-app updater. Local builds, pull requests and manual runs stay ad-hoc, and never see the secrets.
+Nightly and stable releases are ad-hoc signed until the `release` environment has the five secrets below. After that, the release workflows sign the app and its helper with Developer ID and the hardened runtime, notarize and staple the app and the DMG, and then sign the DMG for the in-app updater. Local builds, pull requests and manual runs stay ad-hoc, and never see the secrets.
 
 With no secrets set, releases are built as before. With only some set, the release fails and names the missing ones. A rejected notarization also fails the release.
 
@@ -49,7 +49,19 @@ Copy the **Issuer ID** shown above the list of keys, then run:
 pbpaste > notary-issuer-id
 ```
 
-### 3. Check the key, then set the secrets
+### 3. Restrict where the secrets can be used
+
+A repository secret is available to any workflow on any branch. Put these in an environment that admits only `main` and release tags:
+
+```sh
+gh api --method PUT repos/Ari-03/Amanuensis/environments/release \
+    -F 'deployment_branch_policy[protected_branches]=false' \
+    -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api repos/Ari-03/Amanuensis/environments/release/deployment-branch-policies -f name=main -f type=branch
+gh api repos/Ari-03/Amanuensis/environments/release/deployment-branch-policies -f name='v*' -f type=tag
+```
+
+### 4. Check the key, then set the secrets
 
 ```sh
 xcrun notarytool history --key AuthKey_*.p8 --key-id "$(cat notary-key-id)" --issuer "$(cat notary-issuer-id)"
@@ -58,18 +70,18 @@ xcrun notarytool history --key AuthKey_*.p8 --key-id "$(cat notary-key-id)" --is
 An empty history is fine. An authentication error means the key ID or issuer ID is wrong. Then set all five secrets; a release that starts with only some of them fails.
 
 ```sh
-gh secret set AMANUENSIS_SIGNING_CERTIFICATE --repo Ari-03/Amanuensis < developer-id.p12.base64
-gh secret set AMANUENSIS_SIGNING_CERTIFICATE_PASSWORD --repo Ari-03/Amanuensis < certificate-password
-gh secret set AMANUENSIS_NOTARY_KEY --repo Ari-03/Amanuensis < AuthKey_*.p8
-gh secret set AMANUENSIS_NOTARY_KEY_ID --repo Ari-03/Amanuensis < notary-key-id
-gh secret set AMANUENSIS_NOTARY_ISSUER_ID --repo Ari-03/Amanuensis < notary-issuer-id
+gh secret set AMANUENSIS_SIGNING_CERTIFICATE --repo Ari-03/Amanuensis --env release < developer-id.p12.base64
+gh secret set AMANUENSIS_SIGNING_CERTIFICATE_PASSWORD --repo Ari-03/Amanuensis --env release < certificate-password
+gh secret set AMANUENSIS_NOTARY_KEY --repo Ari-03/Amanuensis --env release < AuthKey_*.p8
+gh secret set AMANUENSIS_NOTARY_KEY_ID --repo Ari-03/Amanuensis --env release < notary-key-id
+gh secret set AMANUENSIS_NOTARY_ISSUER_ID --repo Ari-03/Amanuensis --env release < notary-issuer-id
 ```
 
 Back up the directory somewhere encrypted and keep it off shared disks. If you lose the key, revoke the certificate and make another for the same team. Keep the old certificate valid otherwise: revoking it stops macOS from opening builds already signed with it.
 
-### 4. Check the first notarized nightly
+### 5. Check the first notarized nightly
 
-Merge to `main`, or rerun the newest `main` build. Apple can hold a new team's first submission for longer than the 20 minutes a release waits. If that fails the build, wait and rerun it. Then download the nightly DMG in a browser on a Mac and check:
+Merge a change to `main`. Rerunning a build that already published changes nothing, because published downloads are never replaced. Apple can hold a new team's first submission for longer than the 20 minutes a release waits. If that fails the build before it publishes, wait and rerun it. Then download the nightly DMG in a browser on a Mac and check:
 
 ```sh
 spctl --assess --type open --context context:primary-signature -vv ~/Downloads/Amanuensis-*-arm64.dmg
