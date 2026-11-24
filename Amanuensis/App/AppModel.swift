@@ -1172,18 +1172,28 @@ final class AppModel {
         NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
     }
 
-    /// Delivers a failed cleanup's original text with the same focus check and clipboard fallback as
-    /// automatic paste, then History records what happened.
     private func pasteOriginal() {
-        guard let offer = originalOffer, !phase.isBusy, activeID == nil, cancellingID == nil else { return }
-        let delivered = delivery.deliver(text: offer.text)
+        if let offer = originalOffer { paste(offer.text, from: offer.id) }
+    }
+
+    /// Paste last transcript: the newest result in History, even one that mode settings or an unverified
+    /// field kept from pasting.
+    private func pasteLastTranscript() {
+        if let entry = history.newestFinished { paste(entry.finalText, from: entry.id) }
+    }
+
+    /// Delivers a History entry's text with the same focus check, clipboard fallback and pill outcome as
+    /// automatic paste, then History records what happened. Does nothing while a job is running.
+    private func paste(_ text: String, from id: UUID) {
+        guard !phase.isBusy, activeID == nil, cancellingID == nil else { return }
+        let delivered = delivery.deliver(text: text)
         refreshAccessibility()
-        if var entry = history.first(where: { $0.id == offer.id }) {
+        if var entry = history.first(where: { $0.id == id }) {
             entry.record(delivered)
             do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
             refreshHistory()
         }
-        showOutcome(cause(of: delivered), for: offer.id)
+        showOutcome(cause(of: delivered), for: id)
         phase = .complete
         statusMessage = delivered.message
     }
@@ -1368,11 +1378,13 @@ final class AppModel {
         if settings.toggleShortcut != previous.toggleShortcut
             || settings.pushToTalkShortcut != previous.pushToTalkShortcut
             || settings.modeShortcut != previous.modeShortcut
+            || settings.pasteLastShortcut != previous.pasteLastShortcut
         {
             if !configureShortcuts() {
                 settings.toggleShortcut = previous.toggleShortcut
                 settings.pushToTalkShortcut = previous.pushToTalkShortcut
                 settings.modeShortcut = previous.modeShortcut
+                settings.pasteLastShortcut = previous.pasteLastShortcut
             }
         }
         if settings.launchAtLogin != previous.launchAtLogin {
@@ -1396,7 +1408,7 @@ final class AppModel {
     private func configureShortcuts(modes proposedModes: [DictationMode]? = nil) -> Bool {
         let succeeded = shortcuts.setBindings(
             toggle: settings.toggleShortcut, pushToTalk: settings.pushToTalkShortcut,
-            changeMode: settings.modeShortcut,
+            changeMode: settings.modeShortcut, pasteLast: settings.pasteLastShortcut,
             onToggle: { [weak self] in
                 guard let self, !isEditingShortcut else { return }
                 toggleRecording()
@@ -1415,6 +1427,10 @@ final class AppModel {
                 guard let self, !isEditingShortcut, !modes.isEmpty else { return }
                 let index = modes.firstIndex(where: { $0.id == settings.selectedModeID }) ?? 0
                 selectMode(modes[(index + 1) % modes.count].id)
+            },
+            onPasteLast: { [weak self] in
+                guard let self, !isEditingShortcut else { return }
+                pasteLastTranscript()
             },
             onCancel: { [weak self] in self?.requestCancelRecording() },
             modeBindings: Dictionary(

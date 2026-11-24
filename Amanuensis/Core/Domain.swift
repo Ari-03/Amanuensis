@@ -390,6 +390,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var toggleShortcut: ShortcutBinding = .recording
     var pushToTalkShortcut: ShortcutBinding? = nil
     var modeShortcut: ShortcutBinding? = .mode
+    var pasteLastShortcut: ShortcutBinding? = nil
     var audioRetentionDays: Int = 7
     var textRetentionDays: Int = 0
     var launchAtLogin = false
@@ -632,6 +633,14 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
         attempt.countedInStatistics = false
         attempt.status = .transcribing
         return attempt
+    }
+}
+
+extension Sequence where Element == RecordingEntry {
+    /// What Paste last transcript pastes from History, which is newest first. Only a job that reached its
+    /// result has final text, so one cut short or with nothing to insert is passed over.
+    var newestFinished: RecordingEntry? {
+        first { $0.finalText.contains { !$0.isWhitespace } }
     }
 }
 

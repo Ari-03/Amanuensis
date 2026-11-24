@@ -187,6 +187,7 @@ struct SavedFormatCompatibilityTests {
         let saved = try JSONDecoder().decode(SavedConfiguration.self, from: Data(Self.configuration.utf8))
         #expect(saved.settings.dictationLanguage == nil)
         #expect(saved.settings.recorderStyle == .notch)
+        #expect(saved.settings.pasteLastShortcut == nil)
         #expect(saved.modes.count == 6)
         #expect(saved.modes.allSatisfy { $0.language == nil })
         var modes = saved.modes

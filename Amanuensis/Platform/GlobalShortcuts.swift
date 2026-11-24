@@ -62,6 +62,7 @@ final class GlobalShortcuts {
         case pushToTalk
         case changeMode
         case cancel
+        case pasteLast
     }
 
     struct Backend {
@@ -135,6 +136,7 @@ final class GlobalShortcuts {
     private var onToggle: () -> Void = {}
     private var onPushToTalk: (Bool) -> Void = { _ in }
     private var onChangeMode: () -> Void = {}
+    private var onPasteLast: () -> Void = {}
     private var onCancel: () -> Void = {}
     private var onInterruption: (() -> Void)?
     private var onModeRecording: (UUID) -> Void = { _ in }
@@ -203,9 +205,11 @@ final class GlobalShortcuts {
         toggle: ShortcutBinding,
         pushToTalk: ShortcutBinding?,
         changeMode: ShortcutBinding?,
+        pasteLast: ShortcutBinding? = nil,
         onToggle: @escaping () -> Void,
         onPushToTalk: @escaping (Bool) -> Void,
         onChangeMode: @escaping () -> Void,
+        onPasteLast: @escaping () -> Void = {},
         onCancel: @escaping () -> Void,
         modeBindings: [UUID: ShortcutBinding] = [:],
         onModeRecording: @escaping (UUID) -> Void = { _ in },
@@ -214,6 +218,7 @@ final class GlobalShortcuts {
         var desired = [Action.toggle.rawValue: toggle]
         desired[Action.pushToTalk.rawValue] = pushToTalk
         desired[Action.changeMode.rawValue] = changeMode
+        desired[Action.pasteLast.rawValue] = pasteLast
         var desiredModes: [UInt32: UUID] = [:]
         for (offset, entry) in modeBindings.sorted(by: { $0.key.uuidString < $1.key.uuidString }).enumerated()
         {
@@ -230,6 +235,7 @@ final class GlobalShortcuts {
         self.onToggle = onToggle
         self.onPushToTalk = onPushToTalk
         self.onChangeMode = onChangeMode
+        self.onPasteLast = onPasteLast
         self.onCancel = onCancel
         self.onInterruption = onInterruption
         self.onModeRecording = onModeRecording
@@ -435,6 +441,7 @@ final class GlobalShortcuts {
         case .pushToTalk: onPushToTalk(isDown)
         case .changeMode: if isDown { onChangeMode() }
         case .cancel: if isDown, recordingActive { onCancel() }
+        case .pasteLast: if isDown { onPasteLast() }
         }
     }
 }

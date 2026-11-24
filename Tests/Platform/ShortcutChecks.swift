@@ -122,6 +122,26 @@ struct ShortcutChecks {
         keys.press(first)
         precondition(invokedModes == [mode])
 
+        // Paste last fires once per press, rejects duplicates, and its absence leaves nothing registered.
+        let pasteLast = ShortcutBinding(keyCode: 9, modifiers: UInt32(cmdKey | optionKey), display: "⌥⌘V")
+        var pastes = 0
+        precondition(
+            manager.setBindings(
+                toggle: toggle, pushToTalk: nil, changeMode: nil, pasteLast: pasteLast,
+                onToggle: { toggles += 1 }, onPushToTalk: { _ in }, onChangeMode: {},
+                onPasteLast: { pastes += 1 }, onCancel: {},
+                modeBindings: [mode: first], onModeRecording: { invokedModes.append($0) }))
+        keys.press(pasteLast, repeating: 3)
+        precondition(pastes == 1 && toggles == 0, "Holding Paste last must paste once")
+        precondition(
+            !manager.setBindings(
+                toggle: toggle, pushToTalk: nil, changeMode: nil, pasteLast: toggle,
+                onToggle: {}, onPushToTalk: { _ in }, onChangeMode: {}, onCancel: {}))
+        keys.press(pasteLast)
+        precondition(pastes == 2, "A rejected Paste last edit must keep the working one")
+        precondition(apply(first))
+        precondition(!keys.active.values.contains(pasteLast) && keys.active == original)
+
         // In-app duplicates and reserved Escape reject before modifying the active set.
         precondition(!apply(toggle))
         precondition(keys.active == original)
@@ -185,7 +205,7 @@ struct ShortcutChecks {
         try await monitorReplacementChecks()
         try await modifierChecks()
         print(
-            "Shortcut checks passed: registration rollback, modes, Escape, modifier capture/persistence, chord suppression, hold-to-talk, interruption, monitor recovery"
+            "Shortcut checks passed: registration rollback, modes, paste last, Escape, modifier capture/persistence, chord suppression, hold-to-talk, interruption, monitor recovery"
         )
     }
 

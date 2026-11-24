@@ -70,6 +70,14 @@ struct ConfigurationView: View {
                             binding: $model.settings.modeShortcut, onChange: model.saveConfiguration,
                             onEditing: { model.isEditingShortcut = $0 })
                     }
+                    Divider()
+                    shortcutRow(
+                        "Paste last transcript", subtitle: "Paste your newest transcript where you're typing."
+                    ) {
+                        OptionalShortcutRecorder(
+                            binding: $model.settings.pasteLastShortcut, onChange: model.saveConfiguration,
+                            onEditing: { model.isEditingShortcut = $0 })
+                    }
                     Text("Shortcuts can use a key or just modifiers, such as ⌥⌘. Escape cancels a recording.")
                         .font(.caption).foregroundStyle(.secondary)
                     if usesModifierShortcut && !model.accessibilityGranted {
@@ -188,9 +196,11 @@ struct ConfigurationView: View {
     }
 
     private var usesModifierShortcut: Bool {
-        ([model.settings.toggleShortcut, model.settings.pushToTalkShortcut, model.settings.modeShortcut]
-            + model.modes.map(\.startShortcut))
-            .contains { $0?.isModifierOnly == true }
+        ([
+            model.settings.toggleShortcut, model.settings.pushToTalkShortcut, model.settings.modeShortcut,
+            model.settings.pasteLastShortcut,
+        ] + model.modes.map(\.startShortcut))
+        .contains { $0?.isModifierOnly == true }
     }
 
     private func shortcutRow<Content: View>(
