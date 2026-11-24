@@ -53,6 +53,25 @@ struct RecorderOutcomeTests {
         }
     }
 
+    /// Delivered text says its cleanup was skipped, offers the mode editor, and floats even in Hidden.
+    @Test func skippedCleanupIsNeverSilent() {
+        let inserted = RecorderOutcome(.inserted(app: "Mail"), recordingID: nil, withoutCleanup: true, at: 0)
+        #expect(inserted.label == "Inserted in Mail (no cleanup)")
+        #expect(inserted.kind == .warning && inserted.action == .openModes && inserted.deadline == 2)
+        // Pasting still comes first: without it the text is only on the clipboard.
+        let copied = RecorderOutcome(.needsAccessibility, recordingID: nil, withoutCleanup: true, at: 0)
+        #expect(copied.label == "Copied. Press ⌘V (no cleanup)" && copied.action == .allowPaste)
+        for style in RecorderStyle.allCases {
+            #expect(
+                RecorderLayout.presentedStyle(
+                    saved: style, alwaysShow: false, busy: false, cancellationPending: false,
+                    outcome: inserted) == .mini)
+        }
+        // With nothing delivered, there was nothing to clean up.
+        let silent = RecorderOutcome(.noSpeech, recordingID: nil, withoutCleanup: true, at: 0)
+        #expect(silent.label == "No speech detected" && !silent.withoutCleanup)
+    }
+
     @Test func successesNoticesAndWarningsCloseAfterTwoSeconds() {
         for cause in [RecorderOutcome.Cause.inserted(app: "Notes"), .noSpeech, .needsAccessibility] {
             let outcome = RecorderOutcome(cause, recordingID: nil, at: 100)

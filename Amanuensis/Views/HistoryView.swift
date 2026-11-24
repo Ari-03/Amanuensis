@@ -231,6 +231,9 @@ struct HistoryView: View {
                 Label("Cleanup was skipped.", systemImage: "forward")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if let notice = entry.cleanupNotice, !entry.finalText.isEmpty {
+                Label(notice, systemImage: "forward").font(.caption).foregroundStyle(.orange)
+            }
             if let message = entry.deliveryMessage {
                 Text(message).font(.caption).foregroundStyle(.secondary)
             }

@@ -2,16 +2,19 @@ import SwiftUI
 
 struct HomeView: View {
     @Bindable var model: AppModel
+    /// The cleanup API being set up. Kept here because saving its key can end the step that opened it.
+    @State private var connectingCleanup: ModelDescriptor?
     var body: some View {
         let settingUp = !model.settings.hasCompletedSetup
         let blockers = model.modeBlockers
+        let markers = model.modeMarkers
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 ScreenHeader(
                     title: "Make room for your words.",
                     subtitle: "Speak naturally. Keep your train of thought.")
                 if settingUp {
-                    SetupChecklistView(model: model)
+                    SetupChecklistView(model: model) { connectingCleanup = $0 }
                         .onChange(of: model.setupChecklist.isComplete, initial: true) { _, complete in
                             if complete { model.settings.hasCompletedSetup = true }
                         }
@@ -35,9 +38,9 @@ struct HomeView: View {
                             }
                             Divider()
                             ForEach(model.modes) { mode in
-                                // A mode that cannot record yet stays selectable and names what it needs.
+                                // A mode that still needs something stays selectable and names it.
                                 Button(
-                                    blockers[mode.id].map { "\(mode.name) · \($0.shortReason)" } ?? mode.name,
+                                    markers[mode.id].map { "\(mode.name) · \($0)" } ?? mode.name,
                                     systemImage: mode.symbol
                                 ) {
                                     model.selectMode(mode.id)
@@ -63,6 +66,10 @@ struct HomeView: View {
                                 systemImage: "exclamationmark.triangle"
                             )
                             .font(.callout).foregroundStyle(.orange)
+                        } else if !model.phase.isBusy, blockers[model.currentMode.id] == nil,
+                            let gap = model.cleanupGaps[model.currentMode.id]
+                        {
+                            Text(gap.warning).font(.callout).foregroundStyle(.secondary)
                         }
                         Text(
                             model.isCancellationPending
@@ -163,6 +170,18 @@ struct HomeView: View {
                         }
                     }
                 }
+                // The checklist's optional step after setup, until cleanup works or Not now.
+                if !settingUp && !model.modesAwaitingCleanup.isEmpty {
+                    SettingsCard {
+                        HStack {
+                            Label("Set up cleanup", systemImage: "text.badge.checkmark").font(.headline)
+                            Spacer()
+                            Button("Not now") { model.settings.skippedCleanupSetup = true }
+                                .buttonStyle(.borderless)
+                        }
+                        CleanupSetup(model: model) { connectingCleanup = $0 }
+                    }
+                }
                 // Skipping text insertion in setup also dismisses this card; the pill still offers Allow paste.
                 if !settingUp && !model.accessibilityGranted
                     && model.settings.skippedTextInsertionSetup != true
@@ -190,6 +209,7 @@ struct HomeView: View {
                 }
             }.padding(28).frame(maxWidth: 960).frame(maxWidth: .infinity)
         }
+        .sheet(item: $connectingCleanup) { APIConfigurationSheet(model: model, descriptor: $0) }
     }
 
     /// The language whose Apple Speech assets a blocker asks for, if that is what it is.

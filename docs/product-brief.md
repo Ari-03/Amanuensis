@@ -42,6 +42,7 @@ Provide Voice to text, Message, Mail, Notes, Meeting, and Custom presets. Let th
 | Playback during recording | Offer keep playing, pause, lower volume, and mute where the implementation can support them. |
 | System audio | Allow meeting capture to include computer audio. |
 | Identify speakers | Desired if practical. Feasibility and model requirements remain open. |
+| Filler removal | Optionally leave um, uh and similar out of English results. The original transcript keeps them. |
 | Capitalize on insertion | Optionally capitalize the beginning of inserted text. |
 | Auto-paste | Control whether completed text is inserted into the destination. |
 | Delete | Delete the mode. The screenshot's Delete this mode is separate from recording retention. |
@@ -67,8 +68,8 @@ The walkthrough says TTS, but the intended operation here is speech-to-text. Tex
 | --- | --- |
 | Appearance | System, light, and dark themes are shown in the reference. |
 | Recording window | Classic, mini, hidden, and a notch-style indicator; an always-show preference. |
-| Shortcuts | Toggle recording, cancel recording, change mode, and push-to-talk. |
-| Push-to-talk | Record while the shortcut is held; finish when released. |
+| Shortcuts | Toggle recording, cancel recording, change mode, push-to-talk, and paste last transcript. |
+| Push-to-talk | Record while the shortcut is held; finish when released. The toggle shortcut can do the same when Hold to record is on. |
 | Mouse shortcut | Shown in the reference as tap to toggle or hold to record; proposed pending prioritization. |
 | Updates | Check for updates and automatically check for updates. Whether updates also install automatically needs definition. |
 | Startup | Launch on login. |

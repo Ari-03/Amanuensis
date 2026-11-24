@@ -160,6 +160,13 @@ struct DictationMode: Identifiable, Codable, Equatable, Sendable {
     /// Overrides the Settings language for this mode. Nil means "same as Settings", and is what
     /// configuration saved before languages existed decodes to.
     var language: SpeechLanguage? = nil
+    /// Nil until changed, which means off. Optional so earlier saves still decode; read `removesFillers`.
+    var fillerRemoval: Bool? = nil
+    /// Whether results in English leave out "um", "uh" and similar.
+    var removesFillers: Bool {
+        get { fillerRemoval ?? false }
+        set { fillerRemoval = newValue }
+    }
 
     var symbol: String { customSymbol ?? preset.symbol }
 
@@ -388,8 +395,11 @@ struct AppSettings: Codable, Equatable, Sendable {
     var livePreview: Bool? = nil
     var requireLocalProcessing = true
     var toggleShortcut: ShortcutBinding = .recording
+    /// Nil until changed, which means off. Optional so earlier saves still decode; read `holdsToRecord`.
+    var holdToRecord: Bool? = nil
     var pushToTalkShortcut: ShortcutBinding? = nil
     var modeShortcut: ShortcutBinding? = .mode
+    var pasteLastShortcut: ShortcutBinding? = nil
     var audioRetentionDays: Int = 7
     var textRetentionDays: Int = 0
     var launchAtLogin = false
@@ -400,6 +410,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var hasCompletedSetup = false
     /// Set by Skip on the setup checklist's text insertion step. Optional so earlier saves still decode.
     var skippedTextInsertionSetup: Bool? = nil
+    /// Set by Not now on the optional cleanup step. Optional so earlier saves still decode.
+    var skippedCleanupSetup: Bool? = nil
     /// Model IDs the user chose for API rows, by catalog row ID.
     var apiModelOverrides: [String: String] = [:]
     /// The OpenAI-compatible server's base URL as saved, normalized by `APIBaseURL` when it was entered
@@ -414,6 +426,13 @@ struct AppSettings: Codable, Equatable, Sendable {
     var showsLivePreview: Bool {
         get { livePreview ?? true }
         set { livePreview = newValue }
+    }
+    /// Whether holding the recording shortcut records until it is released. Off unless chosen: a long
+    /// press otherwise starts a recording that keeps going after the release. Never for a modifier-only
+    /// shortcut, which acts on release; push-to-talk covers it.
+    var holdsToRecord: Bool {
+        get { holdToRecord == true && !toggleShortcut.isModifierOnly }
+        set { holdToRecord = newValue }
     }
 }
 
@@ -593,6 +612,9 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
     var parentRecordingID: UUID? = nil
     /// True when the user pressed Skip during cleanup. Optional so rows saved before it existed still decode.
     var cleanupSkipped: Bool? = nil
+    /// Set when recording starts if the mode's cleanup model is not set up: the recording runs without
+    /// it, and this says why. Optional so rows saved before it existed still decode.
+    var cleanupNotice: String? = nil
     /// The language resolved when recording started, so a retry transcribes the same way.
     /// Nil in rows saved before languages existed; `transcriptionLanguage` reads those as English.
     var language: SpeechLanguage? = nil
@@ -619,6 +641,7 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
         attempt.transcriptionSeconds = nil
         attempt.cleanedText = nil
         attempt.cleanupSkipped = nil
+        attempt.cleanupNotice = nil
         attempt.finalText = ""
         attempt.error = nil
         attempt.destinationApp = nil
@@ -626,6 +649,14 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
         attempt.countedInStatistics = false
         attempt.status = .transcribing
         return attempt
+    }
+}
+
+extension Sequence where Element == RecordingEntry {
+    /// What Paste last transcript pastes from History, which is newest first. Only a job that reached its
+    /// result has final text, so one cut short or with nothing to insert is passed over.
+    var newestFinished: RecordingEntry? {
+        first { $0.finalText.contains { !$0.isWhitespace } }
     }
 }
 

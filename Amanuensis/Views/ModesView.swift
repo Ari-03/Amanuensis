@@ -13,7 +13,7 @@ struct ModesView: View {
     private var selected: DictationMode? { model.modes.first { $0.id == selectedID } }
 
     var body: some View {
-        let blockers = model.modeBlockers
+        let markers = model.modeMarkers
         HSplitView {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -31,9 +31,9 @@ struct ModesView: View {
                         Image(systemName: mode.symbol).frame(width: 20).foregroundStyle(.tint)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(mode.name).fontWeight(.medium)
-                            // A mode that cannot record yet names what it needs instead of its speech model.
-                            if let blocker = blockers[mode.id] {
-                                Label(blocker.shortReason, systemImage: "exclamationmark.triangle")
+                            // A mode that still needs something names it instead of its speech model.
+                            if let marker = markers[mode.id] {
+                                Label(marker, systemImage: "exclamationmark.triangle")
                                     .font(.caption).foregroundStyle(.orange).lineLimit(1)
                                     .truncationMode(.middle)
                             } else {
@@ -149,7 +149,7 @@ struct ModesView: View {
                             == .s1mini
                         {
                             Text(
-                                "S1-mini uses tone, list formatting, and email context. Custom instructions require an OpenAI or Claude cleanup model."
+                                "S1-mini uses tone, list formatting, and email context. Custom instructions require an API cleanup model."
                             )
                             .font(.caption).foregroundStyle(.secondary)
                         } else if ModelCatalog.models.first(where: { $0.id == mode.cleanupModelID })?.location
@@ -160,7 +160,7 @@ struct ModesView: View {
                                 .padding(6).overlay(
                                     RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
                         } else {
-                            Text("Choose an OpenAI or Claude cleanup model to add custom instructions.")
+                            Text("Choose an API cleanup model to add custom instructions.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -221,6 +221,14 @@ struct ModesView: View {
                 SettingsCard {
                     Text("Recording and insertion").font(.headline)
                     Toggle("Capitalize the first word", isOn: binding(mode, \.capitalize))
+                    Toggle("Remove um, uh and similar fillers", isOn: binding(mode, \.removesFillers))
+                        .disabled(model.language(for: mode) != .english)
+                    Text(
+                        model.language(for: mode) == .english
+                            ? "The original transcript in History keeps them."
+                            : "Applies only when this mode's language is English."
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
                     Toggle("Paste into the active app", isOn: binding(mode, \.autoPaste))
                     Toggle("Include system audio", isOn: binding(mode, \.recordSystemAudio))
                     Text(
@@ -311,6 +319,9 @@ struct ModesView: View {
                         error: model.library.errors[current.id],
                         onDownload: { Task { await model.download(current) } },
                         onCancel: { model.library.cancelDownload(current.id) })
+                    if purpose == .cleanup {
+                        Text(plainTranscriptNote(current)).font(.caption).foregroundStyle(.secondary)
+                    }
                 case .appleSpeechNotReady(let code):
                     Label(
                         "Apple Speech needs preparing for \(SpeechLanguage.name(of: code)) in Models.",
@@ -320,7 +331,9 @@ struct ModesView: View {
                 case .apiKeyMissing, .providerNotSetUp:
                     HStack(spacing: 8) {
                         Label(
-                            blocker.errorDescription ?? blocker.shortReason,
+                            purpose == .cleanup
+                                ? plainTranscriptNote(current)
+                                : blocker.errorDescription ?? blocker.shortReason,
                             systemImage: "exclamationmark.triangle"
                         )
                         .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
@@ -336,6 +349,11 @@ struct ModesView: View {
                 }
             }
         }
+    }
+
+    /// What a mode does while its cleanup model is not set up. Whether it can record is up to speech.
+    private func plainTranscriptNote(_ cleanup: ModelDescriptor) -> String {
+        "Until \(cleanup.name) is set up, this mode gives you the plain transcript."
     }
 
     /// "Whisper tiny · 155 MB", "OpenAI Transcription · Needs OpenAI key", or a ready model's name, with

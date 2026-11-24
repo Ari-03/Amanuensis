@@ -72,7 +72,7 @@ extension SpeechLanguage {
 struct ModelListOptions: Equatable, Sendable {
     enum Place: String, CaseIterable, Sendable {
         case all = "All"
-        case installed = "Installed"
+        case downloaded = "Downloaded"
         case onThisMac = "On this Mac"
         case api = "API"
     }
@@ -101,7 +101,7 @@ struct ModelListOptions: Equatable, Sendable {
             let placed =
                 switch place {
                 case .all: true
-                case .installed: readiness.installedModelIDs.contains(model.id)
+                case .downloaded: readiness.installedModelIDs.contains(model.id)
                 case .onThisMac: model.isLocal
                 case .api: model.location == .cloud
                 }

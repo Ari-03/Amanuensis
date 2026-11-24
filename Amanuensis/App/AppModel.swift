@@ -88,6 +88,8 @@ final class AppModel {
     @ObservationIgnored private var activeID: UUID?
     @ObservationIgnored private var cancellingID: UUID?
     @ObservationIgnored private var activeEntry: RecordingEntry?
+    /// The recording the toggle shortcut's latest press started, if any. Releasing a hold ends only that one.
+    @ObservationIgnored private var heldRecordingID: UUID?
     @ObservationIgnored private var startupComplete = false
     @ObservationIgnored private var changingConfiguration = false
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
@@ -223,6 +225,16 @@ final class AppModel {
         }
     }
 
+    /// The release that ends a hold. One that arrives before recording starts cancels it, so the
+    /// microphone never opens after the keys are up.
+    private func endHeldRecording() {
+        if phase == .preparing {
+            cancelRecording()
+        } else if phase == .recording {
+            stopRecording()
+        }
+    }
+
     private func beginRecording(mode override: DictationMode? = nil) {
         guard !phase.isBusy, activeID == nil, cancellingID == nil, !isEditingShortcut, modelReleaseCount == 0
         else {
@@ -264,12 +276,14 @@ final class AppModel {
         phase = .preparing
         statusMessage = "Checking microphone and models…"
         errorMessage = nil
-        work = Task { [weak self] in
+        work = Task { [weak self, entry] in
             guard let self else { return }
+            var entry = entry
             do {
-                try await validate(entry)
+                entry.cleanupNotice = try await validate(entry)?.notice
                 try ensureActive(id)
-                library.inUseModelIDs = Set([chosen.speechModelID, chosen.cleanupModelID].compactMap { $0 })
+                activeEntry = entry
+                library.inUseModelIDs = modelIDsInUse(by: entry)
                 try store.upsertRecording(entry)
                 refreshHistory()
                 try playback.begin(chosen.playback)
@@ -290,7 +304,8 @@ final class AppModel {
                 prepareSpeechWhileRecording(entry)
                 liveTranscription?.begin(after: speechPreparation)
                 phase = .recording
-                statusMessage = "Listening in \(chosen.name)"
+                statusMessage =
+                    "Listening in \(chosen.name)" + (entry.cleanupNotice == nil ? "" : ", without cleanup")
                 shortcuts.setRecordingActive(true)
                 if settings.playSoundEffects { NSSound(named: "Tink")?.play() }
             } catch {
@@ -514,15 +529,17 @@ final class AppModel {
             return
         }
 
-        var selectedText = entry.rawText
-        if let cleanup = entry.cleanupSnapshot {
+        let transcript = entry.transcript
+        var selectedText = transcript
+        // A transcript of nothing but fillers leaves nothing to clean or insert.
+        if let cleanup = entry.cleanupSnapshot, entry.cleanupNotice == nil, !transcript.isEmpty {
             phase = .cleaning
             statusMessage = "Cleaning up with \(cleanup.name)…"
             entry.status = .cleaning
             try store?.upsertRecording(entry)
             cleanupSkipped = false
             let result: Result<String, any Error>
-            do { result = .success(try await clean(entry.rawText, with: cleanup, mode: entry.mode)) } catch {
+            do { result = .success(try await clean(transcript, with: cleanup, for: entry)) } catch {
                 result = .failure(error)
             }
             // Skip wins even if the model finished; its cancellation error is ignored.
@@ -539,7 +556,7 @@ final class AppModel {
             case (false, .failure(let error)):
                 entry.error = "Cleanup failed: \(error.localizedDescription)"
                 entry.finalText = TextRules.apply(
-                    entry.rawText, vocabulary: entry.vocabularySnapshot ?? [],
+                    transcript, vocabulary: entry.vocabularySnapshot ?? [],
                     capitalize: entry.mode.capitalize)
                 entry.status = .failed
                 originalOffer = (id, entry.finalText)
@@ -575,11 +592,13 @@ final class AppModel {
         try complete(entry, message: entry.deliveryMessage ?? "Your transcript is ready.", outcome: outcome)
     }
 
-    private func clean(_ text: String, with cleanup: ModelDescriptor, mode: DictationMode) async throws
+    /// Cloud models also get the recording's vocabulary. S1-mini takes none.
+    private func clean(_ text: String, with cleanup: ModelDescriptor, for entry: RecordingEntry) async throws
         -> String
     {
         if cleanup.location == .cloud {
-            return try await cloud.clean(text: text, model: cleanup, mode: mode)
+            return try await cloud.clean(
+                text: text, model: cleanup, mode: entry.mode, vocabulary: entry.vocabularySnapshot ?? [])
         }
         guard cleanup.engine == .s1mini else {
             throw AppFailure("This cleanup engine is not supported by this build.")
@@ -587,7 +606,7 @@ final class AppModel {
         guard let path = library.localURL(for: cleanup.id) else {
             throw AppFailure("Install S1-mini first.")
         }
-        return try await normalizer.clean(text: text, modelURL: path, mode: mode)
+        return try await normalizer.clean(text: text, modelURL: path, mode: entry.mode)
     }
 
     private func cause(of delivered: DeliveryOutcome) -> RecorderOutcome.Cause {
@@ -611,8 +630,9 @@ final class AppModel {
 
     /// Uses the same rules as the mode markers, after rechecking what they cache: model folders on disk,
     /// Apple Speech assets, and the Keychain for the API models this recording uses. A Keychain error
-    /// is thrown as itself rather than reported as a missing key.
-    private func validate(_ entry: RecordingEntry) async throws {
+    /// is thrown as itself rather than reported as a missing key. Returns the cleanup the recording
+    /// must go without because it is not set up, if any.
+    private func validate(_ entry: RecordingEntry) async throws -> CleanupGap? {
         if entry.speechSnapshot?.engine == .apple { try await appleSpeech.checkReadiness() }
         library.refreshInstalledModels()
         var facts = readiness
@@ -635,6 +655,14 @@ final class AppModel {
         {
             throw failure
         }
+        return entry.cleanupSnapshot.flatMap(facts.cleanupGap(for:))
+    }
+
+    /// The models a recording holds. Cleanup it goes without stays free to download meanwhile.
+    private func modelIDsInUse(by entry: RecordingEntry) -> Set<String> {
+        Set(
+            [entry.mode.speechModelID, entry.cleanupNotice == nil ? entry.mode.cleanupModelID : nil]
+                .compactMap { $0 })
     }
 
     /// What decides whether a mode can record, from state kept in memory, so views can read it freely.
@@ -694,6 +722,31 @@ final class AppModel {
         }
     }
 
+    /// The cleanup each mode records without because it is not set up. Views read it once per render.
+    var cleanupGaps: [UUID: CleanupGap] {
+        let readiness = readiness
+        return modes.reduce(into: [:]) { gaps, mode in
+            gaps[mode.id] = mode.cleanupModelID.flatMap(effectiveModel).flatMap(readiness.cleanupGap(for:))
+        }
+    }
+
+    /// The short label wherever a mode is chosen: why it cannot record, else what its cleanup needs.
+    var modeMarkers: [UUID: String] {
+        cleanupGaps.mapValues(\.marker).merging(modeBlockers.mapValues(\.shortReason)) { $1 }
+    }
+
+    /// The modes setup's optional cleanup step names, or none once it is done or put off.
+    var modesAwaitingCleanup: [DictationMode] {
+        guard settings.skippedCleanupSetup != true else { return [] }
+        return readiness.modesAwaitingCleanup(modes) { $0.cleanupModelID.flatMap(effectiveModel) }
+    }
+
+    /// Switches the modes that lack working cleanup to a model the user chose and that can run.
+    func useForAwaitingCleanup(_ cleanup: ModelDescriptor) {
+        guard readiness.blocker(for: cleanup, language: .automatic) == nil else { return }
+        for id in modesAwaitingCleanup.map(\.id) { use(cleanup, in: id) }
+    }
+
     /// The current mode's speech model, or nil if the catalog no longer has it.
     var currentSpeechModel: ModelDescriptor? { effectiveModel(currentMode.speechModelID) }
 
@@ -716,9 +769,10 @@ final class AppModel {
         shortcuts.setRecordingActive(false)
         // Showing the outcome while the phase is still busy lets the pill change in place instead of
         // hiding, when controls are not kept visible, and reappearing at idle size.
-        showOutcome(outcome, for: entry.id)
+        showOutcome(outcome, for: entry.id, withoutCleanup: entry.cleanupNotice != nil)
         phase = .complete
-        statusMessage = message
+        statusMessage = [entry.status == .complete ? entry.cleanupNotice : nil, message].compactMap { $0 }
+            .joined(separator: " ")
         refreshHistory()
         enforceRetention()
     }
@@ -830,11 +884,12 @@ final class AppModel {
         phase = .preparing
         statusMessage = "Checking the original recording settings…"
         errorMessage = nil
-        let task = Task { [weak self] in
+        let task = Task { [weak self, entry] in
             guard let self else {
                 try? store.releaseAudioLease(for: original)
                 return
             }
+            var entry = entry
             defer {
                 do { try store.releaseAudioLease(for: original) } catch {
                     errorMessage = "Could not finish audio cleanup: \(error.localizedDescription)"
@@ -849,10 +904,10 @@ final class AppModel {
                     try FileManager.default.copyItem(at: sourceURL, to: attemptURL)
                 }.value
                 try ensureActive(id)
-                try await validate(entry)
+                entry.cleanupNotice = try await validate(entry)?.notice
                 try ensureActive(id)
-                library.inUseModelIDs = Set(
-                    [entry.mode.speechModelID, entry.mode.cleanupModelID].compactMap { $0 })
+                activeEntry = entry
+                library.inUseModelIDs = modelIDsInUse(by: entry)
                 prepareSpeechWhileRecording(entry)
                 try await process(entry, audioURL: attemptURL, shouldDeliver: false)
             } catch {
@@ -1091,8 +1146,10 @@ final class AppModel {
         if accessibilityGranted && recorderOutcome?.action == .allowPaste { recorderOutcome = nil }
     }
 
-    private func showOutcome(_ cause: RecorderOutcome.Cause, for id: UUID) {
-        let outcome = RecorderOutcome(cause, recordingID: id)
+    private func showOutcome(
+        _ cause: RecorderOutcome.Cause, for id: UUID, withoutCleanup: Bool = false
+    ) {
+        let outcome = RecorderOutcome(cause, recordingID: id, withoutCleanup: withoutCleanup)
         recorderOutcome = outcome
         if outcome.kind == .failure || outcome.kind == .warning {
             AccessibilityNotification.Announcement(outcome.label).post()
@@ -1129,20 +1186,30 @@ final class AppModel {
         NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
     }
 
-    /// Delivers a failed cleanup's original text with the same focus check and clipboard fallback as
-    /// automatic paste, then History records what happened.
     private func pasteOriginal() {
-        guard let offer = originalOffer, !phase.isBusy, activeID == nil, cancellingID == nil else { return }
-        let delivered = delivery.deliver(text: offer.text)
-        refreshAccessibility()
+        guard let offer = originalOffer, let delivered = paste(offer.text, from: offer.id) else { return }
         if var entry = history.first(where: { $0.id == offer.id }) {
             entry.record(delivered)
             do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
             refreshHistory()
         }
-        showOutcome(cause(of: delivered), for: offer.id)
+    }
+
+    /// Paste last transcript: the newest result in History, which keeps how it was first delivered.
+    private func pasteLastTranscript() {
+        if let entry = history.newestFinished { paste(entry.finalText, from: entry.id) }
+    }
+
+    /// Delivers a History entry's text with the same focus check, clipboard fallback and pill outcome as
+    /// automatic paste. Nil, with nothing done, while a job is running.
+    @discardableResult private func paste(_ text: String, from id: UUID) -> DeliveryOutcome? {
+        guard !phase.isBusy, activeID == nil, cancellingID == nil else { return nil }
+        let delivered = delivery.deliver(text: text)
+        refreshAccessibility()
+        showOutcome(cause(of: delivered), for: id)
         phase = .complete
         statusMessage = delivered.message
+        return delivered
     }
 
     func setRecorderHovering(_ hovering: Bool) {
@@ -1323,13 +1390,17 @@ final class AppModel {
         defer { changingConfiguration = false }
         if settings.requireLocalProcessing && !previous.requireLocalProcessing { cloud.cancel() }
         if settings.toggleShortcut != previous.toggleShortcut
+            || settings.holdsToRecord != previous.holdsToRecord
             || settings.pushToTalkShortcut != previous.pushToTalkShortcut
             || settings.modeShortcut != previous.modeShortcut
+            || settings.pasteLastShortcut != previous.pasteLastShortcut
         {
             if !configureShortcuts() {
                 settings.toggleShortcut = previous.toggleShortcut
+                settings.holdToRecord = previous.holdToRecord
                 settings.pushToTalkShortcut = previous.pushToTalkShortcut
                 settings.modeShortcut = previous.modeShortcut
+                settings.pasteLastShortcut = previous.pasteLastShortcut
             }
         }
         if settings.launchAtLogin != previous.launchAtLogin {
@@ -1352,26 +1423,35 @@ final class AppModel {
     @discardableResult
     private func configureShortcuts(modes proposedModes: [DictationMode]? = nil) -> Bool {
         let succeeded = shortcuts.setBindings(
-            toggle: settings.toggleShortcut, pushToTalk: settings.pushToTalkShortcut,
-            changeMode: settings.modeShortcut,
+            toggle: settings.toggleShortcut, holdsToRecord: settings.holdsToRecord,
+            pushToTalk: settings.pushToTalkShortcut,
+            changeMode: settings.modeShortcut, pasteLast: settings.pasteLastShortcut,
             onToggle: { [weak self] in
                 guard let self, !isEditingShortcut else { return }
+                let starts = !phase.isBusy
                 toggleRecording()
+                heldRecordingID = starts ? activeID : nil
+            },
+            onToggleHoldEnd: { [weak self] in
+                guard let self, let id = heldRecordingID, id == activeID else { return }
+                endHeldRecording()
             },
             onPushToTalk: { [weak self] down in
                 guard let self, !isEditingShortcut else { return }
                 if down {
                     if !phase.isBusy { beginRecording() }
-                } else if phase == .preparing {
-                    cancelRecording()
-                } else if phase == .recording {
-                    stopRecording()
+                } else {
+                    endHeldRecording()
                 }
             },
             onChangeMode: { [weak self] in
                 guard let self, !isEditingShortcut, !modes.isEmpty else { return }
                 let index = modes.firstIndex(where: { $0.id == settings.selectedModeID }) ?? 0
                 selectMode(modes[(index + 1) % modes.count].id)
+            },
+            onPasteLast: { [weak self] in
+                guard let self, !isEditingShortcut else { return }
+                pasteLastTranscript()
             },
             onCancel: { [weak self] in self?.requestCancelRecording() },
             modeBindings: Dictionary(

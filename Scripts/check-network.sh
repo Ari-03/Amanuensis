@@ -10,6 +10,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -sdk "$(xcrun --sdk macosx --s
     "$repo_root/Amanuensis/Core/APIBaseURL.swift" \
     "$repo_root/Amanuensis/Network/CredentialStore.swift" \
     "$repo_root/Amanuensis/Network/CloudProviders.swift" \
+    "$repo_root/Amanuensis/Network/UploadAudio.swift" \
     "$repo_root/Tests/Network/CloudProviderChecks.swift" \
     -o "$check_directory/cloud-provider-checks"
 "$check_directory/cloud-provider-checks"

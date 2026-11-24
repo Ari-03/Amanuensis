@@ -27,7 +27,7 @@ struct RecordingReadinessTests {
         requireLocalProcessing: true, installedModelIDs: [], connectedProviders: [],
         appleSpeechReadyLanguages: [], appleSpeechLanguages: ["en", "fr"], cleanupHelperAvailable: true)
 
-    @Test func freshInstallModesNeedAppleSpeechThenS1Mini() {
+    @Test func freshInstallModesNeedAppleSpeechAndRecordWithoutS1Mini() {
         #expect(
             fresh.blocker(
                 speech: apple, cleanup: nil, cleanupModelID: nil, language: .english, identifySpeakers: false)
@@ -38,17 +38,55 @@ struct RecordingReadinessTests {
             prepared.blocker(
                 speech: apple, cleanup: nil, cleanupModelID: nil, language: .english, identifySpeakers: false)
                 == nil)
-        let mail = prepared.blocker(
-            speech: apple, cleanup: s1mini, cleanupModelID: s1mini.id, language: .english,
-            identifySpeakers: false)
-        #expect(mail == .modelNotInstalled("S1-mini"))
-        #expect(mail?.shortReason == "Needs S1-mini")
-        prepared.installedModelIDs = ["s1-mini"]
-        #expect(
-            prepared.blocker(
-                speech: apple, cleanup: s1mini, cleanupModelID: s1mini.id, language: .english,
-                identifySpeakers: false)
-                == nil)
+        // Missing cleanup alone never blocks, installed or not, and is never silent.
+        for installed in [[], ["s1-mini"]] as [Set<String>] {
+            prepared.installedModelIDs = installed
+            #expect(
+                prepared.blocker(
+                    speech: apple, cleanup: s1mini, cleanupModelID: s1mini.id, language: .english,
+                    identifySpeakers: false)
+                    == nil)
+            #expect((prepared.cleanupGap(for: s1mini) == nil) == !installed.isEmpty)
+        }
+        let gap = fresh.cleanupGap(for: s1mini)
+        #expect(gap?.marker == "Cleanup needs S1-mini")
+        #expect(gap?.notice == "Cleanup was skipped because S1-mini is not installed.")
+    }
+
+    @Test func onlyCleanupThatIsNotSetUpIsSkipped() {
+        var readiness = fresh
+        // An API the policy refuses stays blocked, not skipped, so the policy is never worked around.
+        #expect(readiness.cleanupGap(for: openAICleanup) == nil)
+        readiness.requireLocalProcessing = false
+        #expect(readiness.cleanupGap(for: openAICleanup) == .keyMissing(provider: "OpenAI"))
+        readiness.connectedProviders = [.openAI]
+        #expect(readiness.cleanupGap(for: openAICleanup) == nil)
+        // A broken build is not something setting up a model fixes.
+        readiness.installedModelIDs = ["s1-mini"]
+        readiness.cleanupHelperAvailable = false
+        #expect(readiness.cleanupGap(for: s1mini) == nil)
+    }
+
+    @Test func theCleanupStepNamesModesWithoutWorkingCleanup() {
+        func awaiting(_ readiness: RecordingReadiness, _ modes: [DictationMode]) -> [String] {
+            readiness.modesAwaitingCleanup(modes) { mode in
+                [s1mini, openAICleanup].first { $0.id == mode.cleanupModelID }
+            }.map(\.name)
+        }
+        #expect(awaiting(fresh, DictationMode.initial) == ["Message", "Mail", "Notes", "Meeting"])
+        var readiness = fresh
+        readiness.installedModelIDs = ["s1-mini"]
+        #expect(awaiting(readiness, DictationMode.initial).isEmpty)
+        // Modes without cleanup have nothing to unlock.
+        #expect(awaiting(fresh, [DictationMode.make(preset: .dictation)]).isEmpty)
+        // A mode with working cleanup drops out; the others still need theirs.
+        readiness = fresh
+        readiness.requireLocalProcessing = false
+        readiness.connectedProviders = [.openAI]
+        var modes = DictationMode.initial
+        #expect(!awaiting(readiness, modes).isEmpty)
+        modes[1].cleanupModelID = openAICleanup.id
+        #expect(awaiting(readiness, modes) == ["Mail", "Notes", "Meeting"])
     }
 
     @Test func speechIsReportedBeforeCleanup() {
@@ -76,8 +114,8 @@ struct RecordingReadinessTests {
         #expect(
             readiness.blocker(
                 speech: parakeet, cleanup: openAICleanup, cleanupModelID: openAICleanup.id,
-                language: .english, identifySpeakers: false)
-                == .apiKeyMissing(provider: "OpenAI"))
+                language: .english, identifySpeakers: false) == nil)
+        #expect(readiness.cleanupGap(for: openAICleanup) == .keyMissing(provider: "OpenAI"))
         readiness.connectedProviders = [.openAI]
         #expect(
             readiness.blocker(

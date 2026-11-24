@@ -107,6 +107,13 @@ struct ModelCatalogTests {
             readiness.blocker(for: resolved, language: .english) == .providerNotSetUp(provider: row.provider))
     }
 
+    /// Cleanup runs on every dictation, so its Claude default is the fast, cheap model the summary names.
+    @Test func claudeCleanupDefaultsToHaiku() throws {
+        let row = try #require(models.first { $0.id == "claude-cleanup" })
+        #expect(row.apiModelID == "claude-haiku-5-5")
+        #expect(row.summary.contains("Claude Haiku 5.5"))
+    }
+
     @Test func detectionIsClaimedOnlyWhereItWorks() {
         // The pinned MLX Whisper omits its language token for detection but has no detection pass, which
         // produced dots and stray letters for French and English clips. Apple Speech cannot detect.
@@ -180,6 +187,14 @@ struct SavedFormatCompatibilityTests {
         let saved = try JSONDecoder().decode(SavedConfiguration.self, from: Data(Self.configuration.utf8))
         #expect(saved.settings.dictationLanguage == nil)
         #expect(saved.settings.recorderStyle == .notch)
+        #expect(saved.settings.pasteLastShortcut == nil)
+        #expect(!saved.settings.holdsToRecord)
+        // A saved Hold to record has no effect on a modifier-only shortcut.
+        var settings = saved.settings
+        settings.holdsToRecord = true
+        #expect(settings.holdsToRecord)
+        settings.toggleShortcut = ShortcutBinding(keyCode: nil, modifiers: 2304, display: "⌥⌘")
+        #expect(!settings.holdsToRecord)
         #expect(saved.modes.count == 6)
         #expect(saved.modes.allSatisfy { $0.language == nil })
         var modes = saved.modes
