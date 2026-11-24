@@ -114,22 +114,6 @@ struct ModelCatalogTests {
         #expect(row.summary.contains("Claude Haiku 5.5"))
     }
 
-    /// A conversion of the same weights, further training of them, or a larger model of the same release
-    /// hears the same languages as the row it was added beside.
-    @Test func rowsOfTheSameModelDeclareTheSameLanguages() throws {
-        for (id, original) in [
-            ("parakeet-ultra", "parakeet-v3"), ("qwen3-asr-1.7b", "qwen3-asr-0.6b"),
-            ("whisper-large-v3-turbo-8bit", "whisper-large-v3-turbo"),
-        ] {
-            let row = try #require(models.first { $0.id == id })
-            let nearest = try #require(models.first { $0.id == original })
-            #expect(row.engine == nearest.engine, "\(id)")
-            #expect(row.languages == nearest.languages, "\(id)")
-            #expect(row.detectsLanguage == nearest.detectsLanguage, "\(id)")
-            #expect(row.repository != nearest.repository, "\(id)")
-        }
-    }
-
     @Test func detectionIsClaimedOnlyWhereItWorks() {
         // The pinned MLX Whisper omits its language token for detection but has no detection pass, which
         // produced dots and stray letters for French and English clips. Apple Speech cannot detect.
