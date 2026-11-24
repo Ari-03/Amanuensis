@@ -221,6 +221,14 @@ struct ModesView: View {
                 SettingsCard {
                     Text("Recording and insertion").font(.headline)
                     Toggle("Capitalize the first word", isOn: binding(mode, \.capitalize))
+                    Toggle("Remove um, uh and similar fillers", isOn: binding(mode, \.removesFillers))
+                        .disabled(model.language(for: mode) != .english)
+                    Text(
+                        model.language(for: mode) == .english
+                            ? "The original transcript in History keeps them."
+                            : "Applies only when this mode's language is English."
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
                     Toggle("Paste into the active app", isOn: binding(mode, \.autoPaste))
                     Toggle("Include system audio", isOn: binding(mode, \.recordSystemAudio))
                     Text(

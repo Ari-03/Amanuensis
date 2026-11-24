@@ -187,6 +187,14 @@ struct SavedFormatCompatibilityTests {
         let saved = try JSONDecoder().decode(SavedConfiguration.self, from: Data(Self.configuration.utf8))
         #expect(saved.settings.dictationLanguage == nil)
         #expect(saved.settings.recorderStyle == .notch)
+        #expect(saved.settings.pasteLastShortcut == nil)
+        #expect(!saved.settings.holdsToRecord)
+        // A saved Hold to record has no effect on a modifier-only shortcut.
+        var settings = saved.settings
+        settings.holdsToRecord = true
+        #expect(settings.holdsToRecord)
+        settings.toggleShortcut = ShortcutBinding(keyCode: nil, modifiers: 2304, display: "⌥⌘")
+        #expect(!settings.holdsToRecord)
         #expect(saved.modes.count == 6)
         #expect(saved.modes.allSatisfy { $0.language == nil })
         var modes = saved.modes

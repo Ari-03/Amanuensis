@@ -54,6 +54,68 @@ enum TextRules: Sendable {
         return result
     }
 
+    /// A hesitation that is never a word, the punctuation that may be dropped with it, and the spaces after.
+    /// "Mr. Um" is a name; anything else touching the word makes it something other than a filler.
+    private static let filler =
+        #"(?<!\S)(?<!\b(?:Mr|Mrs|Ms|Dr|Prof)\. )([Uu]m{1,3}|[Uu]h{1,3}|[Uu]hm{1,2}|[Ee]rm{1,2}|[Hh]m{1,3})"#
+        + #"(\.\.\.|…|[,.])?(?!\S)[ \t]*"#
+
+    /// Leaves standalone "um", "uh" and similar out of an English transcript. A comma beside one stays once
+    /// between two words, so list items never run together. Anything uncertain is kept: a capitalized one
+    /// inside a sentence or without punctuation (names), one touching a dash or quote, one after a
+    /// number, and every vocabulary phrase.
+    static func removingFillers(from text: String, keeping vocabulary: [VocabularyEntry]) -> String {
+        let phrases = vocabulary.map(\.word).filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+            .map(NSRegularExpression.escapedPattern).joined(separator: "|")
+        // A phrase matches first and whole, without the filler's capture group.
+        let kept = phrases.isEmpty ? "" : #"(?<!\w)(?i:\#(phrases))(?!\w)|"#
+        guard let pattern = try? NSRegularExpression(pattern: kept + filler) else { return text }
+        var result = ""
+        var cursor = text.startIndex
+        // A capitalized filler was left out, so the next word starts its sentence.
+        var capitalizeNext = false
+        func copy(upTo end: String.Index) {
+            guard cursor < end else { return }
+            let word = text[cursor..<end].prefix(while: \.isLetter)
+            // A word with its own capitals, such as "iPhone", keeps them.
+            if capitalizeNext, let first = word.first, word == word.lowercased() {
+                result += first.uppercased()
+                cursor = text.index(after: cursor)
+            }
+            result += text[cursor..<end]
+            cursor = end
+            capitalizeNext = false
+        }
+        for match in pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard Range(match.range(at: 1), in: text) != nil, let range = Range(match.range, in: text)
+            else { continue }
+            copy(upTo: range.lowerBound)
+            let last = result.lastIndex { $0 != " " && $0 != "\t" }
+            let before = last.map { result[$0] }
+            let punctuation = Range(match.range(at: 2), in: text).map { text[$0] } ?? ""
+            let isCapital = text[cursor].isUppercase
+            let opensSentence = before.map { $0.isNewline || ".?!…".contains($0) } ?? true
+            let joins = before.map { $0.isLetter || $0 == "," } ?? false
+            guard opensSentence ? !isCapital || !punctuation.isEmpty : joins && !isCapital else { continue }
+            cursor = range.upperBound
+            let endsLine = cursor == text.endIndex || text[cursor].isNewline
+            result.removeSubrange((last.map(result.index(after:)) ?? result.startIndex)...)
+            if !opensSentence {
+                // One comma at most, and none before the end of a sentence or line.
+                if punctuation != "," && !punctuation.isEmpty || endsLine {
+                    while result.last == "," { result.removeLast() }
+                    result += punctuation == "," ? "" : punctuation
+                } else if result.last != "," {
+                    result += punctuation
+                }
+            }
+            if !endsLine, result.last?.isNewline == false { result += " " }
+            capitalizeNext = capitalizeNext || opensSentence && isCapital
+        }
+        copy(upTo: text.endIndex)
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Counts letter/number runs, retaining internal apostrophes in contractions and names.
     static func wordCount(_ text: String) -> Int {
         var count = 0
@@ -130,5 +192,15 @@ enum TextRules: Sendable {
 
     private static func isApostrophe(_ character: Character) -> Bool {
         character == "'" || character == "’"
+    }
+}
+
+extension RecordingEntry {
+    /// What cleanup and vocabulary replacements start from. Fillers are left out here rather than from a
+    /// cleanup model's output, which may be in another language where "um" is a word. Detection does not
+    /// say which language was spoken, so only a recording set to English qualifies.
+    var transcript: String {
+        guard mode.removesFillers, transcriptionLanguage == .english else { return rawText }
+        return TextRules.removingFillers(from: rawText, keeping: vocabularySnapshot ?? [])
     }
 }

@@ -62,6 +62,7 @@ final class GlobalShortcuts {
         case pushToTalk
         case changeMode
         case cancel
+        case pasteLast
     }
 
     struct Backend {
@@ -113,6 +114,9 @@ final class GlobalShortcuts {
         }
     }
 
+    /// How long a key-chord recording shortcut is held before its release ends the recording it started.
+    /// A shorter press is a tap. Modifier-only shortcuts act on their release, so only push-to-talk holds them.
+    private static let toggleHoldThreshold: EventTime = 0.3
     nonisolated private static let signature: OSType = 0x414D_414E
     private let backend: Backend
     private let modifierMonitor: ModifierMonitor
@@ -132,9 +136,13 @@ final class GlobalShortcuts {
     private var nextEventID: UInt32 = 0
     private var modeActions: [UInt32: UUID] = [:]
     private var pressed: Set<UInt32> = []
+    private var holdsToRecord = false
+    private var togglePressedAt: EventTime = 0
     private var onToggle: () -> Void = {}
+    private var onToggleHoldEnd: () -> Void = {}
     private var onPushToTalk: (Bool) -> Void = { _ in }
     private var onChangeMode: () -> Void = {}
+    private var onPasteLast: () -> Void = {}
     private var onCancel: () -> Void = {}
     private var onInterruption: (() -> Void)?
     private var onModeRecording: (UUID) -> Void = { _ in }
@@ -198,14 +206,20 @@ final class GlobalShortcuts {
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
     }
 
+    /// `onToggle` fires on every press of `toggle`. With `holdsToRecord`, `onToggleHoldEnd` follows when a
+    /// press past the hold threshold is released.
     @discardableResult
     func setBindings(
         toggle: ShortcutBinding,
+        holdsToRecord: Bool = false,
         pushToTalk: ShortcutBinding?,
         changeMode: ShortcutBinding?,
+        pasteLast: ShortcutBinding? = nil,
         onToggle: @escaping () -> Void,
+        onToggleHoldEnd: @escaping () -> Void = {},
         onPushToTalk: @escaping (Bool) -> Void,
         onChangeMode: @escaping () -> Void,
+        onPasteLast: @escaping () -> Void = {},
         onCancel: @escaping () -> Void,
         modeBindings: [UUID: ShortcutBinding] = [:],
         onModeRecording: @escaping (UUID) -> Void = { _ in },
@@ -214,6 +228,7 @@ final class GlobalShortcuts {
         var desired = [Action.toggle.rawValue: toggle]
         desired[Action.pushToTalk.rawValue] = pushToTalk
         desired[Action.changeMode.rawValue] = changeMode
+        desired[Action.pasteLast.rawValue] = pasteLast
         var desiredModes: [UInt32: UUID] = [:]
         for (offset, entry) in modeBindings.sorted(by: { $0.key.uuidString < $1.key.uuidString }).enumerated()
         {
@@ -225,11 +240,16 @@ final class GlobalShortcuts {
         guard applyBindings(desired) else { return false }
         resetModifierGesture()
         if pressed.contains(Action.pushToTalk.rawValue) { self.onPushToTalk(false) }
+        // Its release may no longer arrive, and must not leave the microphone on.
+        if pressed.contains(Action.toggle.rawValue), self.holdsToRecord { self.onToggleHoldEnd() }
         pressed.removeAll()
+        self.holdsToRecord = holdsToRecord
         modeActions = desiredModes
         self.onToggle = onToggle
+        self.onToggleHoldEnd = onToggleHoldEnd
         self.onPushToTalk = onPushToTalk
         self.onChangeMode = onChangeMode
+        self.onPasteLast = onPasteLast
         self.onCancel = onCancel
         self.onInterruption = onInterruption
         self.onModeRecording = onModeRecording
@@ -420,6 +440,15 @@ final class GlobalShortcuts {
         } else {
             guard pressed.remove(actionID) != nil else { return noErr }
         }
+        if actionID == Action.toggle.rawValue {
+            // The events' own times, so a tap handled late by a busy main thread stays a tap.
+            let time = GetEventTime(event)
+            if isDown {
+                togglePressedAt = time
+            } else if holdsToRecord, time - togglePressedAt >= Self.toggleHoldThreshold {
+                onToggleHoldEnd()
+            }
+        }
         invoke(actionID, isDown: isDown)
         return noErr
     }
@@ -435,6 +464,7 @@ final class GlobalShortcuts {
         case .pushToTalk: onPushToTalk(isDown)
         case .changeMode: if isDown { onChangeMode() }
         case .cancel: if isDown, recordingActive { onCancel() }
+        case .pasteLast: if isDown { onPasteLast() }
         }
     }
 }

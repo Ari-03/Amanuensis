@@ -88,6 +88,8 @@ final class AppModel {
     @ObservationIgnored private var activeID: UUID?
     @ObservationIgnored private var cancellingID: UUID?
     @ObservationIgnored private var activeEntry: RecordingEntry?
+    /// The recording the toggle shortcut's latest press started, if any. Releasing a hold ends only that one.
+    @ObservationIgnored private var heldRecordingID: UUID?
     @ObservationIgnored private var startupComplete = false
     @ObservationIgnored private var changingConfiguration = false
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
@@ -220,6 +222,16 @@ final class AppModel {
             requestCancelRecording()
         } else if !phase.isBusy {
             beginRecording()
+        }
+    }
+
+    /// The release that ends a hold. One that arrives before recording starts cancels it, so the
+    /// microphone never opens after the keys are up.
+    private func endHeldRecording() {
+        if phase == .preparing {
+            cancelRecording()
+        } else if phase == .recording {
+            stopRecording()
         }
     }
 
@@ -517,15 +529,17 @@ final class AppModel {
             return
         }
 
-        var selectedText = entry.rawText
-        if let cleanup = entry.cleanupSnapshot, entry.cleanupNotice == nil {
+        let transcript = entry.transcript
+        var selectedText = transcript
+        // A transcript of nothing but fillers leaves nothing to clean or insert.
+        if let cleanup = entry.cleanupSnapshot, entry.cleanupNotice == nil, !transcript.isEmpty {
             phase = .cleaning
             statusMessage = "Cleaning up with \(cleanup.name)…"
             entry.status = .cleaning
             try store?.upsertRecording(entry)
             cleanupSkipped = false
             let result: Result<String, any Error>
-            do { result = .success(try await clean(entry.rawText, with: cleanup, for: entry)) } catch {
+            do { result = .success(try await clean(transcript, with: cleanup, for: entry)) } catch {
                 result = .failure(error)
             }
             // Skip wins even if the model finished; its cancellation error is ignored.
@@ -542,7 +556,7 @@ final class AppModel {
             case (false, .failure(let error)):
                 entry.error = "Cleanup failed: \(error.localizedDescription)"
                 entry.finalText = TextRules.apply(
-                    entry.rawText, vocabulary: entry.vocabularySnapshot ?? [],
+                    transcript, vocabulary: entry.vocabularySnapshot ?? [],
                     capitalize: entry.mode.capitalize)
                 entry.status = .failed
                 originalOffer = (id, entry.finalText)
@@ -1172,20 +1186,30 @@ final class AppModel {
         NSApp.windows.first { !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
     }
 
-    /// Delivers a failed cleanup's original text with the same focus check and clipboard fallback as
-    /// automatic paste, then History records what happened.
     private func pasteOriginal() {
-        guard let offer = originalOffer, !phase.isBusy, activeID == nil, cancellingID == nil else { return }
-        let delivered = delivery.deliver(text: offer.text)
-        refreshAccessibility()
+        guard let offer = originalOffer, let delivered = paste(offer.text, from: offer.id) else { return }
         if var entry = history.first(where: { $0.id == offer.id }) {
             entry.record(delivered)
             do { try store?.upsertRecording(entry) } catch { errorMessage = error.localizedDescription }
             refreshHistory()
         }
-        showOutcome(cause(of: delivered), for: offer.id)
+    }
+
+    /// Paste last transcript: the newest result in History, which keeps how it was first delivered.
+    private func pasteLastTranscript() {
+        if let entry = history.newestFinished { paste(entry.finalText, from: entry.id) }
+    }
+
+    /// Delivers a History entry's text with the same focus check, clipboard fallback and pill outcome as
+    /// automatic paste. Nil, with nothing done, while a job is running.
+    @discardableResult private func paste(_ text: String, from id: UUID) -> DeliveryOutcome? {
+        guard !phase.isBusy, activeID == nil, cancellingID == nil else { return nil }
+        let delivered = delivery.deliver(text: text)
+        refreshAccessibility()
+        showOutcome(cause(of: delivered), for: id)
         phase = .complete
         statusMessage = delivered.message
+        return delivered
     }
 
     func setRecorderHovering(_ hovering: Bool) {
@@ -1366,13 +1390,17 @@ final class AppModel {
         defer { changingConfiguration = false }
         if settings.requireLocalProcessing && !previous.requireLocalProcessing { cloud.cancel() }
         if settings.toggleShortcut != previous.toggleShortcut
+            || settings.holdsToRecord != previous.holdsToRecord
             || settings.pushToTalkShortcut != previous.pushToTalkShortcut
             || settings.modeShortcut != previous.modeShortcut
+            || settings.pasteLastShortcut != previous.pasteLastShortcut
         {
             if !configureShortcuts() {
                 settings.toggleShortcut = previous.toggleShortcut
+                settings.holdToRecord = previous.holdToRecord
                 settings.pushToTalkShortcut = previous.pushToTalkShortcut
                 settings.modeShortcut = previous.modeShortcut
+                settings.pasteLastShortcut = previous.pasteLastShortcut
             }
         }
         if settings.launchAtLogin != previous.launchAtLogin {
@@ -1395,26 +1423,35 @@ final class AppModel {
     @discardableResult
     private func configureShortcuts(modes proposedModes: [DictationMode]? = nil) -> Bool {
         let succeeded = shortcuts.setBindings(
-            toggle: settings.toggleShortcut, pushToTalk: settings.pushToTalkShortcut,
-            changeMode: settings.modeShortcut,
+            toggle: settings.toggleShortcut, holdsToRecord: settings.holdsToRecord,
+            pushToTalk: settings.pushToTalkShortcut,
+            changeMode: settings.modeShortcut, pasteLast: settings.pasteLastShortcut,
             onToggle: { [weak self] in
                 guard let self, !isEditingShortcut else { return }
+                let starts = !phase.isBusy
                 toggleRecording()
+                heldRecordingID = starts ? activeID : nil
+            },
+            onToggleHoldEnd: { [weak self] in
+                guard let self, let id = heldRecordingID, id == activeID else { return }
+                endHeldRecording()
             },
             onPushToTalk: { [weak self] down in
                 guard let self, !isEditingShortcut else { return }
                 if down {
                     if !phase.isBusy { beginRecording() }
-                } else if phase == .preparing {
-                    cancelRecording()
-                } else if phase == .recording {
-                    stopRecording()
+                } else {
+                    endHeldRecording()
                 }
             },
             onChangeMode: { [weak self] in
                 guard let self, !isEditingShortcut, !modes.isEmpty else { return }
                 let index = modes.firstIndex(where: { $0.id == settings.selectedModeID }) ?? 0
                 selectMode(modes[(index + 1) % modes.count].id)
+            },
+            onPasteLast: { [weak self] in
+                guard let self, !isEditingShortcut else { return }
+                pasteLastTranscript()
             },
             onCancel: { [weak self] in self?.requestCancelRecording() },
             modeBindings: Dictionary(

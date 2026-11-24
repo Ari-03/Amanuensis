@@ -58,6 +58,14 @@ struct ConfigurationView: View {
                             binding: $model.settings.toggleShortcut, onChange: model.saveConfiguration,
                             onEditing: { model.isEditingShortcut = $0 })
                     }
+                    Toggle("Hold to record", isOn: $model.settings.holdsToRecord)
+                        .disabled(model.settings.toggleShortcut.isModifierOnly)
+                    Text(
+                        model.settings.toggleShortcut.isModifierOnly
+                            ? "Needs a shortcut with a key. To hold only modifiers, use Push to talk."
+                            : "Hold the shortcut above to record until you release it. A quick press still starts and finishes."
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
                     Divider()
                     shortcutRow("Push to talk", subtitle: "Hold to record. Release to finish.") {
                         OptionalShortcutRecorder(
@@ -68,6 +76,14 @@ struct ConfigurationView: View {
                     shortcutRow("Change mode", subtitle: "Choose the mode for your next recording.") {
                         OptionalShortcutRecorder(
                             binding: $model.settings.modeShortcut, onChange: model.saveConfiguration,
+                            onEditing: { model.isEditingShortcut = $0 })
+                    }
+                    Divider()
+                    shortcutRow(
+                        "Paste last transcript", subtitle: "Paste your newest transcript where you're typing."
+                    ) {
+                        OptionalShortcutRecorder(
+                            binding: $model.settings.pasteLastShortcut, onChange: model.saveConfiguration,
                             onEditing: { model.isEditingShortcut = $0 })
                     }
                     Text("Shortcuts can use a key or just modifiers, such as ⌥⌘. Escape cancels a recording.")
@@ -188,9 +204,11 @@ struct ConfigurationView: View {
     }
 
     private var usesModifierShortcut: Bool {
-        ([model.settings.toggleShortcut, model.settings.pushToTalkShortcut, model.settings.modeShortcut]
-            + model.modes.map(\.startShortcut))
-            .contains { $0?.isModifierOnly == true }
+        ([
+            model.settings.toggleShortcut, model.settings.pushToTalkShortcut, model.settings.modeShortcut,
+            model.settings.pasteLastShortcut,
+        ] + model.modes.map(\.startShortcut))
+        .contains { $0?.isModifierOnly == true }
     }
 
     private func shortcutRow<Content: View>(

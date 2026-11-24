@@ -160,6 +160,13 @@ struct DictationMode: Identifiable, Codable, Equatable, Sendable {
     /// Overrides the Settings language for this mode. Nil means "same as Settings", and is what
     /// configuration saved before languages existed decodes to.
     var language: SpeechLanguage? = nil
+    /// Nil until changed, which means off. Optional so earlier saves still decode; read `removesFillers`.
+    var fillerRemoval: Bool? = nil
+    /// Whether results in English leave out "um", "uh" and similar.
+    var removesFillers: Bool {
+        get { fillerRemoval ?? false }
+        set { fillerRemoval = newValue }
+    }
 
     var symbol: String { customSymbol ?? preset.symbol }
 
@@ -388,8 +395,11 @@ struct AppSettings: Codable, Equatable, Sendable {
     var livePreview: Bool? = nil
     var requireLocalProcessing = true
     var toggleShortcut: ShortcutBinding = .recording
+    /// Nil until changed, which means off. Optional so earlier saves still decode; read `holdsToRecord`.
+    var holdToRecord: Bool? = nil
     var pushToTalkShortcut: ShortcutBinding? = nil
     var modeShortcut: ShortcutBinding? = .mode
+    var pasteLastShortcut: ShortcutBinding? = nil
     var audioRetentionDays: Int = 7
     var textRetentionDays: Int = 0
     var launchAtLogin = false
@@ -416,6 +426,13 @@ struct AppSettings: Codable, Equatable, Sendable {
     var showsLivePreview: Bool {
         get { livePreview ?? true }
         set { livePreview = newValue }
+    }
+    /// Whether holding the recording shortcut records until it is released. Off unless chosen: a long
+    /// press otherwise starts a recording that keeps going after the release. Never for a modifier-only
+    /// shortcut, which acts on release; push-to-talk covers it.
+    var holdsToRecord: Bool {
+        get { holdToRecord == true && !toggleShortcut.isModifierOnly }
+        set { holdToRecord = newValue }
     }
 }
 
@@ -632,6 +649,14 @@ struct RecordingEntry: Identifiable, Codable, Equatable, Sendable {
         attempt.countedInStatistics = false
         attempt.status = .transcribing
         return attempt
+    }
+}
+
+extension Sequence where Element == RecordingEntry {
+    /// What Paste last transcript pastes from History, which is newest first. Only a job that reached its
+    /// result has final text, so one cut short or with nothing to insert is passed over.
+    var newestFinished: RecordingEntry? {
+        first { $0.finalText.contains { !$0.isWhitespace } }
     }
 }
 
