@@ -176,7 +176,8 @@ struct SetupChecklistView: View {
 }
 
 /// The optional cleanup step, in the checklist and then on Home: the modes a cleanup model unlocks, and
-/// the two ways to get one. Nothing is sent to an API until the user connects it and chooses it here.
+/// the two ways to get one. Connecting an API turns it on for modes that already chose it. Other modes
+/// use it only once the user chooses it here.
 struct CleanupSetup: View {
     let model: AppModel
     let onConnect: (ModelDescriptor) -> Void
