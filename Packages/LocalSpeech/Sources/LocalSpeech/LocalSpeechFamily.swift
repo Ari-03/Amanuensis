@@ -46,7 +46,7 @@ public struct LocalSpeechFamily: Sendable {
         LocalSpeechFamily(
             name: "parakeet", displayName: "Parakeet",
             requiredFiles: ["config.json"],
-            // V3 detects; V2 is English only. The runtime ignores the language either way.
+            // V3 and Ultra detect; V2 is English only. The runtime ignores the language either way.
             detectsLanguage: true,
             // Parakeet's decoder reads its token table from the configuration, not from a tokenizer file.
             recognizes: { config in
@@ -91,7 +91,8 @@ public struct LocalSpeechFamily: Sendable {
                 code.map { ["tl": "Filipino"][$0] ?? englishName(of: $0) }
             },
             load: { try await Qwen3ASRModel.fromModelDirectory($0) },
-            // `support_languages` in mlx-community/Qwen3-ASR-0.6B-4bit@313d850 config.json.
+            // `support_languages` in config.json, the same in mlx-community/Qwen3-ASR-0.6B-4bit@313d850 and
+            // Qwen3-ASR-1.7B-8bit@a8379a2.
             languageArguments: [
                 "Chinese", "English", "Cantonese", "Arabic", "German", "French", "Spanish",
                 "Portuguese", "Indonesian", "Italian", "Korean", "Russian", "Thai", "Vietnamese",
