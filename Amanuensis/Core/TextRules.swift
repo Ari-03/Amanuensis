@@ -90,15 +90,16 @@ enum TextRules: Sendable {
             guard Range(match.range(at: 1), in: text) != nil, let range = Range(match.range, in: text)
             else { continue }
             copy(upTo: range.lowerBound)
-            let before = String(result.reversed().drop { $0 == " " || $0 == "\t" }.reversed())
+            let last = result.lastIndex { $0 != " " && $0 != "\t" }
+            let before = last.map { result[$0] }
             let punctuation = Range(match.range(at: 2), in: text).map { text[$0] } ?? ""
             let isCapital = text[cursor].isUppercase
-            let opensSentence = before.last.map { $0.isNewline || ".?!…".contains($0) } ?? true
-            let joins = before.last.map { $0.isLetter || $0 == "," } ?? false
+            let opensSentence = before.map { $0.isNewline || ".?!…".contains($0) } ?? true
+            let joins = before.map { $0.isLetter || $0 == "," } ?? false
             guard opensSentence ? !isCapital || !punctuation.isEmpty : joins && !isCapital else { continue }
             cursor = range.upperBound
             let endsLine = cursor == text.endIndex || text[cursor].isNewline
-            result = before
+            result.removeSubrange((last.map(result.index(after:)) ?? result.startIndex)...)
             if !opensSentence {
                 // One comma at most, and none before the end of a sentence or line.
                 if punctuation != "," && !punctuation.isEmpty || endsLine {
