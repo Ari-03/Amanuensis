@@ -61,6 +61,7 @@ build_assets v0.2.0-nightly.10
 set_state '.omit_drafts_from_list = true'
 publish
 assert_state '.releases | length == 1 and .[0].draft == false and .[0].prerelease == true and (.[0].assets | length == 2)' 'complete nightly is published even when the list omits the new draft'
+assert_state '.releases[0].body | contains("ad-hoc signed") and (contains("notarized by Apple") | not)' 'notes describe an ad-hoc build by default'
 assert_state '.refs["refs/tags/v0.2.0-nightly.10"].sha == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" and .latest == null' 'nightly uses exact SHA and does not become Latest'
 # Retried builds can differ, but the already published download must never be replaced.
 printf 'A later rebuild\n' >>"$dmg"
@@ -70,6 +71,11 @@ assert_state '[.calls[] | select(.[0] == "release" and (.[1] == "upload" or .[1]
 set_state '.releases[0].assets[0].digest = "sha256:bad" | .calls = []'
 reject 'corrupt existing asset'
 assert_state '[.calls[] | select(.[0] == "release")] | length == 0' 'published corruption fails without mutation'
+
+reset_case
+build_assets v0.2.0-nightly.10
+AMANUENSIS_NOTARIZED=true publish
+assert_state '.releases[0].body | contains("notarized by Apple") and (contains("ad-hoc signed") | not)' 'notes describe a notarized build'
 
 reset_case
 build_assets v0.2.0-nightly.11

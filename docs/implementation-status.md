@@ -33,7 +33,7 @@ The development Mac now has four managed model imports: Whisper Tiny, Parakeet V
 
 ## Decisions implemented differently from the plan
 
-The app targets **macOS 26 and arm64**. It uses **Swift 6 language mode** and requires a **Swift 6.3 toolchain** because of the resolved MLX dependencies. App Sandbox is disabled for direct distribution. Current build scripts use ad-hoc signing; Developer ID signing and notarization remain work to do. Tagged releases publish signed disk images that the in-app updater installs.
+The app targets **macOS 26 and arm64**. It uses **Swift 6 language mode** and requires a **Swift 6.3 toolchain** because of the resolved MLX dependencies. App Sandbox is disabled for direct distribution. Builds use ad-hoc signing. Developer ID signing and notarization of releases are prepared but off until the repository has credentials, and have not run against Apple's services; see [release signing](release-signing.md). Tagged releases publish signed disk images that the in-app updater installs.
 
 Storage uses **system SQLite3 directly**, through one `LocalStore`, rather than the plan's GRDB queue or the earlier architecture note's SwiftData model actor. It stores encoded records within SQLite transactions, owns audio-file deletion, and uses tombstones to reject late results after deletion. No GRDB or SwiftData dependency is used. Current database operations run on MainActor, so history scale should be measured before changing that ownership. Storage directories are private (0700). Startup discards abandoned `.meeting-UUID` channel fragments left by a crash; these unfinished fragments cannot currently be recovered as a meeting. Ordinary recordings and unrelated directories are preserved, with symlink safety covered by storage checks.
 

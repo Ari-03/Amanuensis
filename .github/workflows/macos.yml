@@ -40,9 +40,10 @@ jobs:
     name: Build DMG
     needs: checks
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 90
     outputs:
       version: ${{ steps.version.outputs.version }}
+      notarized: ${{ steps.developer-id.outputs.notarized }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -66,6 +67,16 @@ jobs:
           AMANUENSIS_VERSION: ${{ steps.version.outputs.version }}
           AMANUENSIS_BUILD_NUMBER: ${{ github.run_number }}
         run: Scripts/package-dmg.sh
+      - name: Sign with Developer ID and notarize
+        id: developer-id
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          AMANUENSIS_SIGNING_CERTIFICATE: ${{ secrets.AMANUENSIS_SIGNING_CERTIFICATE }}
+          AMANUENSIS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.AMANUENSIS_SIGNING_CERTIFICATE_PASSWORD }}
+          AMANUENSIS_NOTARY_KEY: ${{ secrets.AMANUENSIS_NOTARY_KEY }}
+          AMANUENSIS_NOTARY_KEY_ID: ${{ secrets.AMANUENSIS_NOTARY_KEY_ID }}
+          AMANUENSIS_NOTARY_ISSUER_ID: ${{ secrets.AMANUENSIS_NOTARY_ISSUER_ID }}
+        run: Scripts/sign-release.sh
       - name: Check in-app updater against the DMG
         run: Scripts/check-updater.sh artifacts/Amanuensis.app "${{ steps.package.outputs.dmg-path }}"
       - name: Sign nightly for the in-app updater
@@ -117,6 +128,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          AMANUENSIS_NOTARIZED: ${{ needs.dmg.outputs.notarized }}
           VERSION: ${{ needs.dmg.outputs.version }}
           COMMIT_SHA: ${{ github.sha }}
         run: Scripts/publish-release.sh "v$VERSION" "$COMMIT_SHA" "artifacts/Amanuensis-$VERSION-arm64.dmg"
