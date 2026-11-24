@@ -311,6 +311,9 @@ struct ModesView: View {
                         error: model.library.errors[current.id],
                         onDownload: { Task { await model.download(current) } },
                         onCancel: { model.library.cancelDownload(current.id) })
+                    if purpose == .cleanup {
+                        Text(plainTranscriptNote(current)).font(.caption).foregroundStyle(.secondary)
+                    }
                 case .appleSpeechNotReady(let code):
                     Label(
                         "Apple Speech needs preparing for \(SpeechLanguage.name(of: code)) in Models.",
@@ -320,7 +323,9 @@ struct ModesView: View {
                 case .apiKeyMissing, .providerNotSetUp:
                     HStack(spacing: 8) {
                         Label(
-                            blocker.errorDescription ?? blocker.shortReason,
+                            purpose == .cleanup
+                                ? plainTranscriptNote(current)
+                                : blocker.errorDescription ?? blocker.shortReason,
                             systemImage: "exclamationmark.triangle"
                         )
                         .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
@@ -335,13 +340,12 @@ struct ModesView: View {
                     .font(.caption).foregroundStyle(.orange)
                 }
             }
-            if purpose == .cleanup, let current, readiness.cleanupGap(for: current) != nil {
-                Text(
-                    "This mode records now and gives you the plain transcript. Set up \(current.name), or choose another cleanup model, to get its cleanup."
-                )
-                .font(.caption).foregroundStyle(.secondary)
-            }
         }
+    }
+
+    /// What a mode does while its cleanup model is not set up. Whether it can record is up to speech.
+    private func plainTranscriptNote(_ cleanup: ModelDescriptor) -> String {
+        "Until \(cleanup.name) is set up, this mode gives you the plain transcript."
     }
 
     /// "Whisper tiny · 155 MB", "OpenAI Transcription · Needs OpenAI key", or a ready model's name, with

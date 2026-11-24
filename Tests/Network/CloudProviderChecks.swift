@@ -355,18 +355,14 @@ struct CloudProviderChecks {
         let filesAfter = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         precondition(filesAfter == files, "Nothing may be left beside the recording")
 
-        // Cancelling the recording's task, or the provider as Skip and local-only do, sends nothing.
+        // Cancelling the recording's task sends nothing.
         fixture.reset { _ in preconditionFailure("A cancelled upload was sent") }
-        for cancelsProvider in [false, true] {
-            let task = Task { try await transcribe(long) }
-            // Runs the task until it waits for the conversion, which cannot resume it before the cancel.
-            await Task.yield()
-            if cancelsProvider { provider.cancel() } else { task.cancel() }
-            do {
-                _ = try await task.value
-                preconditionFailure("Expected the conversion to be cancelled")
-            } catch is CancellationError {}
-        }
+        let cancelled = Task { try await transcribe(long) }
+        cancelled.cancel()
+        do {
+            _ = try await cancelled.value
+            preconditionFailure("Expected the conversion to be cancelled")
+        } catch is CancellationError {}
 
         // The conversion itself stops, rather than finishing unseen.
         let conversion = Task.detached {

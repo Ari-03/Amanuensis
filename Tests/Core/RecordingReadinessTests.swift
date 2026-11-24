@@ -67,7 +67,7 @@ struct RecordingReadinessTests {
         #expect(readiness.cleanupGap(for: s1mini) == nil)
     }
 
-    @Test func theCleanupStepNamesModesUntilOneHasWorkingCleanup() {
+    @Test func theCleanupStepNamesModesWithoutWorkingCleanup() {
         func awaiting(_ readiness: RecordingReadiness, _ modes: [DictationMode]) -> [String] {
             readiness.modesAwaitingCleanup(modes) { mode in
                 [s1mini, openAICleanup].first { $0.id == mode.cleanupModelID }
@@ -79,14 +79,14 @@ struct RecordingReadinessTests {
         #expect(awaiting(readiness, DictationMode.initial).isEmpty)
         // Modes without cleanup have nothing to unlock.
         #expect(awaiting(fresh, [DictationMode.make(preset: .dictation)]).isEmpty)
-        // One mode on a connected API is a working choice, so the others are the user's own business.
+        // A mode with working cleanup drops out; the others still need theirs.
         readiness = fresh
         readiness.requireLocalProcessing = false
         readiness.connectedProviders = [.openAI]
         var modes = DictationMode.initial
         #expect(!awaiting(readiness, modes).isEmpty)
         modes[1].cleanupModelID = openAICleanup.id
-        #expect(awaiting(readiness, modes).isEmpty)
+        #expect(awaiting(readiness, modes) == ["Mail", "Notes", "Meeting"])
     }
 
     @Test func speechIsReportedBeforeCleanup() {

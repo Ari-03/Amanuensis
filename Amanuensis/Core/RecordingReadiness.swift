@@ -95,18 +95,11 @@ struct RecordingReadiness: Sendable {
         CleanupGap(setupBlocker(for: cleanup, language: .automatic))
     }
 
-    /// The modes a cleanup model would unlock, for setup's optional step. Empty once any mode has a
-    /// cleanup model that can run, because that person already knows about cleanup.
+    /// The modes a cleanup model would unlock, for setup's optional step.
     func modesAwaitingCleanup(
         _ modes: [DictationMode], cleanup: (DictationMode) -> ModelDescriptor?
     ) -> [DictationMode] {
-        let chosen = modes.map { (mode: $0, cleanup: cleanup($0)) }
-        guard
-            !chosen.contains(where: {
-                $0.cleanup.map { setupBlocker(for: $0, language: .automatic) == nil } == true
-            })
-        else { return [] }
-        return chosen.filter { $0.cleanup.flatMap(cleanupGap(for:)) != nil }.map(\.mode)
+        modes.filter { cleanup($0).flatMap(cleanupGap(for:)) != nil }
     }
 }
 
