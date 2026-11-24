@@ -17,6 +17,7 @@ Scripts/check-delivery.sh
 Scripts/check-helper-isolation.sh
 Scripts/check-s1-runner.sh
 Scripts/check-release-version.sh
+Scripts/check-release-signing.sh
 Scripts/check-update-signing.sh
 Scripts/check-release-publication.sh
 git diff --check

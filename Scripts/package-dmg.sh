@@ -16,6 +16,15 @@ if [[ $# -gt 1 ]]; then
     exit 1
 fi
 
+# Scripts/sign-release.sh sets AMANUENSIS_NOTARIZED after Apple accepts the app.
+if [[ "${AMANUENSIS_NOTARIZED:-}" == true ]]; then
+    signing_note='This build is signed with a Developer ID certificate and notarized by Apple.'
+else
+    signing_note="This development build is ad-hoc signed and is not notarized by Apple.
+macOS may block downloaded copies. For a build you trust, follow Apple's
+instructions: https://support.apple.com/en-us/102445"
+fi
+
 app="$app_root/artifacts/Amanuensis.app"
 codesign --verify --deep --strict "$app"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
@@ -34,15 +43,13 @@ trap cleanup EXIT
 mkdir -p "$work/staging" "$work/mount"
 ditto "$app" "$work/staging/Amanuensis.app"
 ln -s /Applications "$work/staging/Applications"
-cat >"$work/staging/Read me.txt" <<'INFO'
+cat >"$work/staging/Read me.txt" <<INFO
 Amanuensis requires an Apple Silicon Mac with macOS 26 or later.
 
 Drag Amanuensis to Applications, eject this disk, then open the installed app.
 Speech and cleanup models download separately from the app's Models page.
 
-This development build is ad-hoc signed and is not notarized by Apple.
-macOS may block downloaded copies. For a build you trust, follow Apple's
-instructions: https://support.apple.com/en-us/102445
+$signing_note
 INFO
 hdiutil create -volname Amanuensis -srcfolder "$work/staging" \
     -fs HFS+ -format UDZO "$work/$name.dmg"

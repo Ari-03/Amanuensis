@@ -1,6 +1,7 @@
 #!/bin/bash
 # Publishes a previously verified DMG/signature pair. Only drafts may replace assets.
 # Usage: GH_REPO=owner/repo GH_TOKEN=... Scripts/publish-release.sh TAG COMMIT_SHA DMG
+# AMANUENSIS_NOTARIZED=true, from the build job, makes the notes describe a notarized build.
 set -euo pipefail
 
 fail() {
@@ -111,7 +112,11 @@ if [[ "$release" == null || "$(jq -r '.draft' <<<"$release")" == true ]]; then
     {
         printf 'Requires Apple Silicon and macOS 26 or later.\n\n'
         printf 'Download the DMG to install. The .sig file lets Amanuensis verify automatic updates.\n\n'
-        printf 'This build is ad-hoc signed and is not Apple-notarized. macOS may require approval in System Settings > Privacy & Security.\n\n'
+        if [[ "${AMANUENSIS_NOTARIZED:-}" == true ]]; then
+            printf 'This build is signed with a Developer ID certificate and notarized by Apple.\n\n'
+        else
+            printf 'This build is ad-hoc signed and is not Apple-notarized. macOS may require approval in System Settings > Privacy & Security.\n\n'
+        fi
         [[ "$nightly" != true ]] || printf 'Automatic nightly from main. Select Preview in Settings > Updates to receive nightlies.\n\n'
         printf 'Source commit: [%s](https://github.com/%s/commit/%s).\n\n' "$commit" "$GH_REPO" "$commit"
         cat "$work/generated-notes"
